@@ -1,5 +1,17 @@
+import { groupTranscript, TranscriptRunView } from "./run-view.js";
 import { ManualShell, shellInput } from "./manual-shell.js";
 import { RateDisplay } from "./rate-display.js";
+import {browseBots} from './bots.js';
+import {browseHub} from './hub.js';
+import {browseVault} from './vault.js';
+import {browseSchedules} from './schedules.js';
+import {browseUsage} from './usage.js';
+import {browseTasks} from './tasks.js';
+import {browseDevices, type DeviceRequest} from './devices.js';
+import {WorkspaceList} from './workspace-list.js';
+import {WorkspaceDetails} from './workspace-details.js';
+import {WorkspaceFrame} from './workspace-frame.js';
+import {confirm, type Choice, type WorkspaceUi} from './workspace-ui.js';
 import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -19,7 +31,6 @@ import { promisify } from "node:util";
 import {
   CombinedAutocompleteProvider,
   Container,
-  Editor,
   Input,
   CURSOR_MARKER,
   getKeybindings,
@@ -27,21 +38,20 @@ import {
   type Keybinding,
   ProcessTerminal,
   ScrollView,
-  SelectList,
   Text,
   TuiAltScreen,
   VStack,
   matchesKey,
+  truncateToWidth,
+  visibleWidth,
   fuzzyFilter,
   type Component,
   type Terminal,
 } from "@earendil-works/pi-tui";
 import { contentText } from "./transcript.js";
-import type { MessageDto } from "@polymux/protocol";
+import {isTeamBotSetupCue, type MessageDto } from "@polymux/protocol";
 import { ChatSession, type HostClient } from "./session.js";
 import {
-  RowView,
-  SubagentGroup,
   align,
   clean,
   location,
@@ -58,6 +68,7 @@ export const commands = [
   ["logout", "Sign out of Polymux or a model provider"],
   ["account", "Account and device-link status"],
   ["settings", "Configure the terminal"],
+  ["providers", "Manage model provider sign-in"],
   ["thinking", "Set thinking level"],
   ["scoped-models", "Choose models for Ctrl+P cycling"],
   ["resume", "Resume a conversation"],
@@ -73,7 +84,14 @@ export const commands = [
   ["hotkeys", "Keyboard shortcuts"],
   ["mcp", "MCP connection status"],
   ["devices", "Connected devices"],
-  ["bots", "Choose a Polymux bot"],
+  ["bots", "View and manage Team bots"],
+  ["team", "View and manage Team bots"],
+  ["hub", "Read conversations and write messages"],
+  ["vault", "Manage passwords and codes"],
+  ["schedules", "Manage Assistant and bot schedules"],
+  ["usage", "Usage across agents, Assistant and Team"],
+  ["apps", "Browse Polymux apps"],
+  ["tasks", "Work across Assistant chats and Team"],
   ["help", "Commands"],
   ["chats", "Switch conversation"],
   ["new", "New conversation"],
@@ -97,6 +115,9 @@ export async function runTui(
   terminal: Terminal = new ProcessTerminal(),
   options: {
     account?: AccountRequest;
+    devices?: DeviceRequest;
+    hostName?: string;
+    hostId?: string;
     settingsHome?: string;
     cwd?: string;
   } = {},
@@ -132,7 +153,7 @@ export async function runTui(
     new CombinedAutocompleteProvider(commands, cwd),
   );
   const session = new ChatSession(client, () => refresh());
-  const mounted = new Map<string, RowView>();
+  const mounted = new Map<string, TranscriptRunView>();
   let manualShell: ManualShell | undefined;
   let shellConversation = "";
   let shellPending = false;
@@ -185,19 +206,8 @@ export async function runTui(
       return [
         theme.dim(
           align(
-            manualShell &&
-              shellConversation === session.conversation?.id &&
-              manualShell.cwd !== cwd
-              ? `Shell: ${location(manualShell.cwd)}`
-              : `${location(cwd)}${branch ? ` (${branch})` : ""}`,
             `${modelLabel(model)} • ${thinkingLabel(config.reasoning)}`,
-            width,
-          ),
-        ),
-        theme.dim(
-          align(
-            `${config.skills.length} skills • ${config.mcps.length} mcps`,
-            `${String(rateDisplay.value === null ? "--" : rateDisplay.value).padStart(3)} t/s • ${context}`,
+            `${String(rateDisplay.value === null ? "--" : rateDisplay.value).padStart(4)} t/s • ${context}`,
             width,
           ),
         ),
@@ -216,7 +226,7 @@ export async function runTui(
         : session.busy
           ? "Starting…"
           : session.transcript.status === "running"
-            ? "Enter to queue • /steer to redirect • Esc to stop"
+            ? "Enter to queue • Cmd+Enter to steer • Esc to stop"
             : "/help • Ctrl+T thinking • Ctrl+O tools";
       return [
         ...notice
@@ -250,7 +260,7 @@ export async function runTui(
           " ".repeat(padding) +
             theme.accent(
               align(
-                "Polymux",
+                `Polymux${options.hostName ? ` · ${clean(options.hostName)}` : ""} · ${manualShell && shellConversation === session.conversation?.id && manualShell.cwd !== cwd ? `Shell: ${location(manualShell.cwd)}` : `${location(cwd)}${branch ? ` (${branch})` : ""}`}`,
                 session.conversation?.title ?? "Conversations",
                 Math.max(1, width - padding * 2),
               ),
@@ -261,10 +271,45 @@ export async function runTui(
       ];
     },
   };
+  const queueView: Component = {
+    invalidate() {},
+    render(width) {
+      const pad = rowPadding(settings.outputPad, width);
+      return session.queue.length
+        ? [
+            "Queue:",
+            ...session.queue.map(
+              (text, index) =>
+                `${index + 1}. ${clean(text).replace(/\s+/g, " ")}`,
+            ),
+          ].map((text) =>
+            markContent(
+              " ".repeat(pad) +
+                theme.dim(
+                  truncateToWidth(text, Math.max(1, width - pad * 2), "…"),
+                ),
+              pad,
+            ),
+          )
+        : [];
+    },
+    handleMouse(event) {
+      if (event.type !== "click" || event.button !== "left" || event.y < 1)
+        return;
+      const index = event.y - 1;
+      if (index >= session.queue.length) return;
+      const [text] = session.queue.splice(index, 1);
+      if (editor.getText()) session.queue.splice(index, 0, editor.getText());
+      editor.setText(text!);
+      refresh();
+      return { handled: true };
+    },
+  };
   const root = new VStack([
     { component: header, shrink: 0 },
     { component: scroll, grow: 1, basis: 0, minSize: 1 },
     { component: status, shrink: 0 },
+    { component: queueView, shrink: 0 },
     { component: editor, shrink: 1, minSize: 3, maxSize: 10 },
     { component: footer, shrink: 0 },
   ]);
@@ -279,57 +324,87 @@ export async function runTui(
         invalidate() {},
         render(width) {
           if (settings.quietStartup) return [];
-          const lines = [""];
-          for (const [title, names] of [
-            ["Skills", session.configuration.skills],
-            ["MCPs", session.configuration.mcps],
-          ] as const) {
-            if (names.length)
-              lines.push(
-                theme.error(title),
-                ...[...names].sort().map((name) => theme.dim(clean(name))),
-                "",
-              );
-          }
           const padding = rowPadding(settings.outputPad, width);
-          return lines.flatMap((line) =>
-            new Text(line, padding, 0)
-              .render(width)
-              .map((line) => markContent(line, padding)),
+          const inner = Math.max(1, width - padding * 2);
+          const columns = [
+            {
+              title: "[Workspace]",
+              items: [location(cwd), ...(branch ? [branch] : [])],
+            },
+            {
+              title: "[Skills]",
+              items: session.configuration.skills.length
+                ? [...session.configuration.skills].sort()
+                : ["None"],
+            },
+            {
+              title: "[MCPs]",
+              items: session.configuration.mcps.length
+                ? [...session.configuration.mcps].sort()
+                : ["None"],
+            },
+          ];
+          const cellWidth = Math.max(1, Math.floor((inner - 4) / 3));
+          const cell = (text: string) => {
+            const clipped = truncateToWidth(clean(text), cellWidth, "…");
+            return (
+              clipped +
+              " ".repeat(Math.max(0, cellWidth - visibleWidth(clipped)))
+            );
+          };
+          const lines =
+            inner < 36
+              ? columns.flatMap((column) => [
+                  theme.muted(column.title),
+                  ...column.items.map((item) =>
+                    theme.dim(truncateToWidth(clean(item), inner, "…")),
+                  ),
+                  "",
+                ])
+              : [
+                  theme.muted(
+                    columns.map((column) => cell(column.title)).join("  "),
+                  ),
+                  ...Array.from(
+                    {
+                      length: Math.max(
+                        ...columns.map((column) => column.items.length),
+                      ),
+                    },
+                    (_, index) =>
+                      theme.dim(
+                        columns
+                          .map((column) => cell(column.items[index] ?? ""))
+                          .join("  "),
+                      ),
+                  ),
+                ];
+          return lines.map((line) =>
+            markContent(" ".repeat(padding) + truncateToWidth(line, inner, "…"), padding),
           );
         },
       });
     }
-    const ids = new Set(session.transcript.rows.map((row) => row.id));
+    const runs = groupTranscript(session.transcript.rows);
+    const ids = new Set(runs.map((rows) => rows[0]!.id));
     for (const id of mounted.keys()) if (!ids.has(id)) mounted.delete(id);
-    let subagents: SubagentGroup | undefined;
-    for (const row of session.transcript.rows) {
-      let view = mounted.get(row.id);
-      if (!view || view.row !== row) {
-        row.expanded =
-          row.kind === "thought"
-            ? expandedThoughts
-            : row.kind === "tool"
-              ? expandedTools
-              : false;
-        view = new RowView(
-          row,
+    for (const rows of runs) {
+      const id = rows[0]!.id;
+      let view = mounted.get(id);
+      if (!view) {
+        view = new TranscriptRunView(
           () => tui.requestRender(),
-          Date.now,
           () => settings.outputPad,
+          () => expandedTools,
+          () => expandedThoughts,
         );
-        mounted.set(row.id, view);
+        mounted.set(id, view);
       }
-      if (row.toolName === "subagent") {
-        if (!subagents) {
-          subagents = new SubagentGroup([], () => settings.outputPad);
-          body.addChild(subagents);
-        }
-        subagents.addTask(view);
-      } else {
-        subagents = undefined;
-        body.addChild(view);
-      }
+      view.rows = rows;
+      view.active =
+        rows.some((row) => row.status === "running") ||
+        (session.transcript.status === "running" && rows === runs.at(-1));
+      body.addChild(view);
     }
     if (
       session.busy ||
@@ -362,24 +437,22 @@ export async function runTui(
   }
   async function pick(
     title: string,
-    items: Array<{ value: string; label: string; description?: string }>,
+    items: Choice[],
   ): Promise<string | undefined> {
     if (selecting || closed) return;
     selecting = true;
-    let list = new SelectList(items, 8, selectTheme);
-    const filter = new Editor(tui, {
-      borderColor: theme.purple,
-      selectList: selectTheme,
-    });
-    filter.onChange = (text) => {
-      const next = new SelectList(
+    let list = new WorkspaceList(items);
+    const filter = new Input({prompt: '> ', placeholder: 'Search', placeholderStyle: theme.dim});
+    const handleFilter = filter.handleInput.bind(filter);
+    filter.handleInput = data => {
+      handleFilter(data);
+      const text = filter.getValue();
+      const next = new WorkspaceList(
         fuzzyFilter(
           items,
           text,
           (item) => `${item.label} ${item.description ?? ""} ${item.value}`,
         ),
-        8,
-        selectTheme,
       );
       next.onSelect = list.onSelect;
       next.onCancel = list.onCancel;
@@ -387,16 +460,17 @@ export async function runTui(
       tui.requestRender();
     };
     const panel = new Container();
-    panel.addChild(new Text(theme.accent(title), 1, 1));
     panel.addChild(filter);
+    panel.addChild(new Text('', 0, 0));
     panel.addChild({
       invalidate() {},
       render: (width) => list.render(width),
       handleInput: (data) => list.handleInput(data),
       handleMouse: (event) => list.handleMouse(event),
     });
-    const overlay = tui.showOverlay(panel, {
+    const overlay = tui.showOverlay(new WorkspaceFrame(title, panel), {
       width: "85%",
+      minWidth: 60,
       maxHeight: "80%",
       anchor: "center",
     });
@@ -429,6 +503,25 @@ export async function runTui(
       list.onCancel = () => settle();
     });
   }
+  async function show(title: string, text: string): Promise<void> {
+    if (selecting || closed) return;
+    selecting = true;
+    const panel = new WorkspaceDetails(text, () => Math.floor(terminal.rows * .8));
+    const overlay = tui.showOverlay(new WorkspaceFrame(title, panel), {width: '85%', minWidth: 60, maxHeight: '80%', anchor: 'center'});
+    tui.setFocus(panel);
+    await new Promise<void>(resolve => {
+      const settle = () => {unsubscribe(); overlay.hide(); selecting = false; cancelPicker = undefined; tui.setFocus(editor); resolve();};
+      cancelPicker = settle;
+      const unsubscribe = tui.addInputListener(data => {
+        if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c')) {settle(); return {consume: true};}
+        if (['up', 'down', 'pageUp', 'pageDown'].some(key => matchesKey(data, key as 'up'))) {
+          panel.handleInput(data); tui.requestRender(); return {consume: true};
+        }
+      });
+    });
+  }
+  const workspaceUi: WorkspaceUi = {client, pick, prompt, show,
+    openChat: chat => session.open(chat), notify: text => {notice = clean(text); refresh();}};
   async function prompt(
     title: string,
     secret = false,
@@ -451,10 +544,10 @@ export async function runTui(
           " ",
       ];
     const panel = new Container();
-    panel.addChild(new Text(theme.accent(clean(title)), 1, 1));
     panel.addChild(input);
-    const overlay = tui.showOverlay(panel, {
+    const overlay = tui.showOverlay(new WorkspaceFrame(title, panel), {
       width: "85%",
+      minWidth: 60,
       maxHeight: "70%",
       anchor: "center",
     });
@@ -627,6 +720,18 @@ export async function runTui(
         }
         return;
       }
+      case '/providers': {
+        if (!options.account) throw new Error('Provider settings require the local Host.');
+        for (;;) {
+          const providers = await options.account<Array<{providerId: string; type: string}>>({action: 'provider.list'});
+          const selected = await pick('Providers', [{value: '+', label: 'Sign in to a provider'}, ...providers.map(p => ({value: p.providerId, label: p.providerId, description: p.type === 'oauth' ? 'Subscription sign-in' : 'API credentials'}))]);
+          if (!selected) return;
+          if (selected === '+') {await authenticate(''); continue;}
+          const action = await pick(selected, [{value: 'login', label: 'Update sign-in'}, {value: 'logout', label: 'Remove saved sign-in'}]);
+          if (action === 'login') await authenticate(selected);
+          if (action === 'logout' && await confirm(workspaceUi, `Remove saved sign-in for ${selected}?`)) await command(`/logout ${selected}`);
+        }
+      }
       case "/account": {
         if (!options.account)
           throw new Error("Account status requires the local Host.");
@@ -650,9 +755,10 @@ export async function runTui(
         return;
       case "/settings": {
         const selected = await pick("Settings", [
+          {value: 'providers', label: 'Providers', description: 'Model provider sign-in'},
           {
             value: "model",
-            label: "Model",
+            label: "Models",
             description: session.configuration.model ?? "Choose model",
           },
           {
@@ -692,7 +798,7 @@ export async function runTui(
           },
         ]);
         if (!selected) return;
-        if (["model", "thinking", "scoped-models"].includes(selected)) {
+        if (["model", "thinking", "scoped-models", "providers"].includes(selected)) {
           await command(`/${selected}`);
           return;
         }
@@ -763,9 +869,13 @@ export async function runTui(
         );
         if (selected) {
           let offset = 0;
-          for (const row of rows) {
-            if (row.id === selected) break;
-            offset += mounted.get(row.id)?.render(terminal.columns).length ?? 0;
+          for (const run of groupTranscript(rows)) {
+            const view = mounted.get(run[0]!.id);
+            if (run.some((row) => row.id === selected)) {
+              if (view) view.expanded = true;
+              break;
+            }
+            offset += view?.render(terminal.columns).length ?? 0;
           }
           scroll.scrollTo(offset, { disableFollow: true });
         }
@@ -783,7 +893,7 @@ export async function runTui(
           "conversations.messages",
           [chat.id],
         );
-        const choices = messages.filter((message) => message.role === "user");
+        const choices = messages.filter((message) => message.role === "user" && !isTeamBotSetupCue(message.metadata));
         const id = await pick(
           "Fork from a prompt",
           choices.map((message) => ({
@@ -895,47 +1005,41 @@ export async function runTui(
         return;
       }
       case "/devices": {
-        if (!options.account)
-          throw new Error("Device status requires the local Host.");
-        const { connectedDevices } = await options.account<Status>({
-          action: "status",
-        });
-        if (!connectedDevices.length) {
-          notice = "No devices connected · /login polymux";
-          return;
-        }
-        await pick(
-          "Devices",
-          connectedDevices.map((device) => ({
-            value: device.deviceName,
-            label: device.deviceName,
-          })),
-        );
+        if (!options.devices) throw new Error('Device management requires the local Host.');
+        await browseDevices(workspaceUi, options.devices);
         return;
       }
+      case "/team":
       case "/bots": {
-        const bots =
-          await client.call<Array<{ conversationId: string; name: string }>>(
-            "team.list",
-          );
-        const id = await pick(
-          "Bots",
-          bots.map((bot) => ({ value: bot.conversationId, label: bot.name })),
-        );
-        if (id)
-          await session.open({
-            id,
-            title: bots.find((bot) => bot.conversationId === id)!.name,
-          });
+        await browseBots(workspaceUi);
+        return;
+      }
+      case '/hub': await browseHub(workspaceUi); return;
+      case '/vault': await browseVault(workspaceUi); return;
+      case '/schedules': await browseSchedules(workspaceUi); return;
+      case '/usage': await browseUsage(workspaceUi); return;
+      case '/tasks': await browseTasks(workspaceUi); return;
+      case '/apps': {
+        const app = await pick('Apps', [
+          {value: 'chats', label: 'Assistant'}, {value: 'bots', label: 'Team'},
+          {value: 'hub', label: 'Hub'}, {value: 'vault', label: 'Vault'},
+          {value: 'schedules', label: 'Schedules'}, {value: 'usage', label: 'Usage'},
+          {value: 'tasks', label: 'Tasks'},
+          {value: 'mcp', label: 'MCPs'}, {value: 'devices', label: 'Devices'},
+          {value: 'settings', label: 'Settings'},
+        ]);
+        if (app) await command(`/${app}`);
         return;
       }
       case "/exit":
       case "/quit":
         close();
         return;
-      case "/help":
-        notice = commands.map((command) => `/${command.name}`).join("  ");
+      case "/help": {
+        const selected = await pick('Commands', commands.map(c => ({value: c.name, label: `/${c.name}`, description: c.description})));
+        if (selected) await command(`/${selected}`);
         return;
+      }
       case "/thoughts":
         toggle("thought");
         return;
@@ -977,12 +1081,7 @@ export async function runTui(
       case "/steer":
         if (!value || session.transcript.status !== "running")
           throw new Error("Usage: /steer MESSAGE during a run");
-        await client.call("runs.steer", [session.transcript.runId, value]);
-        session.transcript.rows.push({
-          id: `steer:${Date.now()}`,
-          kind: "user",
-          text: value,
-        });
+        await session.steer(value);
         return;
       case "/model": {
         const models =
@@ -1138,6 +1237,18 @@ export async function runTui(
       void tui.copyActiveSelectionToClipboard().catch(report);
       return { consume: true };
     }
+    if (matchesKey(data, "super+enter") || matchesKey(data, "ctrl+enter")) {
+      const text = editor.getText().trim();
+      if (text) editor.setText("");
+      void session
+        .steer(text || undefined)
+        .catch((error) => {
+          if (text && !editor.getText()) editor.setText(text);
+          report(error);
+        })
+        .finally(refresh);
+      return { consume: true };
+    }
     if (key(data, "app.clear")) {
       if (!authController && tui.hasActiveSelection()) {
         void tui.copyActiveSelectionToClipboard().catch(report);
@@ -1266,7 +1377,7 @@ export async function runTui(
     setKeybindings(previousKeys);
   }
   if (session.conversation)
-    process.stdout.write(`Resume: polymux chat ${session.conversation.id}\n`);
+    process.stdout.write(`Resume: polymux ${options.hostId ? `tui --host ${options.hostId}` : "chat"} ${session.conversation.id}\n`);
   if (session.queue.length)
     process.stdout.write(
       `${session.queue.length} unsent follow-up(s):\n${session.queue.map(clean).join("\n")}\n`,

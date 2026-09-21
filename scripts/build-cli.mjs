@@ -23,3 +23,10 @@ await build({
 });
 
 await copyFile("node_modules/grok-mermaid/LICENSE", "apps/cli/dist/LICENSE.grok-mermaid.txt");
+
+await build({
+  entryPoints: ['apps/desktop/src/main/usage/usage-worker.ts'],
+  bundle: true, platform: 'node', format: 'esm', target: 'node22',
+  outfile: 'apps/cli/dist/usage-worker.js',
+  banner: {js: "import {createRequire as __polymuxUsageRequire} from 'node:module'; const require = __polymuxUsageRequire(import.meta.url);"},
+});

@@ -47,7 +47,22 @@ extensions, read personal pi settings, or patch installed packages.
   placed in the editor for revision. Tree navigates this conversation’s transcript.
   Export writes a new Markdown file; existing files are never overwritten.
 - `/settings`, `/scoped-models`, `/hotkeys`, and `/reload` configure the interface.
-- `/bots`, `/devices`, `/account`, and `/mcp` expose Polymux features.
+- `/apps` opens the app picker. `/help` is searchable and opens the selected command.
+- `/bots` (`/team`) browses bots, conversations, summaries, schedules, model and
+  agent settings, computer start/stop, per-device policies, temporary grants,
+  import/export, and deletion. Every setting targets the selected bot.
+- `/tasks` shows work across conversations, preserving runtime outcomes, queued
+  jobs, parent relationships, result previews, and cancellation.
+- `/schedules` manages Assistant and bot schedules through the same scheduler
+  used by Desktop: recurring times, cron, pause/resume, run now, and history.
+- `/hub` reads paginated conversations, opens messages, explicitly marks them
+  read, and reviews drafts before sending. `/vault` manages passwords, codes,
+  editing, pins, trash, locking, and synchronization status.
+- `/usage` keeps All detectable agents, Polymux, Assistant, and Team separate.
+  Global discovery runs in a packaged background worker and reports its state.
+- `/providers` manages model sign-in and is also available in Settings.
+- `/devices` connects and revokes devices, shows invitations, and presents
+  approval challenges. `/account` and `/mcp` show local Host status.
 - `/model` and `/thinking` (`/reasoning` also works) open searchable pickers. Model choices persist in
   the Host profile, with a separate choice for each conversation. Reasoning is
   remembered per model. An explicit Host model takes precedence.
@@ -77,6 +92,26 @@ keep their source visible.
 
 Noninteractive `polymux` still prints help. `polymux run`, piped `polymux chat`,
 and JSON-oriented commands retain their existing output.
+
+## Paired Desktop
+
+`polymux tui --host "DEVICE NAME"` connects to an already paired Host and opens
+its real conversations, bots, Tasks, Schedules, Hub, Vault, and Usage. A Host id
+can be used instead of its name. Pair the devices first through `/devices`.
+The header and resume command identify the selected Host. The CLI never falls
+back to a different Host when the requested device is unavailable.
+
+A local Host and Desktop have separate databases. Connecting to Desktop is
+required to manage bots stored there. Local shell commands still execute on the
+terminal's computer. Account, provider sign-in, and device administration remain
+local Host operations; paired RPC does not expose the local administration API.
+
+The TUI uses Midas's compact searchable lists, right-aligned statuses, rounded
+panels, and scrollable details. It does not yet cover every Desktop app or action.
+See [the parity inventory](../../docs/reviews/tui-parity-2026-09-16.md) for the
+remaining functionality and the verification boundary. The headless Host runs
+Polymux agents; ACP runtime configuration is available when connected to Desktop.
+Unsupported ACP execution fails explicitly on a headless Host.
 
 ## Configuration
 

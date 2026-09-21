@@ -147,11 +147,11 @@ if (baseArgument) {
   const packageInputs = [
     "apps/extension/background.js",
     "apps/extension/agent",
-    "apps/extension/locker",
+    "apps/extension/vault",
     "apps/extension/icons",
     "apps/extension/manifest.json",
     "packages/browser/src",
-    "packages/locker/src",
+    "packages/vault/src",
     "scripts/release/package-chrome-extension.sh",
   ];
   const changed = execFileSync(

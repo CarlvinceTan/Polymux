@@ -130,10 +130,16 @@ int main(int argc, char **argv) {
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
 
+  /* Resolved before the fork so the shell can drop it: the control pipe belongs
+     to this host alone. A shell that inherits it keeps the parent's writer open,
+     so the parent never sees the host go away and waiting on its exit hangs. */
+  int control_fd = fcntl(3, F_GETFD) >= 0 ? 3 : -1;
+
   pid_t pid = fork();
   if (pid < 0) die_errno("fork");
   if (pid == 0) {
     close(master_fd);
+    if (control_fd >= 0) close(control_fd);
     if (setsid() < 0) die_errno("setsid");
 #ifdef TIOCSCTTY
     if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) die_errno("TIOCSCTTY");
@@ -149,7 +155,6 @@ int main(int argc, char **argv) {
 
   child_pid = pid;
   close(slave_fd);
-  int control_fd = fcntl(3, F_GETFD) >= 0 ? 3 : -1;
 
   struct pollfd fds[3];
   int running = 1;

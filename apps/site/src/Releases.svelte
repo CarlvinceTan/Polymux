@@ -3,7 +3,6 @@
   import github from 'simple-icons/icons/github.svg?url';
   import logo from '../../desktop/src/renderer/public/polymux.svg';
   import {
-    ALL_PLATFORMS,
     filterReleaseChangelog,
     formatReleaseDate,
     formatReleaseMonth,
@@ -32,7 +31,6 @@
   const githubReleaseUrl = release
     ? `https://github.com/CarlvinceTan/Polymux/releases/tag/v${encodeURIComponent(release.version)}`
     : 'https://github.com/CarlvinceTan/Polymux/releases/latest';
-  const isLatest = release ? release.version === releases[0]?.version : false;
   const installLabels: Record<SupportedPlatform, string> = {
     macos: 'Apple silicon',
     windows: 'Intel / AMD',
@@ -40,41 +38,38 @@
   };
 
   type ReleaseItem = {html: string};
-  type ReleaseGroup = {category: string; sections: {area: string; items: ReleaseItem[]}[]};
-  type ReleasePlatformTab = {value: string; label: string; tabId: string; panelId: string; groups: ReleaseGroup[]};
+  type ReleaseGroup = {category: string; items: ReleaseItem[]};
+  type ReleaseFeatureTab = {value: string; label: string; tabId: string; panelId: string; groups: ReleaseGroup[]};
 
   function panelKey(value: string): string {
     return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'all';
   }
 
-  /** Render every platform (plus All) once, so the first paint already contains the tabs. */
-  function buildPlatformTabs(): ReleasePlatformTab[] {
+  /** Render every feature once, so the first paint already contains the tabs. */
+  function buildFeatureTabs(): ReleaseFeatureTab[] {
     if (!release) return [];
     const sections = releaseChangelog(release);
     const versionKey = panelKey(release.version);
 
-    return [ALL_PLATFORMS, ...releasePlatforms(release)].map((value) => {
+    return releasePlatforms(release).map((value) => {
       const key = `${versionKey}-${panelKey(value)}`;
       return {
         value,
-        label: value === ALL_PLATFORMS ? 'All' : value,
+        label: value,
         tabId: `release-platform-tab-${key}`,
         panelId: `release-platform-panel-${key}`,
         groups: groupReleaseChangelog(filterReleaseChangelog(sections, value)).map((group) => ({
-          category: group.category,
-          sections: group.sections.map((section) => ({
-            area: section.area,
-            items: section.items.map((item) => ({html: renderSafeMarkdownInline(item)})),
-          })),
-        })),
+          category: group.category === 'Features' ? 'New Features' : group.category,
+          items: group.sections.flatMap((section) => section.items.map((item) => ({html: renderSafeMarkdownInline(item)}))),
+        })).filter((group) => group.items.length),
       };
     });
   }
 
-  const platformTabs = buildPlatformTabs();
-  let selectedPlatform = $state<string>(ALL_PLATFORMS);
+  const featureTabs = buildFeatureTabs();
+  let selectedFeature = $state<string>(featureTabs[0]?.value ?? '');
 
-  function selectPlatformWithKeyboard(event: KeyboardEvent) {
+  function selectFeatureWithKeyboard(event: KeyboardEvent) {
     const keys = ['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp', 'Home', 'End'];
     if (!keys.includes(event.key)) return;
     const button = event.currentTarget as HTMLButtonElement | null;
@@ -92,9 +87,9 @@
     else next = 0;
 
     const target = buttons[next];
-    const tab = platformTabs[next];
+    const tab = featureTabs[next];
     if (!target || !tab) return;
-    selectedPlatform = tab.value;
+    selectedFeature = tab.value;
     target.focus();
   }
 
@@ -146,7 +141,7 @@
       <a class="site-shell-github" href="https://github.com/CarlvinceTan/Polymux" aria-label="Polymux on GitHub">
         <img src={github} alt="" />
       </a>
-      <a class="site-shell-download" href="/#download">Download</a>
+      <a class="site-shell-download" href="/#download"><DownloadIcon />Download</a>
     </div>
     <MobileMenu active="releases" />
   </div>
@@ -163,7 +158,7 @@
       <p>Versions</p>
       <nav aria-label="Release versions">
         {#each releases as item (item.version)}
-          <a class:active={release?.version === item.version} href={releasePath(item.version)}>{item.version}</a>
+          <a class:active={release?.version === item.version} aria-current={release?.version === item.version ? 'page' : undefined} href={releasePath(item.version)}>{item.version}</a>
         {/each}
       </nav>
     </aside>
@@ -177,74 +172,42 @@
             <time datetime={release.date}>{formatReleaseDate(release.date)}</time>
           </header>
 
-          {#if release.downloadable}
-            <section class="release-downloads" aria-label={`Download Polymux ${release.version}`}>
-              <ul class="platform-download-grid">
-                {#each SUPPORTED_PLATFORMS as item (item)}
-                  <li class="platform-download-card">
-                    <div class="platform-download-heading">
-                      <PlatformIcon platform={item} size={19} />
-                      <strong>{PLATFORM_LABELS[item]}</strong>
-                    </div>
-                    <a class="platform-download-option" href={urlFor(item)} aria-label={`Download Polymux ${release.version} for ${PLATFORM_LABELS[item]}`}>
-                      <span>{installLabels[item]}</span>
-                      <span class="platform-download-action">
-                        <DownloadIcon />
-                        {sizeFor(item) || 'Download'}
-                      </span>
-                    </a>
-                  </li>
-                {/each}
-              </ul>
-
-              <p class="download-note">
-                <a href={downloads?.releaseUrl ?? githubReleaseUrl}>
-                  {isLatest ? 'All assets and checksums on GitHub' : `All ${release.version} assets on GitHub`}
-                </a>
-              </p>
-            </section>
-          {/if}
-
           <div class="release-copy">
             <p class="release-summary">{release.summary}</p>
-            <h2 class="release-title">{release.title}</h2>
 
-            {#if platformTabs.length > 1}
-              <div class="release-platforms" role="tablist" aria-label="Filter release notes by platform">
-                {#each platformTabs as tab (tab.value)}
+            {#if featureTabs.length}
+              <div class="release-platforms" role="tablist" aria-label="Filter release notes by feature">
+                {#each featureTabs as tab (tab.value)}
                   <button
                     type="button"
                     role="tab"
                     id={tab.tabId}
                     aria-controls={tab.panelId}
-                    aria-selected={selectedPlatform === tab.value}
-                    tabindex={selectedPlatform === tab.value ? 0 : -1}
-                    class:active={selectedPlatform === tab.value}
-                    onclick={() => (selectedPlatform = tab.value)}
-                    onkeydown={selectPlatformWithKeyboard}
+                    aria-selected={selectedFeature === tab.value}
+                    tabindex={selectedFeature === tab.value ? 0 : -1}
+                    class:active={selectedFeature === tab.value}
+                    onclick={() => (selectedFeature = tab.value)}
+                    onkeydown={selectFeatureWithKeyboard}
                   >{tab.label}</button>
                 {/each}
               </div>
 
-              {#each platformTabs as tab (tab.value)}
+              {#each featureTabs as tab (tab.value)}
                 <div
                   class="release-body release-platform-panel"
                   id={tab.panelId}
                   role="tabpanel"
                   aria-labelledby={tab.tabId}
                   tabindex="0"
-                  hidden={selectedPlatform !== tab.value}
+                  hidden={selectedFeature !== tab.value}
                 >
                   {#each tab.groups as group (group.category)}
                     <h2>{group.category}</h2>
-                    {#each group.sections as section (section.area)}
-                      <h3>{section.area}</h3>
-                      <ul>
-                        {#each section.items as item (item.html)}
-                          <li>{@html item.html}</li>
-                        {/each}
-                      </ul>
-                    {/each}
+                    <ul>
+                      {#each group.items as item (item.html)}
+                        <li>{@html item.html}</li>
+                      {/each}
+                    </ul>
                   {/each}
                 </div>
               {/each}
@@ -254,6 +217,25 @@
           </div>
         </article>
       </section>
+      {#if release.downloadable}
+        <aside class="installations-sidebar" aria-label={`Installations for Polymux ${release.version}`}>
+          <p>Installations</p>
+          <nav aria-label={`Download Polymux ${release.version}`}>
+            {#each SUPPORTED_PLATFORMS as item (item)}
+              <a href={urlFor(item)} aria-label={`Download Polymux ${release.version} for ${PLATFORM_LABELS[item]}`}>
+                <PlatformIcon platform={item} size={16} />
+                <span>
+                  <strong>{PLATFORM_LABELS[item]}</strong>
+                  <small>{installLabels[item]}{sizeFor(item) ? ` · ${sizeFor(item)}` : ''}</small>
+                </span>
+                <span class="installation-action">
+                  <DownloadIcon />
+                </span>
+              </a>
+            {/each}
+          </nav>
+        </aside>
+      {/if}
     {:else}
       <section class="release-not-found">
         <p>Release not found</p>

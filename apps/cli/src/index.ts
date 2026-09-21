@@ -21,6 +21,7 @@ import {
   parseTeamHostSetupCode,
   type BotDto,
   type ConversationDto,
+  type DeviceAccessMode,
   type GoalDto,
   type JsonValue,
   type LaptopCapabilityLeaseDto,
@@ -31,8 +32,11 @@ import {
 import {terminalQr} from "./terminal-qr.js";
 import {promptSecret, secretFromStdin} from "./secrets.js";
 import {runTui} from './tui/index.js';
+import {tuiHost} from './tui/host-target.js';
 import {ensureTuiHost, localHostReady} from "./tui/host-startup.js";
 import {hostPaths} from './paths.js';
+import {parseDeviceInvitation} from './device-invitation.js';
+export {parseDeviceInvitation} from './device-invitation.js';
 import {authCommand} from './auth.js';
 
 // Include lazy OAuth flows in the standalone Node bundle as well.
@@ -41,7 +45,7 @@ registerBunOAuthFlows();
 declare const __POLYMUX_CLI_SUPABASE_URL__: string;
 declare const __POLYMUX_CLI_SUPABASE_ANON_KEY__: string;
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 const args = process.argv.slice(2);
 
 
@@ -90,8 +94,8 @@ async function main(argv: string[]): Promise<void> {
     await hubCommand(subcommand ?? "chats", rest);
     return;
   }
-  if (command === "locker") {
-    await lockerCommand(subcommand ?? "status", rest);
+  if (command === "vault") {
+    await vaultCommand(subcommand ?? "status", rest);
     return;
   }
   if (command === "call") {
@@ -109,7 +113,8 @@ async function main(argv: string[]): Promise<void> {
   }
   if (command === 'tui') {
     if (!stdin.isTTY || !stdout.isTTY) throw new Error('The TUI needs an interactive terminal. Use polymux run for scripts.');
-    await interactiveChat(subcommand);
+    const flags = parseFlags([subcommand, ...rest].filter((v): v is string => Boolean(v)));
+    await interactiveChat(flags.positional[0], flagString(flags, 'host'));
     return;
   }
   throw new Error(`Unknown command “${[command, subcommand].filter(Boolean).join(" ")}”. Run polymux help.`);
@@ -312,13 +317,6 @@ function devicesStateText(state: import('@polymux/protocol').DevicePairingState)
   return lines.join("\n");
 }
 
-export function parseDeviceInvitation(encoded: string): {endpoint: string; invitation: string} {
-  if (!/^[A-Za-z0-9_-]{1,4096}$/.test(encoded)) throw new Error('Invalid installation invitation.');
-  const value = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
-  const endpoint = new URL(value.endpoint);
-  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !/^[A-Za-z0-9_-]{43}$/.test(value.invitation)) throw new Error('Invalid installation invitation.');
-  return {endpoint: endpoint.toString().replace(/\/$/, ''), invitation: value.invitation};
-}
 
 async function connectCommand(argv: string[]): Promise<void> {
   const flags = parseFlags(argv);
@@ -376,6 +374,8 @@ async function connectWithCode(code: string, endpoint: string | null): Promise<v
 async function teamCommand(subcommand: string, rest: string[]): Promise<void> {
   const client = await adminClient();
   const flags = parseFlags(rest);
+  if ((subcommand === "create" || subcommand === "update") && flags.laptop !== undefined)
+    throw new Error('Use --access allow|ask|off or --device-access HOST_ID=allow|ask|off instead of --laptop.');
   switch (subcommand) {
     case "list": {
       const members = await client.call<BotDto[]>("team.list");
@@ -405,28 +405,32 @@ async function teamCommand(subcommand: string, rest: string[]): Promise<void> {
       const role = flagString(flags, "role");
       const profileId = flagString(flags, "profile");
       if (!name || !role || !profileId)
-        throw new Error("Usage: polymux team create NAME --role ROLE --profile PROFILE [--avatar-shape SHAPE] [--avatar-color #RRGGBB] [--laptop ask|off]");
+        throw new Error("Usage: polymux team create NAME --role ROLE --profile PROFILE [--avatar-shape SHAPE] [--avatar-color #RRGGBB] [--access allow|ask|off] [--device-access HOST_ID=MODE,...]");
       const member = await client.call<BotDto>("team.create", [{
         name, role, profileId,
         avatar: parseAvatarOption(flagString(flags, "avatar-shape"), flagString(flags, "avatar-color")),
-        laptopAccess: parseLaptopAccess(flagString(flags, "laptop")),
+        laptopAccess: parseDeviceAccessMode(flags.access),
+        deviceAccess: parseDeviceAccessOverrides(flags["device-access"]),
       }]);
       stdout.write(`Created ${member.name} (${member.id}).\n`);
       return;
     }
     case "update": {
       const [id] = flags.positional;
-      if (!id) throw new Error("Usage: polymux team update ID [--name NAME] [--role ROLE] [--profile PROFILE] [--laptop ask|off]");
+      if (!id) throw new Error("Usage: polymux team update ID [--name NAME] [--role ROLE] [--profile PROFILE] [--access allow|ask|off] [--device-access HOST_ID=MODE,...]");
       const member = await resolveMember(client, id);
       const patch: Record<string, unknown> = {};
       const name = flagString(flags, "name");
       const role = flagString(flags, "role");
       const profileId = flagString(flags, "profile");
-      const laptop = flagString(flags, "laptop");
+      const access = flags.access;
+      const deviceAccess = flags["device-access"];
       if (name !== undefined) patch.name = name;
       if (role !== undefined) patch.role = role;
       if (profileId !== undefined) patch.profileId = profileId;
-      if (laptop !== undefined) patch.laptopAccess = parseLaptopAccess(laptop);
+      if (access !== undefined) patch.laptopAccess = parseDeviceAccessMode(access);
+      if (deviceAccess !== undefined)
+        patch.deviceAccess = {...member.deviceAccess, ...parseDeviceAccessOverrides(deviceAccess)};
       const shape = flagString(flags, "avatar-shape");
       const color = flagString(flags, "avatar-color");
       if (shape !== undefined || color !== undefined) {
@@ -435,7 +439,7 @@ async function teamCommand(subcommand: string, rest: string[]): Promise<void> {
           color ?? member.avatar.color,
         );
       }
-      if (!Object.keys(patch).length) throw new Error("Nothing to update. Pass --name, --role, --profile, --laptop, or avatar flags.");
+      if (!Object.keys(patch).length) throw new Error("Nothing to update. Pass --name, --role, --profile, --access, --device-access, or avatar flags.");
       const updated = await client.call<BotDto>("team.update", [member.id, patch as JsonValue]);
       stdout.write(`Updated ${updated.name}.\n`);
       return;
@@ -501,24 +505,25 @@ async function teamCommand(subcommand: string, rest: string[]): Promise<void> {
         return;
       }
       if (!leases.length) {
-        stdout.write("No active laptop leases.\n");
+        stdout.write("No active device leases.\n");
         return;
       }
       for (const lease of leases)
-        stdout.write(`${lease.id}\t${lease.memberId}\t${lease.capabilities.join(",")}\texpires ${lease.expiresAt}\n`);
+        stdout.write(`${lease.id}\t${lease.memberId}\t${lease.hostId}\t${lease.capabilities.join(",")}\texpires ${lease.expiresAt}\n`);
       return;
     }
     case "grant-lease": {
       const [member, ...capabilities] = flags.positional;
       if (!member || !capabilities.length)
-        throw new Error("Usage: polymux team grant-lease MEMBER browser|computer|files [--minutes N]");
+        throw new Error("Usage: polymux team grant-lease MEMBER browser|computer|files [--minutes N] [--device HOST_ID]");
       const minutes = flagString(flags, "minutes");
       const lease = await client.call<LaptopCapabilityLeaseDto>("team.grantLease", [
         (await resolveMember(client, member)).id,
         capabilities,
         minutes === undefined ? undefined : Number(minutes),
+        flagString(flags, "device"),
       ]);
-      stdout.write(`Granted lease ${lease.id} until ${lease.expiresAt}.\n`);
+      stdout.write(`Granted lease ${lease.id} on ${lease.hostId} until ${lease.expiresAt}.\n`);
       return;
     }
     case "revoke-lease": {
@@ -562,13 +567,15 @@ async function runOnce(target: string | undefined, argv: string[]): Promise<void
   await waitForRun(client, conversationId, started.runId);
 }
 
-async function interactiveChat(target?: string): Promise<void> {
+async function interactiveChat(target?: string, host?: string): Promise<void> {
   const root = hostPaths().root;
   await ensureTuiHost({entry: fileURLToPath(import.meta.url), root, ready: () => localHostReady(root)});
-  const client = await adminClient();
-  if (!target) { await runTui(client, undefined, undefined, {account: accountRequest}); return; }
+  const selected = await tuiHost(await adminClient(), root, host);
+  const client = selected.client;
+  const options = selected.hostId ? {hostName: selected.name, hostId: selected.hostId} : {account: accountRequest, devices: deviceRequest};
+  if (!target) {await runTui(client, undefined, undefined, options); return;}
   const id = await resolveConversation(client, target);
-  await runTui(client, {id, title: await conversationLabel(client, target, id)}, undefined, {account: accountRequest});
+  await runTui(client, {id, title: await conversationLabel(client, target, id)}, undefined, options);
 }
 
 async function chat(target: string | undefined): Promise<void> {
@@ -880,20 +887,20 @@ function mimeTypeFor(file: string): string {
   }
 }
 
-async function lockerCommand(subcommand: string, rest: string[]): Promise<void> {
+async function vaultCommand(subcommand: string, rest: string[]): Promise<void> {
   const client = await adminClient();
   const flags = parseFlags(rest);
   switch (subcommand) {
     case "status": {
-      const status = await client.call<unknown>("locker.status");
+      const status = await client.call<unknown>("vault.status");
       stdout.write(`${JSON.stringify(status, null, 2)}\n`);
       return;
     }
     case "create":
     case "unlock": {
-      const password = await secretOption(flags, "password", "POLYMUX_LOCKER_PASSWORD", "Locker password");
+      const password = await secretOption(flags, "password", "POLYMUX_VAULT_PASSWORD", "Vault password");
       const status = await client.call<unknown>(
-        subcommand === "create" ? "locker.create" : "locker.unlock", [password],
+        subcommand === "create" ? "vault.create" : "vault.unlock", [password],
       );
       stdout.write(`${JSON.stringify(status, null, 2)}\n`);
       return;
@@ -904,7 +911,7 @@ async function lockerCommand(subcommand: string, rest: string[]): Promise<void> 
     case "empty-trash":
     case "sync":
     case "export": {
-      const method = subcommand === "empty-trash" ? "locker.emptyTrash" : `locker.${subcommand}`;
+      const method = subcommand === "empty-trash" ? "vault.emptyTrash" : `vault.${subcommand}`;
       const result = await client.call<unknown>(method);
       stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return;
@@ -913,16 +920,16 @@ async function lockerCommand(subcommand: string, rest: string[]): Promise<void> 
     case "totp":
     case "otpauth": {
       const [id] = flags.positional;
-      if (!id) throw new Error(`Usage: polymux locker ${subcommand} ID`);
-      const result = await client.call<unknown>(`locker.${subcommand}`, [id]);
+      if (!id) throw new Error(`Usage: polymux vault ${subcommand} ID`);
+      const result = await client.call<unknown>(`vault.${subcommand}`, [id]);
       stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return;
     }
     case "copy": {
       const [id, field, index] = flags.positional;
-      if (!id || !field) throw new Error("Usage: polymux locker copy ID password|username|url|totp|notes|recovery [INDEX]");
+      if (!id || !field) throw new Error("Usage: polymux vault copy ID password|username|url|totp|notes|recovery [INDEX]");
       const result = await client.call<string>(
-        "locker.copy", index === undefined ? [id, field] : [id, field, Number(index)],
+        "vault.copy", index === undefined ? [id, field] : [id, field, Number(index)],
       );
       stdout.write(`${result}\n`);
       return;
@@ -932,77 +939,77 @@ async function lockerCommand(subcommand: string, rest: string[]): Promise<void> 
       const [positionalId] = flags.positional;
       const flagId = flagString(flags, "id");
       if (flagId !== undefined && positionalId !== undefined && flagId !== positionalId)
-        throw new Error("Pass only one Locker item ID.");
+        throw new Error("Pass only one Vault item ID.");
       const id = flagId ?? positionalId;
       if (id !== undefined) item.id = id;
       const title = flagString(flags, "title");
-      if (title === undefined) throw new Error("Usage: polymux locker save [--id ID] --title TITLE [--username U] [--password-value-stdin|--password-value-prompt] [--url URL] [--notes N] [--totp SECRET] [--group GROUP]");
+      if (title === undefined) throw new Error("Usage: polymux vault save [--id ID] --title TITLE [--username U] [--password-value-stdin|--password-value-prompt] [--url URL] [--notes N] [--totp SECRET] [--group GROUP]");
       item.title = title;
       for (const key of ["username", "url", "notes", "group"] as const) {
         const value = flagString(flags, key);
         if (value !== undefined) item[key === "group" ? "groupName" : key] = value;
       }
-      const secret = await secretOption(flags, "password-value", "POLYMUX_LOCKER_ITEM_PASSWORD", "Item password", false);
+      const secret = await secretOption(flags, "password-value", "POLYMUX_VAULT_ITEM_PASSWORD", "Item password", false);
       if (secret !== undefined) item.password = secret;
       const totp = flagString(flags, "totp");
       if (totp !== undefined) item.totpSecret = totp;
-      const saved = await client.call<unknown>("locker.save", [item as JsonValue]);
+      const saved = await client.call<unknown>("vault.save", [item as JsonValue]);
       stdout.write(`${JSON.stringify(saved, null, 2)}\n`);
       return;
     }
     case "remove": {
       const [id] = flags.positional;
-      if (!id) throw new Error("Usage: polymux locker remove ID");
-      const result = await client.call<unknown>("locker.remove", [id]);
+      if (!id) throw new Error("Usage: polymux vault remove ID");
+      const result = await client.call<unknown>("vault.remove", [id]);
       stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return;
     }
     case "restore":
     case "purge": {
-      if (!flags.positional.length) throw new Error(`Usage: polymux locker ${subcommand} ID...`);
-      const result = await client.call<unknown>(`locker.${subcommand}`, [flags.positional]);
+      if (!flags.positional.length) throw new Error(`Usage: polymux vault ${subcommand} ID...`);
+      const result = await client.call<unknown>(`vault.${subcommand}`, [flags.positional]);
       stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return;
     }
     case "pin": {
-      if (!flags.positional.length) throw new Error("Usage: polymux locker pin ID... [--unpin]");
-      const result = await client.call<unknown>("locker.pin", [flags.positional, flags.unpin ? false : true]);
+      if (!flags.positional.length) throw new Error("Usage: polymux vault pin ID... [--unpin]");
+      const result = await client.call<unknown>("vault.pin", [flags.positional, flags.unpin ? false : true]);
       stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return;
     }
     case "reorder": {
-      if (!flags.positional.length) throw new Error("Usage: polymux locker reorder ID... (in the new order)");
-      const result = await client.call<unknown>("locker.reorder", [flags.positional]);
+      if (!flags.positional.length) throw new Error("Usage: polymux vault reorder ID... (in the new order)");
+      const result = await client.call<unknown>("vault.reorder", [flags.positional]);
       stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return;
     }
     case "change-password": {
       if (flags["current-stdin"] && flags["new-stdin"])
         throw new Error("Only one password can be read from stdin per command.");
-      const current = await secretOption(flags, "current", "POLYMUX_LOCKER_PASSWORD", "Current Locker password");
-      const next = await secretOption(flags, "new", "POLYMUX_LOCKER_NEW_PASSWORD", "New Locker password");
-      const status = await client.call<unknown>("locker.changePassword", [current, next]);
+      const current = await secretOption(flags, "current", "POLYMUX_VAULT_PASSWORD", "Current Vault password");
+      const next = await secretOption(flags, "new", "POLYMUX_VAULT_NEW_PASSWORD", "New Vault password");
+      const status = await client.call<unknown>("vault.changePassword", [current, next]);
       stdout.write(`${JSON.stringify(status, null, 2)}\n`);
       return;
     }
     case "set-storage": {
       const [mode, resolve] = flags.positional;
-      if (!mode) throw new Error("Usage: polymux locker set-storage local|account [keep-local|keep-cloud]");
+      if (!mode) throw new Error("Usage: polymux vault set-storage local|account [keep-local|keep-cloud]");
       const status = await client.call<unknown>(
-        "locker.setStorage", resolve === undefined ? [mode] : [mode, resolve],
+        "vault.setStorage", resolve === undefined ? [mode] : [mode, resolve],
       );
       stdout.write(`${JSON.stringify(status, null, 2)}\n`);
       return;
     }
     case "import": {
       const [file] = flags.positional;
-      if (!file) throw new Error("Usage: polymux locker import FILE (a locker export JSON file)");
+      if (!file) throw new Error("Usage: polymux vault import FILE (a vault export JSON file)");
       const blob = JSON.parse(await readFile(file, "utf8"));
-      const status = await client.call<unknown>("locker.import", [blob]);
+      const status = await client.call<unknown>("vault.import", [blob]);
       stdout.write(`${JSON.stringify(status, null, 2)}\n`);
       return;
     }
-    default: throw new Error(`Unknown locker command “${subcommand}”. Run polymux help.`);
+    default: throw new Error(`Unknown vault command “${subcommand}”. Run polymux help.`);
   }
 }
 
@@ -1211,10 +1218,26 @@ export function parseAvatarOption(
   return {shape: resolvedShape, color: resolvedColor};
 }
 
-export function parseLaptopAccess(value: string | undefined): "off" | "ask" {
-  if (value === undefined || value === "off") return "off";
-  if (value === "ask") return "ask";
-  throw new Error('Laptop access must be "off" or "ask".');
+export function parseDeviceAccessMode(value: unknown): DeviceAccessMode {
+  if (value === undefined) return "allow";
+  if (value === "allow" || value === "ask" || value === "off") return value;
+  throw new Error('Device access must be "allow", "ask", or "off".');
+}
+
+export function parseDeviceAccessOverrides(value: unknown): Record<string, DeviceAccessMode> {
+  if (value === undefined) return {};
+  const values = Array.isArray(value) ? value : [value];
+  if (!values.every((entry): entry is string => typeof entry === "string"))
+    throw new Error('Use --device-access HOST_ID=allow|ask|off, separating devices with commas.');
+  const entries = values.flatMap((entry) => entry.split(",")).map((entry): [string, DeviceAccessMode] => {
+    const match = /^([^\s,=]+)=(allow|ask|off)$/.exec(entry.trim());
+    if (!match || ["__proto__", "constructor", "prototype"].includes(match[1]))
+      throw new Error('Use --device-access HOST_ID=allow|ask|off, separating devices with commas.');
+    return [match[1], parseDeviceAccessMode(match[2])];
+  });
+  if (new Set(entries.map(([hostId]) => hostId)).size !== entries.length)
+    throw new Error('Each device can appear only once in --device-access.');
+  return Object.fromEntries(entries);
 }
 
 export function parseConnectTarget(value: string): {kind: "setup-code"} | {kind: "invitation"} | {kind: "unknown"} {
@@ -1508,22 +1531,28 @@ Usage:
   polymux runs active [--all]|cancel|steer|events
   polymux hub chats|messages|mark-read|send|send-files
   polymux hub email-accounts|email-save|email-remove|email-test
-  polymux locker status|create|unlock|lock|list|reveal|totp|otpauth|copy|save
-  polymux locker remove|restore|purge|empty-trash|pin|reorder|change-password|codes|sync|set-storage|export|import
+  polymux vault status|create|unlock|lock|list|reveal|totp|otpauth|copy|save
+  polymux vault remove|restore|purge|empty-trash|pin|reorder|change-password|codes|sync|set-storage|export|import
   polymux run TARGET PROMPT... [--reasoning EFFORT] [--as-goal]
-  polymux [tui [TARGET]]          Fullscreen conversation interface
+  polymux [tui [TARGET]]          Fullscreen workspace (--host ID or NAME for a paired Desktop)
   polymux chat TARGET             Open a conversation (plain input when piped)
   polymux call METHOD [JSON_ARGS]
 
 Hub chats need a linked account and OAuth mail sign-in needs Polymux Desktop;
-password mailboxes and the full Locker work headless.
+password mailboxes and the full Vault work headless.
+
+Team device access:
+  team create/update: --access allow|ask|off (new bots default to allow)
+  --device-access HOST_ID=allow|ask|off overrides one configured device.
+  Repeat --device-access or separate devices with commas. Other devices keep their settings.
+  Find device IDs with polymux devices list or polymux host status --json.
 
 Passwords:
-  locker create/unlock: hidden prompt, --password-stdin, or POLYMUX_LOCKER_PASSWORD
-  locker save: --password-value-stdin / --password-value-prompt, or POLYMUX_LOCKER_ITEM_PASSWORD
+  vault create/unlock: hidden prompt, --password-stdin, or POLYMUX_VAULT_PASSWORD
+  vault save: --password-value-stdin / --password-value-prompt, or POLYMUX_VAULT_ITEM_PASSWORD
   hub email-save: --password-value-stdin / --password-value-prompt, or POLYMUX_EMAIL_PASSWORD
-  locker change-password: hidden prompts; --current-stdin / --new-stdin for one value,
-    or POLYMUX_LOCKER_PASSWORD and POLYMUX_LOCKER_NEW_PASSWORD
+  vault change-password: hidden prompts; --current-stdin / --new-stdin for one value,
+    or POLYMUX_VAULT_PASSWORD and POLYMUX_VAULT_NEW_PASSWORD
 Stdin reads until EOF and removes one final line ending, preserving other whitespace.
 Existing password value flags remain supported, but put secrets in process arguments.
 `);

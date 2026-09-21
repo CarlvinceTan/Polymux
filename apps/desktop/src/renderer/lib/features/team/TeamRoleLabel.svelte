@@ -9,9 +9,11 @@
   }
 </script>
 
-<span class="team-role-label-clip" {@attach fadeLabel}>
-  <span class="team-role-label" class:raised>{role}</span>
-</span>
+{#if role.trim()}
+  <span class="team-role-label-clip" {@attach fadeLabel}>
+    <span class="team-role-label" class:raised>{role}</span>
+  </span>
+{/if}
 
 <style>
   .team-role-label-clip{min-width:0;max-width:45%;display:flex;flex:0 1 auto;overflow:hidden}

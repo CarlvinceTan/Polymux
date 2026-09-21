@@ -10,8 +10,8 @@ here="${0:A:h}"
 source="${here:h}"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/polymux-safari-ios.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
-rsync -aL --exclude safari --exclude native-host --exclude install.sh --exclude README.md --exclude STORE_LISTING.md --exclude store-assets --exclude scripts --exclude locker/config.local.js "$source/" "$stage/"
-node "$source/scripts/build-locker.mjs" --output-dir "$stage"
+rsync -aL --exclude safari --exclude native-host --exclude install.sh --exclude README.md --exclude STORE_LISTING.md --exclude store-assets --exclude scripts --exclude vault/config.local.js "$source/" "$stage/"
+node "$source/scripts/build-vault.mjs" --output-dir "$stage"
 xcrun safari-web-extension-converter "$stage" \
   --project-location "$here/ios" \
   --app-name Polymux \

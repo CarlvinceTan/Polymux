@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ModelMetadataDto } from "@polymux/protocol";
@@ -19,7 +20,7 @@ const MODELS_URL = "https://models.dev/models.json";
 const TTL_MS = 24 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 20_000;
 
-interface CatalogModel {
+export interface CatalogModel {
   id?: string;
   name?: string;
   description?: string;
@@ -33,6 +34,7 @@ interface CatalogModel {
   structured_output?: boolean;
   temperature?: boolean;
   attachment?: boolean;
+  modalities?: { input?: string[]; output?: string[] };
   limit?: { context?: number; output?: number };
 }
 
@@ -65,6 +67,33 @@ export class ModelCatalog {
     this.#cacheFile = path.join(options.cacheDir, "models-dev-catalog.json");
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
     this.#now = options.now ?? Date.now;
+    this.#cache = this.#readDiskSync();
+  }
+
+  /**
+   * Synchronous lookup in the cached catalogue for known model facts.
+   * Useful during model registration and reasoning capability detection.
+   */
+  lookup(id: string, provider?: string): CatalogModel | undefined {
+    if (!this.#cache) return undefined;
+    const direct = provider
+      ? this.#cache.providers[provider]?.models?.[id]
+      : undefined;
+    if (direct) return direct;
+    if (this.#cache.labModels[id]) return this.#cache.labModels[id];
+    if (provider && this.#cache.labModels[`${provider}/${id}`])
+      return this.#cache.labModels[`${provider}/${id}`];
+
+    const bare = stripNamespace(id);
+    for (const [key, model] of Object.entries(this.#cache.labModels)) {
+      if (key === bare || key.endsWith(`/${bare}`)) return model;
+    }
+
+    for (const p of Object.values(this.#cache.providers)) {
+      if (p.models?.[id]) return p.models[id];
+      if (p.models?.[bare]) return p.models[bare];
+    }
+    return undefined;
   }
 
   /**
@@ -86,12 +115,18 @@ export class ModelCatalog {
         if (!byBareId.has(id)) byBareId.set(id, model);
       }
     }
+    for (const [key, model] of Object.entries(catalog.labModels)) {
+      const bare = stripNamespace(key);
+      if (!byBareId.has(bare)) byBareId.set(bare, model);
+      if (!byBareId.has(key)) byBareId.set(key, model);
+    }
     const labById = new Map<string, string>();
     for (const key of Object.keys(catalog.labModels)) {
       const slash = key.indexOf("/");
       if (slash < 1) continue;
       const bare = key.slice(slash + 1);
       if (!labById.has(bare)) labById.set(bare, key.slice(0, slash));
+      if (!labById.has(key)) labById.set(key, key.slice(0, slash));
     }
 
     const result: Record<string, ModelMetadataDto> = {};
@@ -101,7 +136,12 @@ export class ModelCatalog {
       // catalogue, so their models fall back to the same id under whichever
       // provider does publish it — the model is the same artefact either way.
       const direct = catalog.providers[provider]?.models?.[id];
-      const entry = direct ?? byBareId.get(id) ?? byBareId.get(stripNamespace(id));
+      const entry =
+        direct ??
+        catalog.labModels[id] ??
+        (provider ? catalog.labModels[`${provider}/${id}`] : undefined) ??
+        byBareId.get(id) ??
+        byBareId.get(stripNamespace(id));
       const lab = labById.get(id) ?? labById.get(stripNamespace(id));
       if (!entry && !lab) continue;
       result[`${provider}:${id}`] = {
@@ -112,10 +152,11 @@ export class ModelCatalog {
         releaseDate: entry?.release_date,
         lastUpdated: entry?.last_updated,
         openWeights: entry?.open_weights,
+        reasoning: entry?.reasoning,
         toolCall: entry?.tool_call,
         structuredOutput: entry?.structured_output,
         temperature: entry?.temperature,
-        attachment: entry?.attachment,
+        attachment: entry?.attachment ?? entry?.modalities?.input?.includes("image") ?? entry?.modalities?.input?.includes("audio") ?? entry?.modalities?.input?.includes("video") ?? false,
         contextLimit: entry?.limit?.context,
         outputLimit: entry?.limit?.output,
       };
@@ -126,13 +167,17 @@ export class ModelCatalog {
   /** Serves the cached copy while fresh, refreshes it when stale, and keeps
    * serving a stale copy if the network is down. */
   async #load(): Promise<CachedCatalog | null> {
-    if (this.#cache && this.#now() - this.#cache.fetchedAt < TTL_MS) return this.#cache;
+    if (this.#cache && this.#now() - this.#cache.fetchedAt < TTL_MS)
+      return this.#cache;
     if (!this.#cache) this.#cache = await this.#readDisk();
-    if (this.#cache && this.#now() - this.#cache.fetchedAt < TTL_MS) return this.#cache;
+    if (this.#cache && this.#now() - this.#cache.fetchedAt < TTL_MS)
+      return this.#cache;
 
     // One refresh at a time: several tabs opening Options at once must not
     // each pull the whole catalogue.
-    this.#inFlight ??= this.#refresh().finally(() => { this.#inFlight = null; });
+    this.#inFlight ??= this.#refresh().finally(() => {
+      this.#inFlight = null;
+    });
     const fresh = await this.#inFlight;
     return fresh ?? this.#cache;
   }
@@ -143,7 +188,11 @@ export class ModelCatalog {
         this.#getJson<Record<string, CatalogProvider>>(API_URL),
         this.#getJson<Record<string, CatalogModel>>(MODELS_URL),
       ]);
-      const next: CachedCatalog = { fetchedAt: this.#now(), providers, labModels };
+      const next: CachedCatalog = {
+        fetchedAt: this.#now(),
+        providers,
+        labModels,
+      };
       this.#cache = next;
       await this.#writeDisk(next);
       return next;
@@ -160,11 +209,24 @@ export class ModelCatalog {
     return (await response.json()) as T;
   }
 
+  #readDiskSync(): CachedCatalog | null {
+    try {
+      const raw = readFileSync(this.#cacheFile, "utf8");
+      const parsed = JSON.parse(raw) as CachedCatalog;
+      if (!parsed?.providers || typeof parsed.fetchedAt !== "number")
+        return null;
+      return { ...parsed, labModels: parsed.labModels ?? {} };
+    } catch {
+      return null;
+    }
+  }
+
   async #readDisk(): Promise<CachedCatalog | null> {
     try {
       const raw = await readFile(this.#cacheFile, "utf8");
       const parsed = JSON.parse(raw) as CachedCatalog;
-      if (!parsed?.providers || typeof parsed.fetchedAt !== "number") return null;
+      if (!parsed?.providers || typeof parsed.fetchedAt !== "number")
+        return null;
       return { ...parsed, labModels: parsed.labModels ?? {} };
     } catch {
       return null;

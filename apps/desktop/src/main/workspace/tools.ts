@@ -39,7 +39,7 @@ export interface WorkspaceRevealer {
   linked?(): Promise<LinkedHub>;
 }
 
-const SURFACES: WorkspaceSurface[] = ["hub", "drive", "tasks", "calendar", "summary", "phone", "terminal", "ide", "locker", "media", "usage", "finance"];
+const SURFACES: WorkspaceSurface[] = ["hub", "drive", "tasks", "calendar", "summary", "mobile", "terminal", "ide", "vault", "media", "usage", "finance"];
 /** How a drafted mail relates to an existing one. */
 const COMPOSE_MODES = ["new", "reply", "reply-all", "forward"] as const;
 const IMPORTANCE = ["high", "normal", "low"] as const;
@@ -54,8 +54,8 @@ export function createWorkspaceTool(workspace: WorkspaceRevealer): AgentTool {
       "a saved draft, a file on a drive, a schedule.",
       "Surfaces: 'hub' is mail and messaging; 'drive' is files; 'tasks' is the task board",
       "and schedules; 'calendar' is calendar events; 'summary' is the",
-      "conversation summary; 'phone' is the connected phone screen; 'terminal'",
-      "is the command line on this computer; 'ide' is the project editor; 'locker'",
+      "conversation summary; 'mobile' is the connected mobile screen; 'terminal'",
+      "is the command line on this computer; 'ide' is the project editor; 'vault'",
       "is the password vault; 'media' is photos and videos; 'usage' is tokens,",
       "API-equivalent spend, and activity over time; finance is bank accounts and agent payment setup.",
       "Say where inside the surface to land: for mail give account and folder, and messageId",

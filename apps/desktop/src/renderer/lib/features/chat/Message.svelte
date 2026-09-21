@@ -63,7 +63,7 @@
   import MessageAction from './MessageAction.svelte';
   import MemoryCitations from './MemoryCitations.svelte';
   import {extractMemoryCitations} from './memoryCitations';
-  import BloubAvatar from '../team/BloubAvatar.svelte';
+  import TeamAvatar from '../team/TeamAvatar.svelte';
   import {bloubExpressionForMessage} from '../team/bloub/expression';
   import {t, translate} from '../../../i18n';
 
@@ -304,7 +304,7 @@
   {:else}
     {#if message.origin}
       <div class="message-peer-origin" aria-label={`Message from ${message.origin.name}${message.origin.role ? `, ${message.origin.role}` : ''}`}>
-        {#if showOriginAvatar && message.origin.avatar}<BloubAvatar avatar={message.origin.avatar} expression={bloubExpressionForMessage({text: message.text, streaming})} size={19} animated={false}/>{/if}
+        {#if showOriginAvatar && message.origin.avatar}<TeamAvatar avatar={message.origin.avatar} expression={bloubExpressionForMessage({text: message.text, streaming})} size={19} animated={false}/>{/if}
         <span><strong>{message.origin.name}</strong>{#if originBadge === 'agent' && message.origin.role}<small>{message.origin.role}</small>{/if}</span>
         {#if originBadge === 'role'}
           {#if message.origin.role}<i class="role-badge">{message.origin.role}</i>{/if}

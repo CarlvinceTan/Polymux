@@ -52,8 +52,7 @@ test('role rows centre their copy vertically', async ({page}) => {
   await page.getByRole('button', {name: 'Settings', exact: true}).click();
   const settings = page.getByRole('region', {name: 'Settings', exact: true});
   await expect(settings).toBeVisible();
-  await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-  await settings.getByRole('button', {name: /Models.*Configure/}).click();
+  await settings.getByRole('tab', {name: 'Models', exact: true}).click();
   const rows = settings.locator('.role-options .general-setting-row');
   await expect(rows.first()).toBeVisible();
   for (const row of await rows.all()) {

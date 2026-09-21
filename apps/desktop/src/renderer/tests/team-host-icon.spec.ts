@@ -14,7 +14,7 @@ test('names the Host device kind in Runs on and the conversation header', async 
 
   await drawer.getByRole('button', {name: 'Options for Maya', exact: true}).click();
   await page.getByRole('menu', {name: 'Options for Maya', exact: true}).getByRole('menuitem', {name: 'Edit', exact: true}).click();
-  const editor = page.getByRole('dialog', {name: 'Edit Maya'});
+  const editor = page.locator('aside.workspace-drawer').getByRole('region', {name: 'Edit Maya'});
   const host = editor.getByRole('button', {name: 'Bot Host'});
   await expect(host.locator('[data-icon="laptop"]')).toHaveCount(1);
 

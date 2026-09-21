@@ -51,16 +51,16 @@ test("a Drive target carries the exact source and containing folder", async () =
   );
 });
 
-test("Phone is a first-class revealable workspace surface", async () => {
-  assert.deepEqual(await shown({surface: "phone"}), {surface: "phone"});
+test("Mobile is a first-class revealable workspace surface", async () => {
+  assert.deepEqual(await shown({surface: "mobile"}), {surface: "mobile"});
 });
 
 test("IDE is a first-class revealable workspace surface", async () => {
   assert.deepEqual(await shown({surface: "ide"}), {surface: "ide"});
 });
 
-test("Locker is a first-class revealable workspace surface", async () => {
-  assert.deepEqual(await shown({surface: "locker"}), {surface: "locker"});
+test("Vault is a first-class revealable workspace surface", async () => {
+  assert.deepEqual(await shown({surface: "vault"}), {surface: "vault"});
 });
 
 test("Usage is a first-class revealable workspace surface", async () => {

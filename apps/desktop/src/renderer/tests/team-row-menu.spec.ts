@@ -15,7 +15,7 @@ for (const theme of ['light', 'dark'] as const) {
     await options.click();
     const menu = drawer.getByRole('menu', {name: 'Options for Maya', exact: true});
     await menu.getByRole('menuitem', {name: 'Edit', exact: true}).click();
-    const editor = page.getByRole('dialog', {name: 'Edit Maya', exact: true});
+    const editor = page.locator('aside.workspace-drawer').getByRole('region', {name: 'Edit Maya', exact: true});
     await expect(editor).toBeVisible();
     await expect(menu).toHaveCount(0);
     await expect(editor.getByRole('textbox', {name: 'Name', exact: true})).toHaveValue('Maya');
@@ -46,7 +46,7 @@ for (const theme of ['light', 'dark'] as const) {
   });
 }
 
-test('configures bot connections from the pool in BotDialog', async ({page}) => {
+test('configures bot connections from the pool in the bot editor page', async ({page}) => {
   await page.goto('/?coldStart=0');
   const drawer = page.locator('aside.chat-drawer');
   await drawer.getByRole('button', {name: 'Team', exact: true}).click();
@@ -54,7 +54,7 @@ test('configures bot connections from the pool in BotDialog', async ({page}) => 
   await options.click();
   const menu = drawer.getByRole('menu', {name: 'Options for Linus', exact: true});
   await menu.getByRole('menuitem', {name: 'Edit', exact: true}).click();
-  const editor = page.getByRole('dialog', {name: 'Edit Linus', exact: true});
+  const editor = page.locator('aside.workspace-drawer').getByRole('region', {name: 'Edit Linus', exact: true});
   await expect(editor).toBeVisible();
 
   const connectionsSection = editor.locator('.team-connections');

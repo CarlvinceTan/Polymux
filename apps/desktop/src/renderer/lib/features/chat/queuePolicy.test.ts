@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {inferQueuePriority, isDependentFollowUp, shouldSteerLiveTurn} from './queuePolicy.js';
 
-test('ordinary follow-ups reach a main agent that has active delegated work', () => {
-  assert.equal(shouldSteerLiveTurn({runId: 'run-1', immediate: false, hasActiveDelegation: true}), true);
+test('ordinary follow-ups queue even while delegated work is active', () => {
+  assert.equal(shouldSteerLiveTurn({runId: 'run-1', immediate: false, hasActiveDelegation: true}), false);
 });
 
 test('explicit replacement language receives the attention lane', () => {

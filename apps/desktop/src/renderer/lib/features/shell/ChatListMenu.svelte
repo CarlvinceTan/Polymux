@@ -89,7 +89,7 @@
     const openBelow = list.scrollHeight <= below || below >= above;
     list.style.maxHeight = `${Math.min(200, Math.max(0, openBelow ? below : above))}px`;
     const {width, height} = list.getBoundingClientRect();
-    const idealLeft = anchor.left + anchor.width / 2 - width / 2;
+    const idealLeft = trigger.querySelector('svg')?.getBoundingClientRect().left ?? anchor.left;
     const left = clampToMenuEdge(idealLeft, width, window.innerWidth);
     menuLeft = left - wrapRect.left;
     menuTop = (openBelow ? anchor.bottom + MENU_GAP : anchor.top - MENU_GAP - height) - wrapRect.top;

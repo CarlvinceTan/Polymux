@@ -5,7 +5,6 @@ async function openUsage(page: import('@playwright/test').Page) {
   await expect(page.locator('#startup-splash')).toHaveCount(0, {timeout: 15_000});
   await page.getByRole('button', {name: 'Toggle Workspace', exact: true}).click();
   const launcher = page.locator('.workspace-launcher');
-  await launcher.getByRole('button', {name: 'More apps'}).click();
   await launcher.getByRole('button', {name: 'Usage', exact: true}).click();
   return page.getByRole('application', {name: 'Usage'});
 }
@@ -18,6 +17,11 @@ test('Usage home fits without scrolling and More opens section depth', async ({p
   await expect(usage.locator('.usage-profile')).toHaveCount(0);
   await expect(usage.getByText('Account', {exact: true})).toHaveCount(0);
   await expect(usage.locator('.usage-home')).toBeVisible();
+  await expect(usage.locator('.usage-discovery')).toHaveCount(0);
+  await expect(usage.getByRole('button', {name: 'Refresh', exact: true}).locator('[data-icon="reload"]')).toBeVisible();
+  const usageBox = await usage.boundingBox();
+  const settingsBox = await usage.getByRole('button', {name: 'Usage settings'}).boundingBox();
+  expect(Math.abs((settingsBox!.x + settingsBox!.width / 2) - (usageBox!.x + usageBox!.width / 2))).toBeLessThanOrEqual(1);
 
   const overflow = await usage.evaluate((node) => node.scrollHeight - node.clientHeight);
   expect(overflow).toBeLessThanOrEqual(1);
@@ -29,7 +33,7 @@ test('Usage home fits without scrolling and More opens section depth', async ({p
   expect(Math.abs((box?.width ?? 0) - (box?.height ?? 0))).toBeLessThan(1.5);
   expect(box!.width).toBeLessThanOrEqual(10);
   expect(box!.width).toBeGreaterThanOrEqual(5);
-  await expect(usage.getByRole('radio', {name: 'Polymux'}).locator('img')).toHaveAttribute('src', 'polymux.svg');
+  await expect(usage.getByRole('radio', {name: 'Polymux', exact: true}).locator('img')).toHaveAttribute('src', 'polymux.svg');
   await expect(usage.getByRole('radio', {name: 'Codex'}).locator('.usage-runtime-logo')).toHaveCount(1);
   const card = usage.getByRole('radio', {name: 'All'});
   const heading = await card.locator('.usage-agent-heading').boundingBox();
@@ -118,7 +122,7 @@ test('agent carousel stops at both ends and keeps selection and order stable', a
   await usage.getByRole('radio', {name: 'Codex'}).click();
   await expect(usage.getByRole('radio', {name: 'Codex'})).toHaveAttribute('aria-checked', 'true');
   await expect(next).toBeDisabled();
-  expect(await rail.getByRole('radio').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')))).toEqual(['All', 'Polymux', 'Claude Code', 'Codex']);
+  expect(await rail.getByRole('radio').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')))).toEqual(['All', 'Polymux', 'Claude Code (Polymux)', 'Codex (Polymux)', 'OpenCode']);
   await previous.click();
   await expect(previous).toBeDisabled();
   await expect.poll(() => rail.evaluate(node => node.scrollLeft)).toBe(0);
@@ -126,10 +130,10 @@ test('agent carousel stops at both ends and keeps selection and order stable', a
   await usage.getByRole('radio', {name: 'All'}).press('ArrowLeft');
   await expect(usage.getByRole('radio', {name: 'All'})).toBeFocused();
   await usage.getByRole('radio', {name: 'All'}).press('End');
-  await expect(usage.getByRole('radio', {name: 'Codex'})).toBeFocused();
-  await usage.getByRole('radio', {name: 'Codex'}).press('ArrowRight');
-  await expect(usage.getByRole('radio', {name: 'Codex'})).toBeFocused();
-  await usage.getByRole('radio', {name: 'Codex'}).press('Home');
+  await expect(usage.getByRole('radio', {name: 'OpenCode'})).toBeFocused();
+  await usage.getByRole('radio', {name: 'OpenCode'}).press('ArrowRight');
+  await expect(usage.getByRole('radio', {name: 'OpenCode'})).toBeFocused();
+  await usage.getByRole('radio', {name: 'OpenCode'}).press('Home');
   await expect(usage.getByRole('radio', {name: 'All'})).toBeFocused();
   await expect(previous).toBeDisabled();
   await expect(usage).toHaveAttribute('aria-busy', 'false');
@@ -152,11 +156,16 @@ test('Assistant and Team show the runtimes used in each and scope every detail',
   const rail = usage.getByRole('radiogroup', {name: 'Agents'});
   const total = usage.locator('.usage-metric strong').first();
   const combined = await total.innerText();
+  await expect(rail.getByRole('radio', {name: 'OpenCode'})).toBeVisible();
+  await scopes.getByRole('tab', {name: 'Polymux', exact: true}).click();
+  await expect(usage).toHaveAttribute('aria-busy', 'false');
+  await expect(rail.getByRole('radio', {name: 'OpenCode'})).toHaveCount(0);
+  await expect(total).not.toHaveText(combined);
   await scopes.getByRole('tab', {name: 'Assistant', exact: true}).click();
   await expect(usage).toHaveAttribute('aria-busy', 'false');
   await expect(rail.getByRole('radio', {name: 'Codex'})).toHaveCount(0);
   await expect(rail.getByRole('radio', {name: 'Claude Code'})).toBeVisible();
-  await expect(rail.getByRole('radio', {name: 'Polymux'})).toBeVisible();
+  await expect(rail.getByRole('radio', {name: 'Polymux', exact: true})).toBeVisible();
   const assistant = await total.innerText();
   expect(assistant).not.toBe(combined);
   await rail.getByRole('radio', {name: 'Claude Code'}).click();
@@ -178,7 +187,7 @@ test('Assistant and Team show the runtimes used in each and scope every detail',
   await expect(scopes.getByRole('tab', {name: 'Team', exact: true})).toHaveAttribute('aria-selected', 'true');
   await expect(rail.getByRole('radio', {name: 'Codex'})).toHaveAttribute('aria-checked', 'true');
   await usage.screenshot({path: testInfo.outputPath('usage-team.png'), animations: 'disabled'});
-  await scopes.getByRole('tab', {name: 'All', exact: true}).click();
+  await scopes.getByRole('tab', {name: 'All usage', exact: true}).click();
   await expect(total).toHaveText(combined);
   await expect(rail.getByRole('radio', {name: 'All', exact: true})).toHaveAttribute('aria-checked', 'true');
 });

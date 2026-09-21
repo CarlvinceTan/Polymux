@@ -267,3 +267,40 @@ test("schedules survive a restart, and a run the app died in is not left running
 async function settle(): Promise<void> {
   for (let index = 0; index < 5; index += 1) await Promise.resolve();
 }
+
+test('bot schedules retain their owner across reload, edits, and execution', async () => {
+  const prefs = store();
+  const clock = fakeClock(Date.parse('2026-09-15T10:00:00Z'));
+  const initial = new Scheduler(prefs, async () => ({}), clock);
+  const bot = initial.create({botId: 'bot-maya', title: 'Research', prompt: 'Review updates', frequency: {kind: 'cron', expression: '0 9 * * 1-5', timeZone: 'UTC'}});
+  initial.create({title: 'Assistant work', prompt: 'Other work', frequency: {kind: 'daily', time: '08:00', timeZone: 'UTC'}});
+  let executed: ScheduleDto | undefined;
+  const reloaded = new Scheduler(prefs, async item => { executed = item; return {conversationId: 'maya-chat', runId: 'maya-run', summary: 'Reviewed'}; }, clock);
+  assert.equal(reloaded.list().find(item => item.id === bot.id)?.botId, 'bot-maya');
+  reloaded.update(bot.id, {title: 'Updated research', status: 'paused'});
+  reloaded.runNow(bot.id);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reloaded.list().find(item => item.id === bot.id)?.status, 'paused');
+  assert.equal(reloaded.list().find(item => item.id === bot.id)?.nextRunAt, undefined);
+  assert.equal(executed?.botId, 'bot-maya');
+  assert.equal(executed?.title, 'Updated research');
+  assert.equal(reloaded.list().find(item => item.id === bot.id)?.history[0].runId, 'maya-run');
+  assert.equal(reloaded.list().filter(item => !item.botId).length, 1);
+  reloaded.stop();
+});
+
+test('pausing during a bot run preserves the result and removes the next firing', async () => {
+  const clock = fakeClock(Date.parse('2026-09-15T10:00:00Z'));
+  let finish!: (result: {summary: string}) => void;
+  const scheduler = new Scheduler(store(), () => new Promise(resolve => {finish = resolve;}), clock);
+  const item = scheduler.create({botId: 'maya', title: 'Review', prompt: 'Review notes', frequency: {kind: 'hourly'}});
+  scheduler.runNow(item.id);
+  scheduler.update(item.id, {status: 'paused'});
+  assert.equal(scheduler.list()[0].status, 'running');
+  finish({summary: 'Review complete'});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(scheduler.list()[0].status, 'paused');
+  assert.equal(scheduler.list()[0].nextRunAt, undefined);
+  assert.equal(scheduler.list()[0].history[0].summary, 'Review complete');
+  scheduler.stop();
+});

@@ -51,15 +51,15 @@ test('two computers pair as peers only after number matching, without changing e
     const deadline = Date.now() + 5000;
     while (a.secrets.get(bId) === previousSecret && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
     assert.notEqual(a.secrets.get(bId), previousSecret, 'pairing completes with the panel closed');
-    // A phone can be approved without displacing the connected computer.
+    // A mobile device can be approved without displacing the connected computer.
     const phoneCode = b.server.beginPairing();
-    const response = await fetch(`${phoneCode.endpoint}/polymux-host/v1/pair`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({code: phoneCode.pairingCode, desktopId: 'phone', deviceName: 'Phone'})});
+    const response = await fetch(`${phoneCode.endpoint}/polymux-host/v1/pair`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({code: phoneCode.pairingCode, desktopId: 'mobile', deviceName: 'Mobile', deviceType: 'mobile'})});
     assert.equal(response.status, 202);
-    const phone = await response.json() as {id:string; token:string; number:string};
-    await b.server.approvePairing(phone.id, phone.number);
+    const mobile = await response.json() as {id:string; token:string; number:string};
+    await b.server.approvePairing(mobile.id, mobile.number);
     assert.equal(b.server.snapshot().connectedDevices.length, 2);
-    const credentials = b.server.pairing.poll(phone.id, phone.token).credentials!;
-    b.server.revokePeer('phone');
+    const credentials = b.server.pairing.poll(mobile.id, mobile.token).credentials!;
+    b.server.revokePeer('mobile');
     await assert.rejects(new TeamHostClient(phoneCode.endpoint!, credentials.secret!).call('team.list'));
     assert.deepEqual(await new TeamHostClient(b.server.snapshot().endpoint!, a.secrets.get(bId)!).call('team.list'), ['b']);
   } finally { a.connections.close(); b.connections.close(); await a.server.close(); await b.server.close(); a.storage.close(); b.storage.close(); await rm(root, {recursive:true,force:true}); }

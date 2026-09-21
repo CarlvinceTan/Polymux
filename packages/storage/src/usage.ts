@@ -2,9 +2,9 @@ import type { JsonValue } from "./types.js";
 
 /** The bundled runtime; Assistant and Team can both use it. */
 export const DEFAULT_USAGE_AGENT_ID = "polymux";
-export type UsageScope = "all" | "assistant" | "team";
+export type UsageScope = "all" | "polymux" | "assistant" | "team";
 export interface UsageFilter {scope?: UsageScope; agentId?: string | null}
-export interface UsageAgentRef {id: string; name: string; kind: "polymux" | "acp"}
+export interface UsageAgentRef {id: string; name: string; kind: "polymux" | "acp" | "external"}
 
 export interface UsageRunRow {
   id: string;
@@ -16,6 +16,8 @@ export interface UsageRunRow {
   usage: JsonValue | null;
   parentRunId: string | null;
   agent?: UsageAgentRef | null;
+  /** Local agent imports aggregate requests with identical day/model/reasoning. */
+  runCount?: number;
 }
 
 export interface UsageConversationRow {
@@ -135,7 +137,10 @@ export function summarizeUsage(
   for (const conversation of source.conversations) {
     scopeByConversation.set(conversation.id, usageScopeFromMetadata(conversation.metadata));
   }
-  const scopeRuns = source.runs.filter(run => scope === "all" || (scopeByConversation.get(run.conversationId) ?? "assistant") === scope);
+  const externalConversations = new Set(source.runs.filter(run => run.agent?.kind === "external").map(run => run.conversationId));
+  const matchesScope = (id: string) => scope === "all" || (!externalConversations.has(id)
+    && (scope === "polymux" || (scopeByConversation.get(id) ?? "assistant") === scope));
+  const scopeRuns = source.runs.filter(run => matchesScope(run.conversationId));
   const scoped = scopeRuns.filter(run => !agentId || usageAgentForRun(run).id === agentId);
   const scopedRunIds = new Set(scoped.map(run => run.id));
 
@@ -186,21 +191,22 @@ export function summarizeUsage(
     if (day) {
       day.tokens += tokens;
       day.costUsd += spend;
-      day.runs += 1;
+      day.runs += run.runCount ?? 1;
     }
 
     const model = run.model?.trim() || "Unknown";
     const row = models.get(model) ?? {model, tokens: 0, costUsd: 0, runs: 0};
     row.tokens += tokens;
     row.costUsd += spend;
-    row.runs += 1;
+    row.runs += run.runCount ?? 1;
     models.set(model, row);
 
     if (run.parentRunId) continue;
-    parentRuns += 1;
+    const count = run.runCount ?? 1;
+    parentRuns += count;
     if (!usage) continue;
-    if (usage.reasoningTokens > 0) reasoningParents += 1;
-    else fastParents += 1;
+    if (usage.reasoningTokens > 0) reasoningParents += count;
+    else fastParents += count;
   }
 
   const days = [...byDay.values()];
@@ -217,7 +223,7 @@ export function summarizeUsage(
 
   const scopedConversationIds = agentId
     ? new Set(scoped.map(run => run.conversationId))
-    : new Set(source.conversations.filter(conversation => scope === "all" || scopeByConversation.get(conversation.id) === scope).map(conversation => conversation.id));
+    : new Set(source.conversations.filter(conversation => matchesScope(conversation.id)).map(conversation => conversation.id));
 
   const skillCounts = new Map<string, number>();
   for (const turn of source.skillTurns) {
@@ -267,6 +273,7 @@ export function usageScopeFromMetadata(metadata: JsonValue): "assistant" | "team
 
 /** Runtime identity belongs to the run, never to the current profile or bot. */
 export function usageAgentForRun(run: UsageRunRow): UsageAgentRef {
+  if (run.agent?.kind === "external") return run.agent;
   if (run.agent?.kind === "acp") {
     const id = run.agent.id.trim() || run.agent.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "unknown";
     return {kind: "acp", id: `acp:${id}`, name: run.agent.name.trim() || "ACP Agent"};
@@ -286,7 +293,7 @@ function agentBreakdown(runs: UsageRunRow[]): UsageAgent[] {
     const row = rows.get(agent.id) ?? {...agent, tokens: 0, costUsd: 0, runs: 0, chats: 0};
     row.tokens += usage?.totalTokens ?? 0;
     row.costUsd += usage?.costUsd ?? 0;
-    row.runs += 1;
+    row.runs += run.runCount ?? 1;
     rows.set(agent.id, row);
     const set = chats.get(agent.id) ?? new Set<string>();
     set.add(run.conversationId);

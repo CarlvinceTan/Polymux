@@ -1014,6 +1014,7 @@
         <label class="schedule-composer-field">
           <span>{$t('schedule.instruction')}</span>
           <textarea
+            aria-label={$t('schedule.instruction')}
             rows="6"
             placeholder={$t('schedule.promptPlaceholder')}
             bind:value={composing.prompt}

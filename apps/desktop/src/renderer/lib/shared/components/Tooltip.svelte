@@ -16,6 +16,19 @@
   let visible = false;
   let wide = false;
   let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Work handed to a microtask so it runs after the current render finishes.
+   *
+   * A render that removes the focused or hovered element makes the browser
+   * dispatch `focusout` and `pointerout` synchronously, from inside Svelte's
+   * own effect teardown. Writing tooltip state there trips Svelte's
+   * `state_unsafe_mutation` guard, which aborts the handler halfway and leaves
+   * the pill stranded on screen — exactly what locking the vault did. The
+   * deferral costs nothing visible and keeps every write outside the render.
+   */
+  function afterRender(run: () => void): void {
+    queueMicrotask(run);
+  }
 
   /** Portaled to the body so the pill is placed against the viewport and cannot
       be clipped by the scrolling conversation column or a panel's overflow. */
@@ -66,6 +79,13 @@
     // else would bring the name back — so the wait is watched rather than the
     // hover being dropped.
     if (document.documentElement.dataset.startup) return;
+    // A button that is leaving the DOM (its view is swapping under the
+    // pointer, e.g. locking the vault unmounts its toolbar) must never raise
+    // the pill: there is nothing to anchor it to, and the removal observer
+    // below would otherwise resurrect it after the hide.
+    if (!button.isConnected) {
+      return;
+    }
     const nextLabel = tooltipLabel(button);
     if (!nextLabel) return;
     if (target === button && label === nextLabel && visible) return;
@@ -107,7 +127,9 @@
   }
 
   function hide(button?: HTMLElement): void {
-    if (button && target !== button) return;
+    if (button && target !== button) {
+      return;
+    }
     clearTimeout(pendingTimer);
     if (target) {
       const describedBy = (target.getAttribute('aria-describedby') ?? '').split(/\s+/)
@@ -128,39 +150,61 @@
     const pointerOver = (event: PointerEvent) => {
       const button = buttonFrom(event);
       if (!button) return;
-      hovered = button;
-      void show(button);
+      afterRender(() => {
+        hovered = button;
+        void show(button);
+      });
     };
     const pointerOut = (event: PointerEvent) => {
       const button = buttonFrom(event);
-      if (!button || button.contains(event.relatedTarget as Node | null)) return;
-      if (hovered === button) hovered = null;
-      hide(button);
+      const related = event.relatedTarget as Node | null;
+      if (!button || button.contains(related)) return;
+      afterRender(() => {
+        if (hovered === button) hovered = null;
+        hide(button);
+      });
     };
     const pointerMove = (event: PointerEvent) => {
       if (!target) return;
       const hoveredButton = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>(targetSelector) ?? null;
-      if (hoveredButton !== target) {
+      if (hoveredButton === target) return;
+      afterRender(() => {
         hovered = hoveredButton;
         hide();
-      }
+      });
     };
     const focusIn = (event: FocusEvent) => {
       const button = buttonFrom(event);
-      if (button) void show(button);
+      if (!button) return;
+      afterRender(() => void show(button));
     };
-    const focusOut = (event: FocusEvent) => hide(buttonFrom(event) ?? undefined);
-    const dismiss = () => hide();
+    // A focused control loses focus as its view unmounts, and that removal is
+    // what dispatches this event — see `afterRender`.
+    const focusOut = (event: FocusEvent) => {
+      const button = buttonFrom(event);
+      afterRender(() => hide(button ?? undefined));
+    };
+    const dismiss = () => afterRender(() => hide());
+    // Activating a button usually swaps the view under the pointer, so the
+    // target can be gone before any pointerout arrives. Take the pill down on
+    // activation rather than waiting for an event that may never come.
+    const activate = (event: Event) => {
+      const button = buttonFrom(event);
+      if (button && target !== button) return;
+      afterRender(() => hide());
+    };
     // The pill is usually already up when the button is clicked, so opening a
     // menu has to take it down rather than merely stop the next hover from
     // raising it. Watching the opt-out attributes covers that and any other
     // case where a button stops qualifying while it is being pointed at.
     const targetObserver = new MutationObserver(() => {
-      if (target && (!target.isConnected || !tooltipLabel(target))) hide();
-      if (hovered && !hovered.isConnected) hovered = null;
-      // Closing the menu makes the trigger a plain icon button again; the
-      // pointer never left it, so nothing else would bring its name back.
-      if (hovered && !target && tooltipLabel(hovered)) void show(hovered);
+      afterRender(() => {
+        if (target && (!target.isConnected || !tooltipLabel(target))) hide();
+        if (hovered && !hovered.isConnected) hovered = null;
+        // Closing the menu makes the trigger a plain icon button again; the
+        // pointer never left it, so nothing else would bring its name back.
+        if (hovered && !target && tooltipLabel(hovered)) void show(hovered);
+      });
     });
     // The cover's own lifetime, watched separately: it lives on the root, and
     // its going is the moment a hover held through the opening becomes a
@@ -168,9 +212,11 @@
     const coverObserver = new MutationObserver(() => {
       if (document.documentElement.dataset.startup) return;
       coverObserver.disconnect();
-      // Held on the same control for the whole of the opening: the pause has
-      // already been made, and asking for it again would start it over.
-      if (hovered && !target && tooltipLabel(hovered)) void show(hovered, true);
+      afterRender(() => {
+        // Held on the same control for the whole of the opening: the pause has
+        // already been made, and asking for it again would start it over.
+        if (hovered && !target && tooltipLabel(hovered)) void show(hovered, true);
+      });
     });
     if (document.documentElement.dataset.startup)
       coverObserver.observe(document.documentElement, {
@@ -185,6 +231,9 @@
     document.addEventListener('pointerover', pointerOver, true);
     document.addEventListener('pointerout', pointerOut, true);
     document.addEventListener('pointermove', pointerMove, true);
+    document.addEventListener('pointerdown', activate, true);
+    document.addEventListener('click', activate, true);
+    document.addEventListener('keydown', dismiss, true);
     document.addEventListener('focusin', focusIn, true);
     document.addEventListener('focusout', focusOut, true);
     document.addEventListener('mouseleave', dismiss);
@@ -193,12 +242,14 @@
     window.addEventListener('resize', dismiss);
     window.addEventListener('scroll', dismiss, true);
     return () => {
-      hide();
       targetObserver.disconnect();
       coverObserver.disconnect();
       document.removeEventListener('pointerover', pointerOver, true);
       document.removeEventListener('pointerout', pointerOut, true);
       document.removeEventListener('pointermove', pointerMove, true);
+      document.removeEventListener('pointerdown', activate, true);
+      document.removeEventListener('click', activate, true);
+      document.removeEventListener('keydown', dismiss, true);
       document.removeEventListener('focusin', focusIn, true);
       document.removeEventListener('focusout', focusOut, true);
       document.removeEventListener('mouseleave', dismiss);
@@ -206,6 +257,9 @@
       window.removeEventListener('blur', dismiss);
       window.removeEventListener('resize', dismiss);
       window.removeEventListener('scroll', dismiss, true);
+      // Last, so a state write during teardown cannot skip the listener
+      // removal above and leave handlers on the document.
+      hide();
     };
   });
 </script>

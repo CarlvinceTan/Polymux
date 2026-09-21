@@ -104,6 +104,8 @@
 </script>
 
 <script lang="ts">
+  export let onOpenSettings: (() => void) | undefined = undefined;
+  import AppSettingsButton from './AppSettingsButton.svelte';
   import {onDestroy, tick} from 'svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import Menu from '../../shared/components/Menu.svelte';
@@ -1070,7 +1072,7 @@
     <!-- With something selected the toolbar belongs to it: the create actions
          step aside for what you can do to the selection. -->
     {#if selection.length}
-      <div class="fb-actions">
+      <div class="fb-actions"><AppSettingsButton name="Drive" onclick={onOpenSettings}/>
         {#if confirmingDelete}
           <!-- The confirmation takes the toolbar over rather than opening a
                dialog: what is about to be deleted is the highlighted rows,
@@ -1163,7 +1165,7 @@
         {/if}
       </div>
     {:else}
-    <div class="fb-actions">
+    <div class="fb-actions"><AppSettingsButton name="Drive" onclick={onOpenSettings}/>
       <button
         type="button"
         class="fb-action"

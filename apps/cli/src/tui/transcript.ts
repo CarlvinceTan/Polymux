@@ -151,12 +151,15 @@ export class Transcript {
       if (row) {
         row.text = text;
         row.status = "completed";
+        row.endedAt = now;
       } else if (text)
         this.rows.push({
           id: `${key}:text`,
           kind: "assistant",
           text,
+          status: "completed",
           startedAt: now,
+          endedAt: now,
         });
       const usage = record(message.usage);
       if (typeof usage.inputTokens === "number")
@@ -230,6 +233,7 @@ export class Transcript {
       this.rows.push({
         id: `${key}:notice:${event.sequence}`,
         kind: "notice",
+        startedAt: now,
         text: String(p.message ?? ""),
       });
     } else if (

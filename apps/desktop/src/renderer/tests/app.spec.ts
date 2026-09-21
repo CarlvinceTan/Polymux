@@ -19,15 +19,28 @@ async function openConnections(page: Page) {
   await expect(view).toBeVisible();
   return view;
 }
-/** An App's settings live in the detail of the connection it is listed as —
- * Browser, Hub and Drive each open their own settings there rather than a tab
- * of their own in the Settings rail. */
+/** Opens an app's own workspace tab from the launcher. */
+async function openWorkspaceApp(page: Page, name: string): Promise<Locator> {
+  const toggle = page.getByRole('button', {name: 'Toggle Workspace', exact: true});
+  if ((await toggle.getAttribute('aria-pressed')) !== 'true') await toggle.click();
+  const drawer = workspaceDrawer(page);
+  await drawer.locator('.workspace-launcher-row').filter({hasText: new RegExp(`^${name}$`)}).click();
+  return drawer;
+}
+/** Configuration opens inside the app's workspace tab, beside the app itself. */
 async function openAppConnection(page: Page, name: string) {
-  const connections = await openConnections(page);
-  await connections.locator('.marketplace-strip').getByRole('button', {name: new RegExp(`^${name},`)}).click();
-  const detail = page.getByRole('dialog', {name});
-  await expect(detail).toBeVisible();
-  return detail;
+  const drawer = await openWorkspaceApp(page, name);
+  const settingsName = `${name} settings`;
+  if (name === 'Browser') {
+    // Browser keeps its app settings behind the More menu.
+    await drawer.getByRole('button', {name: 'More', exact: true}).click();
+    await drawer.getByRole('menuitem', {name: settingsName, exact: true}).click();
+  } else {
+    await drawer.getByRole('button', {name: settingsName, exact: true}).click();
+  }
+  const settings = page.getByRole('region', {name: settingsName, exact: true});
+  await expect(settings).toBeVisible();
+  return settings;
 }
 /** The launcher's Recent rows: the second group, since the first is the fixed
  * list of views to open. */
@@ -56,16 +69,7 @@ async function paintedTrafficLightColours(lights: Locator): Promise<number[][]> 
 }
 
 async function openAgentSection(settings: Locator, section: 'Models' | 'Providers') {
-  await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-  await settings.getByRole('button', {name: new RegExp(`${section}.*Configure`)}).click();
-}
-
-async function startExternalAgentClean(page: Page, name: string) {
-  const dialog = page.getByRole('dialog', {name: `Connect ${name}`});
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole('radio', {name: /Start clean/})).toHaveAttribute('aria-checked', 'true');
-  await dialog.getByRole('button', {name: 'Start clean'}).click();
-  await expect(dialog).toHaveCount(0);
+  await settings.getByRole('tab', {name: section, exact: true}).click();
 }
 
 async function toastIconVerticalOffset(toast: Locator): Promise<number> {
@@ -411,7 +415,7 @@ test.describe('welcome view', () => {
     await expect(page.locator('.workspace-drawer .tab')).toHaveCount(1);
     await expect(page.locator('.workspace-drawer .tab.active')).toContainText('Settings');
     await expect(page.getByRole('menu')).toHaveCount(0);
-    await expect(modal.getByRole('tab')).toHaveText(['Appearance', 'Notifications', 'Permissions', 'Agent', 'Voice', 'Memory', 'Archived chats', 'About']);
+    await expect(modal.getByRole('tab')).toHaveText(['Appearance', 'Notifications', 'Permissions', 'Models', 'Providers', 'Voice', 'Memory', 'Archived chats', 'About']);
     const tabMetrics = await modal.getByRole('tab').first().evaluate((node) => {
       const style = getComputedStyle(node);
       return {fontSize: style.fontSize, height: style.height, radius: style.borderRadius, icons: node.querySelectorAll('svg').length};
@@ -485,7 +489,7 @@ test.describe('welcome view', () => {
     const officialMcp = modal.getByRole('button', {name: /GitHub Official/});
     await expect(officialMcp.locator('.official-rail-stamp')).toBeVisible();
     await expect(officialMcp.locator('.mcp-name-status')).toHaveCount(0);
-    await expect(officialMcp.locator('small')).toHaveText('Polymux · Connected');
+    await expect(officialMcp.locator('small')).toHaveText('MCP server · Polymux · Connected');
     await officialMcp.click();
     await expect(modal.getByRole('heading', {name: 'GitHub'})).toBeVisible();
     await expect(modal.locator('.options-detail-header .options-badge')).toHaveCount(0);
@@ -509,16 +513,16 @@ test.describe('welcome view', () => {
     await expect(modal.locator('.skill-registry-results li').filter({hasText: 'Issues'}).getByRole('button', {name: 'Configure'})).toBeVisible();
     await modal.getByRole('button', {name: 'Done'}).click();
     await expect(modal.getByRole('heading', {name: 'Filesystem'})).toBeVisible();
-    await modal.getByRole('button', {name: /^Files Custom/}).click();
+    await modal.getByRole('button', {name: /^Files MCP server · Custom/}).click();
     await expect(modal.getByRole('button', {name: 'Delete MCP server'})).toBeVisible();
     await modal.getByRole('button', {name: 'Delete MCP server'}).click();
-    await expect(modal.getByRole('button', {name: /^Files Custom/})).toHaveCount(0);
+    await expect(modal.getByRole('button', {name: /^Files MCP server · Custom/})).toHaveCount(0);
     await expect(modal.getByRole('heading', {name: 'Filesystem'})).toBeVisible();
     await expect(modal.getByRole('button', {name: 'Filter Connections'})).toBeVisible();
     await expect(modal.getByRole('button', {name: 'Sort Connections'})).toBeVisible();
     await modal.getByRole('button', {name: 'Filter Connections'}).click();
     const mcpFilterMenu = modal.getByRole('menu', {name: 'Filter Connections'});
-    await expect(mcpFilterMenu.getByRole('menuitemradio')).toHaveText(['All', 'Enabled', 'Disabled', 'Skills', 'MCP', 'Plugins', 'Apps']);
+    await expect(mcpFilterMenu.getByRole('menuitemradio')).toHaveText(['All', 'Enabled', 'Disabled', 'Skills', 'MCP', 'Plugins']);
     await mcpFilterMenu.getByRole('menuitemradio', {name: 'MCP'}).click();
     await expect(modal.getByRole('button', {name: /Filesystem/})).toBeVisible();
     await modal.getByRole('button', {name: 'Filter Connections'}).click();
@@ -553,7 +557,7 @@ test.describe('welcome view', () => {
     const officialPdf = modal.getByRole('button', {name: /PDF Official/});
     await expect(officialPdf).toBeVisible();
     await expect(officialPdf.locator('[data-icon="verified"]')).toBeVisible();
-    await expect(officialPdf.locator('small')).toHaveText('Polymux · Active');
+    await expect(officialPdf.locator('small')).toHaveText('Skill · Polymux · Active');
     await expect(officialPdf.locator('.integration-state')).toHaveCount(0);
     const officialSealGap = await officialPdf.evaluate((row) => {
       const name = row.querySelector('.skill-name-line strong')!.getBoundingClientRect();
@@ -600,7 +604,7 @@ test.describe('welcome view', () => {
     await expect(modal.getByRole('button', {name: 'Sort Connections'})).toBeVisible();
     await modal.getByRole('button', {name: 'Filter Connections'}).click();
     const skillFilterMenu = modal.getByRole('menu', {name: 'Filter Connections'});
-    await expect(skillFilterMenu.getByRole('menuitemradio')).toHaveText(['All', 'Enabled', 'Disabled', 'Skills', 'MCP', 'Plugins', 'Apps']);
+    await expect(skillFilterMenu.getByRole('menuitemradio')).toHaveText(['All', 'Enabled', 'Disabled', 'Skills', 'MCP', 'Plugins']);
     await skillFilterMenu.getByRole('menuitemradio', {name: 'Skills'}).click();
     await expect(modal.getByRole('button', {name: /PDF Official/})).toBeVisible();
     await modal.getByRole('button', {name: 'Filter Connections'}).click();
@@ -968,7 +972,7 @@ test.describe('welcome view', () => {
     await expect(settings.locator('.profile-switcher')).toHaveCount(0);
     await expect(settings.getByRole('menu', {name: 'Profiles'})).toHaveCount(0);
     await expect(settings.getByRole('button', {name: 'New profile'})).toHaveCount(0);
-    await expect(settings.getByRole('tab', {name: 'Agent', exact: true})).toBeVisible();
+    await expect(settings.getByRole('tab', {name: 'Models', exact: true})).toBeVisible();
     await expect(settings.getByRole('tab', {name: 'Profile'})).toHaveCount(0);
   });
 
@@ -993,298 +997,7 @@ test.describe('welcome view', () => {
     await expect(activity.getByRole('button', {name: 'Hide details'})).toBeVisible();
   });
 
-  test('switches the active profile between Polymux and a custom ACP agent', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-    await expect(settings).not.toHaveClass(/settling/);
-    await expect(settings).toHaveCSS('opacity', '1');
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-
-    const runtime = settings.getByRole('radiogroup', {name: 'Agent runtime'});
-    await expect(runtime.getByRole('radio', {name: /^Polymux Built in$/})).toHaveAttribute('aria-checked', 'true');
-    await expect(runtime.getByRole('radio', {name: /Codex/})).toBeVisible();
-    const darkAcpIconFilter = await runtime.getByRole('radio', {name: /Codex/}).locator('.runtime-card-icon').evaluate((icon) => {
-      const root = document.documentElement;
-      const originalTheme = root.getAttribute('data-theme');
-      const renderedImage = document.querySelector<HTMLImageElement>('.runtime-card-icon.polymux img');
-      if (!renderedImage) throw new Error('Rendered agent icon fixture is missing');
-      const image = renderedImage.cloneNode() as HTMLImageElement;
-      icon.append(image);
-      root.dataset.theme = 'dark';
-      const filter = getComputedStyle(image).filter;
-      image.remove();
-      if (originalTheme === null) root.removeAttribute('data-theme');
-      else root.setAttribute('data-theme', originalTheme);
-      return filter;
-    });
-    expect(darkAcpIconFilter).toBe('brightness(0) invert(1)');
-    await expect(settings.getByText('Polymux Agent is active')).toHaveCount(0);
-    await expect(settings.getByRole('button', {name: 'Use agent'})).toHaveCount(0);
-    await expect(runtime).toHaveClass(/scroll-fade/);
-    await expect(runtime).toHaveClass(/at-top/);
-    await runtime.evaluate((grid) => {
-      grid.style.flex = '0 0 166px';
-      grid.style.height = '166px';
-      grid.style.minHeight = '166px';
-      grid.style.gridTemplateColumns = '1fr';
-    });
-    await expect.poll(() => runtime.evaluate((grid) => grid.scrollHeight - grid.clientHeight)).toBeGreaterThan(2);
-    await expect(runtime).not.toHaveClass(/at-bottom/);
-    await runtime.evaluate((grid) => { grid.scrollTop = (grid.scrollHeight - grid.clientHeight) / 2; });
-    await expect(runtime).not.toHaveClass(/at-top/);
-    await expect(runtime).not.toHaveClass(/at-bottom/);
-    await runtime.evaluate((grid) => { grid.scrollTop = grid.scrollHeight; });
-    await expect(runtime).not.toHaveClass(/at-top/);
-    await expect(runtime).toHaveClass(/at-bottom/);
-    await runtime.evaluate((grid) => { grid.scrollTop = 0; });
-    await expect(runtime).toHaveClass(/at-top/);
-    await expect(runtime).not.toHaveClass(/at-bottom/);
-    await runtime.evaluate((grid) => {
-      grid.style.removeProperty('flex');
-      grid.style.removeProperty('height');
-      grid.style.removeProperty('min-height');
-      grid.style.removeProperty('grid-template-columns');
-    });
-    const runtimeGridHeight = await runtime.evaluate((grid) => grid.getBoundingClientRect().height);
-    expect(runtimeGridHeight).toBeGreaterThan(294);
-    const configurationBottomGap = await settings.locator('.profile-options').evaluate((panel) => {
-      const configuration = panel.querySelector<HTMLElement>('.agent-configuration');
-      if (!configuration) throw new Error('Agent configuration is missing');
-      return panel.getBoundingClientRect().bottom
-        - Number.parseFloat(getComputedStyle(panel).paddingBottom)
-        - configuration.getBoundingClientRect().bottom;
-    });
-    expect(Math.abs(configurationBottomGap)).toBeLessThanOrEqual(1);
-    await runtime.getByRole('radio', {name: /Custom/}).click();
-    expect(await runtime.evaluate((grid) => grid.getBoundingClientRect().height)).toBeGreaterThanOrEqual(294);
-    await settings.getByRole('textbox', {name: 'Name'}).fill('Codex');
-    await settings.getByRole('textbox', {name: 'Command'}).fill('codex-acp');
-    await settings.getByRole('textbox', {name: 'Arguments'}).fill('--profile\nwork');
-    await settings.getByRole('button', {name: 'Use custom agent'}).click();
-    await startExternalAgentClean(page, 'Codex');
-
-    await expect(runtime.getByRole('radio', {name: /Custom/})).toHaveAttribute('aria-checked', 'true');
-    await expect(settings.getByRole('button', {name: 'Model'})).toBeVisible();
-    await expect(settings.getByText('Providers', {exact: true})).toHaveCount(0);
-    await expect(settings.locator('.options-nav-section')).toHaveText(['General', 'Assistant', 'Other']);
-    await expect(settings.getByRole('tab', {name: 'Hub'})).toHaveCount(0);
-    // A connection is configured where it is listed: its detail carries the
-    // settings that used to be a Settings tab of their own.
-    const hub = await openAppConnection(page, 'Hub');
-    await expect(hub.getByRole('switch', {name: 'Enable Hub', exact: true})).toHaveAttribute('aria-checked', 'false');
-    await expect(hub.getByRole('switch', {name: 'Enable Hub incognito mode'})).toBeVisible();
-    await hub.getByRole('switch', {name: 'Enable Hub', exact: true}).click();
-    await expect(hub.getByRole('switch', {name: 'Enable Hub', exact: true})).toHaveAttribute('aria-checked', 'true');
-  });
-
-  test('uses the full model directory when an ACP agent advertises a large catalogue', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-    const pi = settings.getByRole('radio', {name: /pi ACP/});
-    await pi.click();
-    await startExternalAgentClean(page, 'pi ACP');
-    await expect(pi).not.toContainText('Click again to install');
-
-    const model = settings.locator('button.agent-option-open');
-    await expect(model).toContainText('Claude Sonnet 4');
-    await expect(model).toHaveCSS('font-size', '10.5px');
-    await expect(model).toHaveCSS('font-weight', '550');
-    await model.click();
-    await expect(settings.getByRole('heading', {name: 'Model'})).toBeVisible();
-    await expect(settings.getByRole('button', {name: /OpenAI 3 models/})).toBeVisible();
-    await expect(settings.getByRole('button', {name: /Anthropic 3 models/})).toBeVisible();
-    await expect(settings.getByRole('button', {name: /Google 2 models/})).toBeVisible();
-    await settings.getByRole('button', {name: /OpenAI 3 models/}).click();
-    await settings.getByRole('button', {name: /GPT-5.2/}).click();
-    await settings.getByRole('button', {name: 'Back to Assistant'}).click();
-    await expect(settings.locator('button.agent-option-open')).toContainText('GPT-5.2');
-  });
-
-  test('uses a bare, title-proportioned chevron on Agent configuration pages', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-
-    for (const section of ['Models', 'Providers'] as const) {
-      await openAgentSection(settings, section);
-      const agentBack = settings.getByRole('button', {name: 'Back to Assistant'});
-      await expect(agentBack).toHaveText('');
-      await expect(agentBack.locator('svg')).toHaveCount(1);
-      const alignment = await settings.locator('.options-header').evaluate((header) => {
-        const back = header.querySelector('.agent-back')!.getBoundingClientRect();
-        const icon = header.querySelector<SVGElement>('.agent-back svg')!.getBoundingClientRect();
-        const titleElement = header.querySelector<HTMLElement>('h2')!;
-        const title = titleElement.getBoundingClientRect();
-        return {
-          horizontalGap: Math.round(title.left + Number.parseFloat(getComputedStyle(titleElement).paddingLeft) - back.right),
-          centreOffset: Math.round((title.top + title.bottom - back.top - back.bottom) / 2),
-          iconSize: Math.round(icon.width),
-          titleFontSize: Math.round(Number.parseFloat(getComputedStyle(titleElement).fontSize)),
-        };
-      });
-      expect(alignment).toEqual({horizontalGap: 8, centreOffset: 1, iconSize: 28, titleFontSize: 28});
-    }
-  });
-
-  test('asks how to configure an installed ACP agent on the first click', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-
-    const codex = settings.getByRole('radio', {name: /Codex/});
-    await codex.click();
-    await expect(codex).not.toContainText('Click again to install');
-    const dialog = page.getByRole('dialog', {name: 'Connect Codex'});
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel('External configuration source')).toHaveValue('/Users/demo/.codex');
-    await expect(dialog.getByRole('radio', {name: /Keep synced/})).toBeDisabled();
-    await expect(dialog).toContainText('No configuration folder exists');
-    await dialog.getByRole('button', {name: 'Start clean'}).click();
-    await expect(settings.getByRole('button', {name: 'Model'})).toBeVisible();
-    const agentLayout = await settings.locator('.profile-options').evaluate((panel) => {
-      const grid = panel.querySelector<HTMLElement>('.runtime-grid');
-      const configuration = panel.querySelector<HTMLElement>('.agent-configuration');
-      if (!grid || !configuration) throw new Error('Agent layout is incomplete');
-      return {
-        gridHeight: grid.getBoundingClientRect().height,
-        overlap: grid.getBoundingClientRect().bottom - configuration.getBoundingClientRect().top,
-      };
-    });
-    expect(agentLayout.gridHeight).toBeGreaterThanOrEqual(294);
-    expect(agentLayout.overlap).toBeLessThanOrEqual(0);
-  });
-
-  test('summarizes an external agent configuration before import or sync', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-    await settings.getByRole('radio', {name: /Claude Agent/}).click();
-
-    const dialog = page.getByRole('dialog', {name: 'Connect Claude Agent'});
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel('External configuration source')).toHaveValue('/Users/demo/.claude');
-    const summary = dialog.getByLabel('Configuration summary');
-    await expect(summary).toContainText('Skills4');
-    await expect(summary).toContainText('Plugins2');
-    await expect(summary).toContainText('MCP2');
-    await expect(summary).toContainText('Memory1');
-    await expect(dialog.getByRole('radio', {name: /^Import Copy selected configuration/})).toHaveAttribute('aria-checked', 'true');
-    await expect(dialog.getByRole('checkbox')).toHaveCount(5);
-
-    await dialog.getByRole('radio', {name: /Keep synced/}).click();
-    await dialog.getByRole('button', {name: 'Keep synced'}).click();
-    await expect(dialog).toHaveCount(0);
-    await expect(settings.getByRole('heading', {name: 'Agent', exact: true})).toBeVisible();
-    await expect(settings.getByRole('radio', {name: /Claude Agent/})).toHaveAttribute('aria-checked', 'true');
-    await expect(settings.locator('.profile-switcher')).toHaveCount(0);
-  });
-
-  test('loads an existing ACP agent automatically and applies option changes immediately', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    let settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-    await settings.getByRole('radio', {name: /Codex/}).click();
-    await startExternalAgentClean(page, 'Codex');
-
-    const model = settings.getByRole('button', {name: 'Model'});
-    await expect(model).toHaveText(/Default/);
-    await model.click();
-    await settings.getByRole('menuitemradio', {name: 'Claude Opus'}).click();
-    await expect(model).toHaveText(/Claude Opus/);
-
-    await page.getByRole('button', {name: 'Close Settings'}).click();
-    await page.getByRole('button', {name: 'Settings'}).click();
-    settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-
-    await expect(settings.getByRole('button', {name: 'Load options'})).toHaveCount(0);
-    await expect(settings.getByRole('button', {name: 'Model'})).toHaveText(/Claude Opus/);
-  });
-
-  test('preconfigures registry binary agents instead of labelling them custom', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-
-    for (const [name, version] of [['Junie', 'v3032.2.0'], ['Poolside', 'v1.0.16']] as const) {
-      const card = settings.getByRole('radio', {name: new RegExp(name)});
-      await expect(card).toBeEnabled();
-      await expect(card.locator('small')).toHaveText(version);
-      await expect(card).not.toContainText('Custom command');
-    }
-  });
-
-  test('shows an explicit configuration decision for every bundled external agent', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-
-    for (const [name, source] of [
-      ['Codex', '/Users/demo/.codex'],
-      ['pi ACP', '/Users/demo/.pi/agent'],
-      ['OpenCode', '/Users/demo/.config/opencode'],
-      ['Junie', '/Users/demo/.junie'],
-      ['Poolside', '/Users/demo/.config/poolside'],
-    ] as const) {
-      await settings.getByRole('radio', {name: new RegExp(name)}).click();
-      const dialog = page.getByRole('dialog', {name: `Connect ${name}`});
-      await expect(dialog.getByLabel('External configuration source')).toHaveValue(source);
-      await expect(dialog.getByRole('radio', {name: /Start clean/})).toHaveAttribute('aria-checked', 'true');
-      if (name === 'Poolside') {
-        await expect(dialog.getByRole('radio', {name: /Keep synced/})).toBeDisabled();
-        await expect(dialog).toContainText('shared XDG configuration root');
-      }
-      await dialog.getByRole('button', {name: 'Cancel'}).click();
-    }
-  });
-
-  test('keeps undocumented custom agents runnable but clean-only', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-    await settings.getByRole('radio', {name: /Custom/}).click();
-    await settings.getByRole('textbox', {name: 'Name'}).fill('Mystery');
-    await settings.getByRole('textbox', {name: 'Command'}).fill('mystery-acp');
-    await settings.getByRole('button', {name: 'Use custom agent'}).click();
-
-    const dialog = page.getByRole('dialog', {name: 'Connect Mystery'});
-    await expect(dialog.getByRole('radio', {name: /^Import Copy selected configuration/})).toBeDisabled();
-    await expect(dialog.getByRole('radio', {name: /Keep synced/})).toBeDisabled();
-    await expect(dialog.getByRole('radio', {name: /Merge into assistant/})).toBeDisabled();
-    await expect(dialog).toContainText('does not yet have a verified configuration adapter');
-    await dialog.getByRole('button', {name: 'Start clean'}).click();
-    await expect(settings.getByRole('button', {name: 'Model'})).toBeVisible();
-  });
-
-  test('uses authentication methods advertised by the selected ACP agent', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-    await settings.getByRole('radio', {name: /Codex/}).click();
-    await startExternalAgentClean(page, 'Codex');
-
-    await settings.getByRole('button', {name: /Authentication/}).click();
-    await expect(settings.getByRole('heading', {name: 'Authentication', level: 2})).toBeVisible();
-    await expect(settings.getByRole('heading', {name: 'Connected', level: 4})).toBeVisible();
-
-    await settings.getByRole('button', {name: 'Sign out'}).click();
-    await expect(settings.getByRole('heading', {name: 'Sign in required', level: 4})).toBeVisible();
-    await settings.getByRole('button', {name: 'Sign in', exact: true}).click();
-    await expect(settings.getByRole('heading', {name: 'Connected', level: 4})).toBeVisible();
-
-    await settings.getByRole('button', {name: 'Back to Assistant'}).click();
-    await expect(settings.getByRole('button', {name: 'Model'})).toBeVisible();
-  });
+  // Per-bot ACP selection, options and authentication are covered in assistant-bot-settings.spec.ts.
 
   test('a local runtime sits with the other providers and needs only connecting', async ({page}) => {
     await page.goto('/');
@@ -1539,101 +1252,40 @@ test.describe('welcome view', () => {
     await expect(page.locator('.shared-tooltip')).toHaveCount(0);
   });
 
-  test('uses a dedicated App Marketplace and caps New Tab pins at four', async ({page}) => {
-    await page.goto('/');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-
-    await expect(settings.locator('.options-nav-section')).toHaveText(['General', 'Assistant', 'Other']);
-    const connections = await openConnections(page);
-    // The landing is the marketplace directory; its apps section links into
-    // the dedicated App Marketplace.
-    await connections.locator('.marketplace-section', {hasText: 'Recommended Apps'}).getByRole('button', {name: 'See all'}).click();
-    await expect(connections.getByRole('heading', {name: 'Apps', exact: true, level: 2})).toBeVisible();
-    await expect(connections.getByText('code-review', {exact: true})).toHaveCount(0);
-    await expect(connections.getByRole('switch', {name: 'Enable Hub'})).toHaveAttribute('aria-checked', 'true');
-    await expect(connections.getByRole('switch', {name: 'Enable Computer History'})).toHaveCount(0);
-    await expect(connections.getByRole('button', {name: /Uninstall/})).toHaveCount(0);
-
-    const mediaPin = connections.getByRole('button', {name: 'Pin Media to New Tab'});
-    await expect(mediaPin).toBeDisabled();
-    await connections.getByRole('button', {name: 'Unpin Drive from New Tab'}).click();
-    await expect(mediaPin).toBeEnabled();
-    await mediaPin.click();
-    await expect(connections.getByRole('button', {name: 'Unpin Media from New Tab'})).toBeVisible();
-
-    await page.getByRole('button', {name: 'Close Connections'}).click();
-    await page.getByRole('button', {name: 'Close Settings'}).click();
-    const launcher = page.locator('.workspace-launcher');
-    await expect(launcher.getByRole('button', {name: 'Media'})).toBeVisible();
-    const mainRowWidth = (await launcher.getByRole('button', {name: 'Media'}).boundingBox())!.width;
-    const more = launcher.getByRole('button', {name: 'More apps'});
-    await expect(more).toContainText('More');
-    // Its chevron sits tight to the label, on the same 13px inset as the rows.
-    const moreMetrics = await more.evaluate((node) => {
-      const label = node.querySelector('span')!.getBoundingClientRect();
-      const chevron = node.querySelector('svg')!.getBoundingClientRect();
-      return {gap: chevron.left - label.right, inset: node.getBoundingClientRect().right - chevron.right};
-    });
-    expect(moreMetrics.gap).toBeLessThanOrEqual(4);
-    expect(Math.abs(moreMetrics.inset)).toBeLessThanOrEqual(1);
-    await more.click();
-    const appsView = launcher.getByRole('region', {name: 'Apps'});
-    await expect(appsView).toBeVisible();
-    await expect(launcher.getByRole('button', {name: 'Back to New Tab'})).toBeFocused();
-    await expect(launcher.getByRole('button', {name: 'Back to New Tab'})).toContainText('Back');
-    await expect(launcher.getByRole('menu')).toHaveCount(0);
-    await expect(appsView.getByRole('button', {name: 'Drive'})).toBeVisible();
-    await expect(appsView.getByRole('button', {name: 'Media'})).toHaveCount(0);
-    await expect(launcher.getByRole('button', {name: 'Browser'})).toHaveCount(0);
-    const appRowWidth = (await appsView.getByRole('button', {name: 'Drive'}).boundingBox())!.width;
-    expect(Math.abs(appRowWidth - mainRowWidth)).toBeLessThanOrEqual(1);
-    const centreOffset = await appsView.evaluate((view) => {
-      const parent = view.parentElement!.getBoundingClientRect();
-      const content = view.getBoundingClientRect();
-      return Math.abs((content.top - parent.top) - (parent.bottom - content.bottom));
-    });
-    expect(centreOffset).toBeLessThanOrEqual(1);
-    await launcher.getByRole('button', {name: 'Back to New Tab'}).click();
-    await expect(launcher.getByRole('button', {name: 'Browser'})).toBeVisible();
-    await expect(launcher.getByRole('button', {name: 'More apps'})).toBeFocused();
-    await expect(launcher.getByRole('region', {name: 'Apps'})).toHaveCount(0);
-  });
-
-  test('the installed strip fits its width and opens the full installed list', async ({page}) => {
+  test('the installed section names each connection and opens the full installed list', async ({page}) => {
     await page.goto('/');
     const connections = await openConnections(page);
-    const strip = connections.locator('.marketplace-strip');
-    const more = connections.getByRole('button', {name: 'Show all installed connections'});
-    await expect(more).toBeVisible();
-    // Every icon keeps the shared 44px size, and the row stays inside the
-    // width it is given instead of running past it.
-    const fitted = await strip.evaluate((node) => {
-      const icons = [...node.querySelectorAll('.marketplace-strip-item')];
-      const box = node.getBoundingClientRect();
-      const label = node.querySelector('.marketplace-more')!.getBoundingClientRect();
-      return {
-        shown: icons.length,
-        widths: [...new Set(icons.map((icon) => Math.round(icon.getBoundingClientRect().width)))],
-        usedRight: label.right,
-        right: box.right,
-        label: node.querySelector('.marketplace-more')!.textContent!.trim(),
-      };
-    });
-    expect(fitted.widths).toEqual([44]);
-    expect(fitted.usedRight).toBeLessThanOrEqual(fitted.right);
-    const held = Number(/\d+/.exec(fitted.label)?.[0]);
-    expect(fitted.label).toMatch(/^\+ \d+ more$/);
+    const installed = connections.locator('.marketplace-section', {has: page.getByRole('heading', {name: /^Installed/})});
+    await expect(installed).toBeVisible();
+    // Installed rows are labelled: every one carries its name and its type,
+    // never a bare symbol.
+    const rows = installed.locator('.marketplace-row');
+    await expect(rows.first()).toBeVisible();
+    const shown = await rows.count();
+    expect(shown).toBeGreaterThan(0);
+    for (let index = 0; index < shown; index += 1) {
+      const rowText = await rows.nth(index).innerText();
+      expect(rowText).toMatch(/Skill ·|MCP server ·|Plugin ·/);
+    }
 
-    // The label counts what the strip held back, and the full list shows every
-    // one of them — so the count the row reports is the list's actual size.
-    await more.click();
+    // Narrow content drops the installed grid to one column.
+    await page.setViewportSize({width: 620, height: 700});
+    const columns = await installed.locator('.marketplace-grid').evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(' ').length);
+    expect(columns).toBe(1);
+
+    // The heading counts everything installed, and "Manage installed" opens
+    // the rail that lists all of them.
+    const total = Number(await installed.locator('h3 .marketplace-count').innerText());
+    expect(total).toBeGreaterThanOrEqual(shown);
+    const manage = connections.getByRole('button', {name: 'Manage installed'});
+    await expect(manage).toBeVisible();
+    await manage.click();
     await expect(connections.getByRole('heading', {name: 'Installed', exact: true, level: 2})).toBeVisible();
     const installedRows = connections.locator('.options-rail-row');
     await expect(installedRows.first()).toBeVisible();
-    const installed = await installedRows.count();
-    expect(installed).toBe(fitted.shown + held);
-    expect(installed).toBeGreaterThan(fitted.shown);
+    await expect(installedRows).toHaveCount(total);
+    // A mixed rail names each row's kind.
+    expect(await installedRows.first().innerText()).toMatch(/Skill ·|MCP server ·|Plugin ·/);
 
     const back = connections.getByRole('button', {name: 'Back to Connections', exact: true});
     await expect(back.locator('svg[data-icon="back"]')).toBeVisible();
@@ -1644,7 +1296,7 @@ test.describe('welcome view', () => {
   test('See all names each category and returns to Connections', async ({page}) => {
     await page.goto('/');
     const connections = await openConnections(page);
-    for (const category of ['Apps', 'Plugins', 'Skills', 'MCPs']) {
+    for (const category of ['Plugins', 'Skills', 'MCPs']) {
       await connections.locator('.marketplace-section').filter({has: page.getByRole('heading', {name: `Recommended ${category}`, exact: true})}).getByRole('button', {name: 'See all', exact: true}).click();
       await expect(connections.getByRole('heading', {name: category, exact: true, level: 2})).toBeVisible();
       const back = connections.getByRole('button', {name: 'Back to Connections', exact: true});
@@ -1659,17 +1311,21 @@ test.describe('welcome view', () => {
     await page.goto('/');
     const connections = await openConnections(page);
     const plugins = connections.getByRole('region', {name: 'Recommended Plugins', exact: true});
-    const mcps = connections.getByRole('region', {name: 'Recommended MCP Servers', exact: true});
-    await expect(plugins.getByRole('button', {name: 'Add commit-commands', exact: true})).toBeVisible();
-    await expect(mcps.getByRole('button', {name: 'Add Files', exact: true})).toBeVisible();
+    const mcps = connections.getByRole('region', {name: 'Recommended MCPs', exact: true});
+    const pluginRow = plugins.locator('.marketplace-row').filter({has: page.getByText('commit-commands', {exact: true})});
+    const filesRow = mcps.locator('.marketplace-row').filter({has: page.getByText('Files', {exact: true})});
+    const issuesRow = mcps.locator('.marketplace-row').filter({has: page.getByText('Issues', {exact: true})});
+    // Catalog entries state their action as a word, not a bare plus.
+    await expect(pluginRow.getByRole('button', {name: 'Install', exact: true})).toBeVisible();
+    await expect(filesRow.getByRole('button', {name: 'Install', exact: true})).toBeVisible();
     await expect(connections.locator('.marketplace-section h3').filter({hasText: /^Recommended/})).toHaveText([
-      'Recommended Apps', 'Recommended Bots', 'Recommended Plugins', 'Recommended Skills', 'Recommended MCPs',
+      'Recommended Bots', 'Recommended Plugins', 'Recommended Skills', 'Recommended MCPs',
     ]);
-    await plugins.getByRole('button', {name: 'Add commit-commands', exact: true}).click();
-    await expect(plugins.getByRole('button', {name: 'Disable commit-commands', exact: true})).toHaveCount(1);
-    await mcps.getByRole('button', {name: 'Add Files', exact: true}).click();
-    await expect(mcps.getByRole('button', {name: 'Disable Files', exact: true})).toHaveCount(1);
-    await mcps.getByRole('button', {name: 'Add Issues', exact: true}).click();
+    await pluginRow.getByRole('button', {name: 'Install', exact: true}).click();
+    await expect(pluginRow.locator('.marketplace-status.active')).toHaveText('Enabled');
+    await filesRow.getByRole('button', {name: 'Install', exact: true}).click();
+    await expect(filesRow.locator('.marketplace-status.active')).toHaveText('Enabled');
+    await issuesRow.getByRole('button', {name: 'Configure', exact: true}).click();
     await expect(connections.locator('textarea')).toHaveValue('Authorization=');
   });
 
@@ -1679,9 +1335,9 @@ test.describe('welcome view', () => {
     // Directory A: title, a search field that spans the directory width, and
     // category cards with counts, in the order the sections below use.
     await expect(connections.getByRole('heading', {name: 'Connections', exact: true})).toBeVisible();
-    await expect(connections.getByRole('searchbox', {name: 'Search apps, bots, plugins, skills and MCPs'})).toBeVisible();
+    await expect(connections.getByRole('searchbox', {name: 'Search skills, MCPs and plugins'})).toBeVisible();
     const chips = connections.getByRole('group', {name: 'Connections categories'});
-    for (const name of ['All', 'Apps', 'Bots', 'Plugins', 'Skills', 'MCPs'])
+    for (const name of ['All', 'Bots', 'Plugins', 'Skills', 'MCPs'])
       await expect(chips.getByRole('button', {name: new RegExp(`^${name}`)})).toBeVisible();
     // The field and the leftmost card share one left edge, and the field
     // reaches the far edge of the cards' row rather than stopping short.
@@ -1692,16 +1348,18 @@ test.describe('welcome view', () => {
       return {searchLeft: search.left, searchRight: search.right, cardsLeft: cards.left, cardsRight: cards.right, firstLeft: first.left};
     });
     expect(directoryHeader.firstLeft).toBeCloseTo(directoryHeader.searchLeft, 0);
-    expect(directoryHeader.searchRight).toBeCloseTo(directoryHeader.cardsRight, 0);
+    // The chips row bleeds 4px on each side for its scroll fade, so the field
+    // reaches the cards' row rather than stopping short of it.
+    expect(directoryHeader.searchRight).toBeGreaterThan(directoryHeader.cardsRight - 6);
     expect(directoryHeader.searchRight).toBeGreaterThan(directoryHeader.searchLeft + 200);
     // Recommended sections list rows; the Bots card has no catalog yet.
     await expect(connections.locator('.marketplace-section', {hasText: 'Recommended Skills'})).toBeVisible();
-    await expect(connections.locator('.marketplace-section', {hasText: 'Recommended Bots'})).toContainText('Prebuilt bots will appear here.');
+    await expect(connections.locator('.marketplace-section', {hasText: 'Recommended Bots'})).toContainText('Bots bundle skills, MCP servers and plugins into an assistant.');
     // Team bots are not listed here: the Bots card is placeholder-only.
     await expect(chips.getByRole('button', {name: /^Bots/})).toContainText('0');
     await chips.getByRole('button', {name: /^Bots/}).click();
-    await expect(connections.locator('.marketplace-section', {hasText: 'Recommended Apps'})).toHaveCount(0);
-    const directorySearch = connections.getByRole('searchbox', {name: 'Search apps, bots, plugins, skills and MCPs'});
+    await expect(connections.locator('.marketplace-section')).toHaveCount(1);
+    const directorySearch = connections.getByRole('searchbox', {name: 'Search skills, MCPs and plugins'});
     await directorySearch.fill('filesystem');
     await expect(connections.getByText('No bots match your search.')).toBeVisible();
     await directorySearch.fill('');
@@ -1970,8 +1628,6 @@ test.describe('design system', () => {
     });
     expect(columnCentres).toEqual({effort: 0, model: 0, effortLeft: 0, modelLeft: 0});
 
-    await expect(taskRow).toContainText('None');
-
     // One click in the directory fills the job it was opened for and hands the
     // roles back: there is nothing else to press.
     await taskRow.getByRole('button', {name: /as the subagent model/}).click();
@@ -1995,13 +1651,17 @@ test.describe('design system', () => {
     await modal.getByRole('menuitemradio', {name: 'None'}).click();
     await expect(level).toContainText('None');
 
-    // A job filled by a model that cannot reason still reads from a menu, so
-    // the rows line up — None is simply its only answer.
+    // A job filled by a model that cannot reason keeps the column's width with
+    // an inert placeholder rather than a menu whose only answer is None.
     const speechRow = modal.locator('.role-options .general-setting-row').nth(4);
-    const speechLevel = speechRow.getByRole('button', {name: /Reasoning for/});
-    await expect(speechLevel).toContainText('None');
-    await speechLevel.click();
-    await expect(modal.getByRole('menu', {name: /Reasoning for/}).getByRole('menuitemradio')).toHaveText(['None']);
+    await expect(speechRow.getByRole('button', {name: /Reasoning for/})).toHaveCount(0);
+    const effortWidths = await modal.locator('.role-options').evaluate((view) => {
+      const rows = [...view.querySelectorAll('.general-setting-row')];
+      const placeholder = rows[4].querySelector('.role-effort-placeholder')!.getBoundingClientRect();
+      const trigger = rows[1].querySelector('.select-menu-trigger')!.getBoundingClientRect();
+      return {placeholder: Math.round(placeholder.width), trigger: Math.round(trigger.width)};
+    });
+    expect(effortWidths.placeholder).toBe(effortWidths.trigger);
   });
 
   test('MODEL lists the available models and picks a reasoning level per model', async ({page}) => {
@@ -2646,20 +2306,6 @@ test.describe('conversation', () => {
     await expect(toast).toHaveCount(0);
   });
 
-  test('shows external-agent setup connection errors as an error toast', async ({page}) => {
-    await page.goto('/?coldStart=0&agentConnection=fail');
-    await page.getByRole('button', {name: 'Settings'}).click();
-    const settings = page.getByRole('region', {name: 'Settings'});
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-    await settings.getByRole('radio', {name: /Codex/}).click();
-    const dialog = page.getByRole('dialog', {name: 'Connect Codex'});
-    await dialog.getByRole('button', {name: 'Start clean'}).click();
-
-    const toast = page.locator('.agent-notice-toast');
-    await expect(toast).toHaveAttribute('role', 'alert');
-    await expect(toast).toHaveText('External agent connection failed');
-  });
-
   test('does not list the main agent response as a delegated task', async ({page}) => {
     await page.goto('/');
     await send(page, 'timing');
@@ -2725,7 +2371,9 @@ test.describe('conversation', () => {
     // The subagent's own tool trail, folded exactly as the chat pane folds the
     // main run's.
     await view.locator('.agent-activity-heading').click();
-    await expect(view.locator('.agent-activity-list')).toContainText('Reading Files');
+    await expect(view.locator('.agent-activity-list')).toContainText('Read 1 file');
+    await view.locator('.activity-group-toggle').first().click();
+    await expect(view.locator('.activity-children')).toContainText('Reading Files');
 
     // Nothing here is addressed to anyone: the subagent answers to the run that
     // sent it, so the transcript offers no composer and no way to edit it.
@@ -2745,74 +2393,56 @@ test.describe('conversation', () => {
     await page.goto('/');
     await send(page, '__demo_activity__');
 
-    // A run narrates its work while it is happening, Codex-style: the live
-    // trail opens itself and shows both status prose and the current tool.
-    const heading = page.locator('.agent-activity-heading');
-    const trail = page.locator('.agent-activity-list');
+    const heading = page.locator('.agent-activity-heading').first();
+    // The live block is one heading and the work under it: the trail is in
+    // view while the run goes, the way ChatGPT's activity reads.
     await expect(heading).toContainText(/Working for \d+s/);
-    await expect(heading).toHaveAttribute('aria-expanded', 'true');
-    await expect(trail).toContainText('I’ll read the skill files first');
-    await expect(trail).toContainText('Using Window Control');
-
+    await expect(page.locator('.agent-activity-list')).toBeVisible();
     await expect(page.locator('.message.assistant')).toContainText('assembled Polymux chat surface', {timeout: 4000});
-    // Completion always folds the narration back to its compact settled state.
-    // This demo has no counted command/file summary, so only the duration
-    // heading remains until the user explicitly opens the historical trail.
     await expect(heading).toContainText(/Worked for \d+s/);
     await expect(heading).toHaveAttribute('aria-expanded', 'false');
-    await expect(trail).toHaveCount(0);
+    await expect(page.locator('.agent-activity-list')).toHaveCount(0);
     await heading.click();
-    await expect(trail).toContainText('Using Window Control');
-    // The run's mid-run narration nests inside the activity group as a
-    // commentary row; the repeated reads still collapse to one tool row.
-    await expect(page.locator('.agent-activity-list li.commentary')).toContainText('I’ll read the skill files first');
-    // Every finished row uses the brief settled cross-fade, never the live
-    // shimmer that belongs to the step the agent is actually on.
-    expect(await page.locator('.agent-activity-list li').evaluateAll(
-      (nodes) => nodes.map((node) => getComputedStyle(node).animationName))).toEqual([
-        'activity-settled-in',
-        'activity-settled-in',
-        'activity-settled-in',
-        'activity-settled-in',
-      ]);
-    await expect(page.locator('.agent-activity-list .activity-copy')).toHaveCount(4);
-    await expect(page.locator('.agent-activity')).toHaveCount(1);
+    await expect(heading).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('.message.assistant')).toHaveCount(1);
-
-    // Reasoning stays with the run after it moves on to tools, and opens as
-    // raw provider text rather than being rendered as an answer.
+    await expect(page.locator('.activity-commentary')).toContainText('I’ll read the skill files first');
     const thinking = page.locator('.agent-activity-list li').filter({hasText: 'Thinking'}).first();
     const thinkingDetail = thinking.locator('.activity-detail-toggle');
     await expect(thinkingDetail).toHaveAttribute('aria-expanded', 'false');
     await thinkingDetail.click();
-    await expect(thinkingDetail.locator('.activity-thinking')).toHaveText('Thinking');
+    await expect(thinking.locator('.activity-thinking')).toHaveText('Thinking');
+    const commentary = page.locator('.activity-commentary');
+    await expect(commentary.locator('button, svg')).toHaveCount(0);
 
-    // Narration is ordinary wrapping prose, not a disclosure row.
-    const commentary = page.locator('.agent-activity-list li.commentary');
-    await expect(commentary.locator('.activity-detail-toggle')).toHaveCount(0);
-    await expect(commentary.locator('svg')).toHaveCount(0);
-    await expect(commentary).toContainText('I’ll read the skill files first');
+    // The calls behind one summary row wait behind that row's own chevron.
+    const groupToggle = page.locator('.activity-group-toggle').first();
+    await expect(groupToggle).toHaveAttribute('aria-expanded', 'false');
+    await groupToggle.click();
+    await expect(groupToggle).toHaveAttribute('aria-expanded', 'true');
 
-    const computerRow = page.locator('.agent-activity-list li').filter({hasText: 'Using Window Control'});
-    const browserRow = page.locator('.agent-activity-list li').filter({hasText: 'Using Browser'});
+    const children = page.locator('.activity-children');
+    const computerRow = children.locator('li').filter({hasText: 'Using Window Control'});
+    const browserRow = children.locator('li').filter({hasText: 'Using Browser'});
     const computerToggle = computerRow.locator('.activity-preview-toggle');
     const browserToggle = browserRow.locator('.activity-preview-toggle');
-    await expect(page.locator('.agent-activity .activity-preview-toggle > svg')).toHaveCount(0);
+    // The disclosure chevron is the row's only glyph, and the frame it opens
+    // sits under the row rather than inside its control.
+    await expect(computerToggle.locator('svg')).toHaveCount(1);
     await expect(computerToggle).toHaveAttribute('aria-expanded', 'false');
     await expect(browserToggle).toHaveAttribute('aria-expanded', 'false');
     await computerToggle.click();
-    await expect(computerToggle.locator('.live-activity-preview img')).toBeVisible();
+    await expect(computerRow.locator('.live-activity-preview img')).toBeVisible();
     await expect(page.locator('.agent-activity .live-activity-preview')).toHaveCount(1);
-    expect(await computerToggle.evaluate((toggle) => {
-      const label = toggle.firstElementChild?.getBoundingClientRect();
-      const preview = toggle.querySelector('.live-activity-preview')?.getBoundingClientRect();
+    expect(await computerRow.evaluate((row) => {
+      const label = row.querySelector('.activity-label')?.getBoundingClientRect();
+      const preview = row.querySelector('.live-activity-preview')?.getBoundingClientRect();
       return label && preview ? Math.abs(label.left - preview.left) : Infinity;
     })).toBeLessThanOrEqual(1);
-    await expect(computerToggle.locator('.activity-steps, small')).toHaveCount(0);
+    await expect(computerRow.locator('.activity-steps, .activity-result, .activity-thinking')).toHaveCount(0);
     await browserToggle.click();
     await expect(computerToggle).toHaveAttribute('aria-expanded', 'false');
     await expect(browserToggle).toHaveAttribute('aria-expanded', 'true');
-    await expect(browserToggle.locator('.live-activity-preview img')).toBeVisible();
+    await expect(browserRow.locator('.live-activity-preview img')).toBeVisible();
     await expect(page.locator('.agent-activity .live-activity-preview')).toHaveCount(1);
     await browserToggle.click();
     await expect(page.locator('.agent-activity .live-activity-preview')).toHaveCount(0);
@@ -2865,7 +2495,9 @@ test.describe('conversation', () => {
     const heading = page.locator('.agent-activity-heading');
     await expect(heading).toContainText(/Work(ing|ed) for \d+s/);
     await heading.click();
-    await expect(page.locator('.agent-activity-list')).toContainText('Using Window Control');
+    await expect(page.locator('.agent-activity-list')).toContainText('Read 1 file, Ran 1 command');
+    await page.locator('.activity-group-toggle').first().click();
+    await expect(page.locator('.activity-children')).toContainText('Using Window Control');
   });
 
   test('sends the next prompt as a one-shot goal and shows its status', async ({page}) => {
@@ -2899,7 +2531,7 @@ test.describe('conversation', () => {
     // head position, so they light in the order the wave reaches them.
     const label = await liveRow.evaluate((node) => {
       const style = getComputedStyle(node);
-      const text = getComputedStyle(node.querySelector('.activity-copy > span:first-child')!);
+      const text = getComputedStyle(node.querySelector('.activity-label')!);
       return {name: style.animationName, timing: style.animationTimingFunction, clip: text.webkitBackgroundClip ?? text.backgroundClip, glyphAnimation: getComputedStyle(node.querySelector('svg')!).animationName};
     });
     expect(label).toEqual({name: 'activity-glint-pass', timing: 'linear', clip: 'text', glyphAnimation: 'none'});
@@ -2908,20 +2540,16 @@ test.describe('conversation', () => {
     await expect(liveRow).toHaveCount(0);
   });
 
-  test('opens streamed reasoning by default and lets the user fold it', async ({page}) => {
+  test('keeps streamed reasoning behind an explicit disclosure', async ({page}) => {
     await page.goto('/');
     await send(page, '__demo_run_10000__');
 
     const thinking = page.locator('.agent-activity-list li').filter({hasText: 'Thinking'}).first();
     const detail = thinking.locator('.activity-detail-toggle');
-    await expect(detail).toHaveAttribute('aria-expanded', 'true');
-    await expect(detail.locator('.activity-thinking')).toHaveText('Thinking');
-
-    await detail.click();
     await expect(detail).toHaveAttribute('aria-expanded', 'false');
-    await expect(detail.locator('.activity-thinking')).toHaveCount(0);
+    await expect(thinking.locator('.activity-thinking')).toHaveCount(0);
     await detail.click();
-    await expect(detail.locator('.activity-thinking')).toHaveText('Thinking');
+    await expect(thinking.locator('.activity-thinking')).toHaveText('Thinking');
 
     await page.getByRole('button', {name: 'Stop agent'}).click();
   });
@@ -2955,6 +2583,63 @@ test.describe('conversation', () => {
     await expect(page.locator('.message-stopped')).toHaveCount(0);
   });
 
+  test('a steered run reads in the order its work happened', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_activity_10000__');
+    // Wait for work to have happened before the steer, so the split has a
+    // before and an after to draw.
+    await expect(page.locator('.agent-activity-list')).toContainText('Read 1 file, Ran 1 command');
+    await editor(page).click();
+    await page.keyboard.type('urgent steer');
+    await page.keyboard.press('ControlOrMeta+Enter');
+
+    // The trail is cut at the steer: what the run had already done stays above
+    // the message that interrupted it, and what it does next reads below it.
+    const blocks = page.locator('.agent-activity');
+    await expect(blocks).toHaveCount(2);
+    const [earlier, later] = [blocks.nth(0), blocks.nth(1)];
+    await expect(earlier.locator('.agent-activity-heading')).toContainText(/Worked for \d+s/);
+    await expect(later.locator('.agent-activity-heading')).toContainText(/Working for \d+s/);
+    const steer = page.locator('.message:not(.assistant)').nth(1);
+    await expect(steer).toContainText('urgent steer');
+    const [earlierBox, steerBox, laterBox] = await Promise.all([earlier.boundingBox(), steer.boundingBox(), later.boundingBox()]);
+    expect(earlierBox!.y).toBeLessThan(steerBox!.y);
+    expect(laterBox!.y).toBeGreaterThan(steerBox!.y);
+
+    // The two halves are one trail split, not a copy of it.
+    await earlier.locator('.agent-activity-heading').click();
+    await expect(earlier.locator('.agent-activity-list')).toContainText('Read 1 file, Ran 1 command');
+    await earlier.locator('.activity-group-toggle').first().click();
+    await expect(earlier.locator('.activity-children')).toContainText('Using Window Control');
+    await expect(later.locator('.agent-activity-list')).toHaveCount(0);
+
+    // Stopping cancels the turn the steer started. The work that had already
+    // finished, above the steer, is untouched by it.
+    await page.getByRole('button', {name: 'Stop agent'}).click();
+    await expect(earlier.locator('.agent-activity-heading')).toContainText(/Worked for \d+s/);
+    await expect(page.locator('.message-stopped')).toHaveCount(1);
+  });
+
+  test('leaving and returning to a steered run keeps it live', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_activity_10000__');
+    await expect(page.locator('.agent-activity-list')).toContainText('Read 1 file, Ran 1 command');
+    await editor(page).click();
+    await page.keyboard.type('urgent steer');
+    await page.keyboard.press('ControlOrMeta+Enter');
+    await expect(page.locator('.message:not(.assistant)').nth(1)).toContainText('urgent steer');
+
+    // The steer is stored against the run as soon as it lands. Opening the chat
+    // again must not read that as "the run is on record", or the live row — and
+    // every step still to come — would be dropped on the floor.
+    await page.getByLabel('Chat controls', {exact: true}).getByRole('button', {name: 'New Chat'}).click();
+    await expect(page.getByRole('heading', {name: 'What can I help with?'})).toBeVisible();
+    await page.locator('.chat-drawer-open-chat').first().click();
+    await expect(page.locator('.agent-activity').last().locator('.agent-activity-heading')).toContainText(/Working for \d+s/);
+    await expect(page.locator('.message:not(.assistant)').nth(1)).toContainText('urgent steer');
+    await page.getByRole('button', {name: 'Stop agent'}).click();
+  });
+
   test('a queued message can be steered, or edited back into the composer', async ({page}) => {
     await page.goto('/');
     await send(page, '__demo_run_10000__');
@@ -2973,7 +2658,21 @@ test.describe('conversation', () => {
     await expect(page.locator('.message:not(.assistant)').nth(1)).toContainText('queued prompt');
   });
 
-  test('stopping the agent drops whatever was queued behind it', async ({page}) => {
+  test('empty immediate send steers only the earliest queued draft', async ({page}) => {
+    await page.goto('/');
+    await send(page, '__demo_run_10000__');
+    await send(page, 'first queued prompt');
+    await send(page, 'second queued prompt');
+    await editor(page).press('Control+Enter');
+    const queue = page.getByRole('region', {name: 'Queued messages'});
+    await expect(queue).not.toContainText('first queued prompt');
+    await expect(queue).toContainText('second queued prompt');
+    await expect(page.locator('.message:not(.assistant)').last()).toContainText('first queued prompt');
+    await page.getByRole('button', {name: 'Stop agent'}).click();
+    await expect(queue).toContainText('second queued prompt');
+  });
+
+  test('stopping the agent holds queued drafts for explicit retry', async ({page}) => {
     await page.goto('/');
     await send(page, '__demo_run_10000__');
     await editor(page).click();
@@ -2982,7 +2681,7 @@ test.describe('conversation', () => {
     await expect(page.getByRole('region', {name: 'Queued messages'})).toContainText('queued prompt');
 
     await page.getByRole('button', {name: 'Stop agent'}).click();
-    await expect(page.getByRole('region', {name: 'Queued messages'})).toHaveCount(0);
+    await expect(page.getByRole('region', {name: 'Queued messages'})).toContainText('queued prompt');
     await expect(page.locator('.message:not(.assistant)')).toHaveCount(1);
   });
 
@@ -3388,6 +3087,12 @@ test.describe('chat drawer', () => {
     await profile.click();
     const menu = page.getByRole('menu', {name: 'Account'});
     await expect(menu).toBeVisible();
+    await expect(profile).toHaveCSS('background-color', 'rgba(217, 217, 217, 0.6)');
+    await menu.getByRole('menuitem', {name: 'Documentation', exact: true}).hover();
+    await expect(profile).toHaveAttribute('aria-expanded', 'true');
+    await expect(profile).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await profile.hover();
+    await expect(profile).toHaveCSS('background-color', 'rgba(217, 217, 217, 0.6)');
     await expect(menu.getByText('owner@example.com')).toBeVisible();
     for (const item of ['Language', 'Documentation', 'Report bug', 'Contact us', 'Switch account', 'Sign out'])
       await expect(menu.getByRole('menuitem', {name: item})).toBeVisible();
@@ -3581,7 +3286,6 @@ test.describe('chat drawer', () => {
     await expect(view.locator('.marketplace-directory')).toBeVisible();
     await expect(view.locator('.marketplace-chips')).toBeVisible();
     await expect(view.locator('.profile-switcher')).toHaveCount(0);
-    await expect(connections).toHaveAttribute('aria-current', 'page');
     await page.getByRole('button', {name: 'Close Connections'}).click();
     await drawer.getByRole('button', {name: 'Team', exact: true}).click();
     await expect(connections).toBeVisible();
@@ -3662,15 +3366,15 @@ test.describe('chat drawer', () => {
     await expect(settings.getByRole('tab', {name: 'Connections'})).toHaveCount(0);
     await expect(settings.getByRole('heading', {name: 'Appearance'})).toHaveCount(0);
     await expect(settings.getByRole('button', {name: 'Back to Settings'})).toHaveCount(0);
-    await settings.getByRole('tab', {name: 'Agent', exact: true}).click();
-    await expect(settings.getByRole('heading', {name: 'Agent', exact: true})).toBeVisible();
+    await settings.getByRole('tab', {name: 'Models', exact: true}).click();
+    await expect(settings.getByRole('heading', {name: 'Models', exact: true})).toBeVisible();
     await expect(settings.getByRole('button', {name: 'Back to Settings'})).toBeVisible();
     const agentOverflow = await settings.evaluate((node) => node.scrollWidth > node.clientWidth + 1);
     expect(agentOverflow).toBe(false);
 
     await page.getByRole('button', {name: 'Expand Workspace'}).click();
-    await expect(settings.getByRole('heading', {name: 'Agent', exact: true})).toBeVisible();
-    await expect(settings.getByRole('tab', {name: 'Agent', exact: true})).toBeVisible();
+    await expect(settings.getByRole('heading', {name: 'Models', exact: true})).toBeVisible();
+    await expect(settings.getByRole('tab', {name: 'Models', exact: true})).toBeVisible();
     await expect(settings.getByRole('button', {name: 'Back to Settings'})).toHaveCount(0);
   });
 
@@ -3684,7 +3388,7 @@ test.describe('chat drawer', () => {
 
     const view = page.getByRole('region', {name: 'Connections'});
     await expect(view.getByRole('heading', {name: 'Connections', exact: true})).toBeVisible();
-    await expect(view.getByRole('searchbox', {name: 'Search apps, bots, plugins, skills and MCPs'})).toBeVisible();
+    await expect(view.getByRole('searchbox', {name: 'Search skills, MCPs and plugins'})).toBeVisible();
     await expect(view.getByRole('tab')).toHaveCount(0);
     await expect(view.getByRole('button', {name: 'Back to Settings'})).toHaveCount(0);
     const overflow = await view.evaluate((node) => node.scrollWidth > node.clientWidth + 1);
@@ -3692,7 +3396,7 @@ test.describe('chat drawer', () => {
 
     await page.getByRole('button', {name: 'Expand Workspace'}).click();
     await expect(view.getByRole('heading', {name: 'Connections', exact: true})).toBeVisible();
-    await expect(view.getByRole('searchbox', {name: 'Search apps, bots, plugins, skills and MCPs'})).toBeVisible();
+    await expect(view.getByRole('searchbox', {name: 'Search skills, MCPs and plugins'})).toBeVisible();
   });
 
   test('opens bot editing from the highlighted identity header', async ({page}) => {
@@ -3707,7 +3411,7 @@ test.describe('chat drawer', () => {
       await expect(identity).toHaveCSS('background-color', theme === 'light' ? 'rgb(243, 243, 243)' : 'rgb(42, 42, 42)');
     }
     await identity.click();
-    const editor = page.getByRole('dialog', {name: 'Edit Maya'});
+    const editor = workspaceDrawer(page).getByRole('region', {name: 'Edit Maya'});
     await expect(editor).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(editor).toHaveCount(0);
@@ -3716,30 +3420,49 @@ test.describe('chat drawer', () => {
     await expect(editor).toBeVisible();
   });
 
-  test('opens the bot editor from the empty Team conversation', async ({page}) => {
+  test('creates a bot from the To: bar and opens its editor from the empty conversation', async ({page}) => {
     await page.goto('/?coldStart=0');
     const drawer = chatDrawer(page);
     await drawer.getByRole('button', {name: 'Team', exact: true}).click();
-    await drawer.getByRole('button', {name: 'New chat', exact: true}).click();
-    await page.getByRole('dialog', {name: 'New chat'}).getByRole('button', {name: 'New bot', exact: true}).click();
-    const create = page.getByRole('dialog', {name: 'New bot', exact: true});
-    await create.getByRole('textbox', {name: 'Name', exact: true}).fill('Nova');
-    await create.getByRole('textbox', {name: 'Role', exact: true}).fill('Uni Assistant');
-    await create.getByRole('button', {name: 'Add bot', exact: true}).click();
-    await expect(create).toHaveCount(0);
+    const addChat = drawer.getByRole('button', {name: 'New chat', exact: true});
+    await addChat.click();
 
-    // A bot with no history shows its identity as the way into the editor.
-    const pane = page.getByRole('region', {name: 'Conversation with Nova', exact: true});
-    const emptyIdentity = pane.getByRole('button', {name: 'Edit Nova', exact: true});
+    // The chooser is the To: band in the title bar, not a dialog, and its rows
+    // carry their shortcuts.
+    const bar = page.locator('.team-new-chat-bar');
+    await expect(bar).toBeVisible();
+    const search = bar.getByRole('textbox', {name: 'Search or create Bots'});
+    await expect(search).toBeFocused();
+    await expect(bar.getByRole('button', {name: 'Create new Bot'})).toHaveAttribute('aria-keyshortcuts', /\+1$/);
+    await expect(bar.getByRole('button', {name: 'Create group chat'})).toHaveAttribute('aria-keyshortcuts', /\+2$/);
+    await expect(bar.getByRole('button', {name: 'Open Maya'})).toHaveAttribute('aria-keyshortcuts', /\+3$/);
+    // Clicking away leaves the mode. Focus is not pulled back to the +: the
+    // click belongs to whatever the user pointed at.
+    await page.getByRole('heading', {name: 'Chats', level: 2}).click();
+    await expect(bar).toHaveCount(0);
+
+    await addChat.click();
+    await page.locator('.team-new-chat-bar').getByRole('button', {name: 'Create new Bot', exact: true}).click();
+
+    // A bot appears named New Chat with no role, so the pane offers the editor.
+    await expect(bar).toHaveCount(0);
+    const pane = page.getByRole('region', {name: 'Conversation with New Chat', exact: true});
+    const emptyIdentity = pane.getByRole('button', {name: 'Edit New Chat', exact: true});
     await expect(emptyIdentity).toBeVisible();
-    await expect(emptyIdentity).toContainText('Message Nova');
-    await expect(emptyIdentity).toContainText('Uni Assistant');
-    await emptyIdentity.hover();
-    await expect(emptyIdentity).toHaveCSS('cursor', 'pointer');
+    await expect(emptyIdentity).toContainText('Message New Chat');
+
+    // The editor is a workspace page, opened expanded over whatever was there.
+    await expect(page.locator('main')).not.toHaveClass(/workspace-expanded/);
     await emptyIdentity.click();
-    const editor = page.getByRole('dialog', {name: 'Edit Nova', exact: true});
+    const editor = workspaceDrawer(page).getByRole('region', {name: 'Edit New Chat', exact: true});
     await expect(editor).toBeVisible();
-    await expect(editor.getByRole('textbox', {name: 'Name', exact: true})).toHaveValue('Nova');
+    await expect(page.locator('main')).toHaveClass(/workspace-expanded/);
+    await expect(editor.getByRole('textbox', {name: 'Name', exact: true})).toHaveValue('New Chat');
+
+    // Closing the page hands the workspace back.
+    await editor.getByRole('button', {name: 'Close', exact: true}).click();
+    await expect(editor).toHaveCount(0);
+    await expect(page.locator('main')).not.toHaveClass(/workspace-expanded/);
   });
 
   test('restores each section conversation and expanded workspace', async ({page}) => {
@@ -4008,7 +3731,7 @@ test.describe('chat drawer', () => {
 
     await mayaOptions.click();
     await drawer.getByRole('menu', {name: 'Options for Maya'}).getByRole('menuitem', {name: 'Edit'}).click();
-    const editMaya = page.getByRole('dialog', {name: 'Edit Maya'});
+    const editMaya = workspaceDrawer(page).getByRole('region', {name: 'Edit Maya'});
     const mayaHost = editMaya.getByRole('button', {name: 'Bot Host'});
     await expect(mayaHost).toContainText('This Mac');
     await mayaHost.click();
@@ -4021,7 +3744,9 @@ test.describe('chat drawer', () => {
     const peerRow = teamPane.locator('.team-chat-message-row.agent.peer');
     const peer = peerRow.locator('.message.peer');
     await expect(peerRow).toHaveAttribute('data-team-speaker', 'assistant:research');
-    await expect(peerRow.locator('[data-icon="bot"]')).toBeVisible();
+    // A settled peer carries its identity in the origin line rather than an
+    // avatar; avatars now mark only work in progress.
+    await expect(peerRow.locator('.team-chat-avatar')).toHaveCount(0);
     await expect(peerRow).not.toHaveClass(/human/);
     await expect(peer).toContainText('Research notes');
     await expect(peer.locator('.message-peer-origin')).not.toContainText('Agent');
@@ -4051,8 +3776,9 @@ test.describe('chat drawer', () => {
 
     await page.evaluate(() => document.documentElement.dataset.theme = 'dark');
     await drawer.getByRole('button', {name: 'New chat', exact: true}).click();
-    await page.getByRole('dialog', {name: 'New chat'}).getByRole('button', {name: 'New bot', exact: true}).click();
-    const bot = page.getByRole('dialog', {name: 'New bot'});
+    await page.locator('.team-new-chat-bar').getByRole('button', {name: 'Create new Bot', exact: true}).click();
+    await page.getByRole('region', {name: 'Conversation with New Chat'}).getByRole('button', {name: 'Edit New Chat', exact: true}).click();
+    const bot = workspaceDrawer(page).getByRole('region', {name: 'Edit New Chat', exact: true});
     const typography = await bot.evaluate((dialog) => {
       const read = (selector: string) => {
         const style = getComputedStyle(dialog.querySelector(selector)!);
@@ -4069,7 +3795,7 @@ test.describe('chat drawer', () => {
         previewDetail: read('.team-avatar-preview span'),
         settingTitle: read('.team-setting-row strong'),
         settingDetail: read('.team-setting-row small'),
-        laptopAccess: read('.team-laptop-access-menu .select-menu-trigger'),
+        laptopAccess: read('.team-device-access-menu .select-menu-trigger'),
         footerButton: read('footer .team-cancel'),
       };
       return {
@@ -4092,16 +3818,10 @@ test.describe('chat drawer', () => {
       footerButton: {size: '11.5px', weight: '550'},
     });
     await expect(bot.locator('select')).toHaveCount(0);
-    const agentTrigger = bot.getByRole('button', {name: 'Agent', exact: true});
-    await expect(agentTrigger).toContainText('Polymux');
-    await agentTrigger.click();
-    const agentMenu = page.getByRole('menu', {name: 'Agent', exact: true});
-    await expect(agentMenu.getByRole('menuitemradio')).toHaveText(['Polymux', 'Claude Code · ACP']);
-    await agentMenu.getByRole('menuitemradio', {name: 'Claude Code · ACP', exact: true}).click();
-    await expect(bot.getByRole('button', {name: 'Profile'})).toHaveCount(0);
-    await agentTrigger.click();
-    await page.getByRole('menu', {name: 'Agent', exact: true}).getByRole('menuitemradio', {name: 'Polymux', exact: true}).click();
-    await expect(agentTrigger).toContainText('Polymux');
+    await expect(bot.getByRole('radio', {name: 'Polymux Built in', exact: true})).toHaveAttribute('aria-checked', 'true');
+    await bot.getByRole('radio', {name: 'Claude Agent', exact: true}).click();
+    await expect(bot.getByRole('radio', {name: 'Claude Agent', exact: true})).toHaveAttribute('aria-checked', 'true');
+    await bot.getByRole('radio', {name: 'Polymux Built in', exact: true}).click();
     await expect(bot.locator('.team-avatar-choices.shapes button')).toHaveCount(9);
     const colours = bot.locator('.team-avatar-choices.colors > button[aria-pressed]');
     await expect(colours).toHaveCount(11);
@@ -4110,7 +3830,8 @@ test.describe('chat drawer', () => {
     await expect(colours.first()).toHaveAttribute('aria-pressed', 'true');
     await expect(colours.first()).toHaveCSS('background-image', /linear-gradient/);
     const previewTheme = bot.getByRole('radiogroup', {name: 'Avatar preview theme'});
-    const previewAvatar = bot.getByRole('img', {name: 'Bot avatar'});
+    // Created from the To: bar, so the preview carries the chat's name.
+    const previewAvatar = bot.getByRole('img', {name: 'New Chat avatar'});
     await expect(previewTheme.getByRole('radio', {name: 'Dark'})).toHaveAttribute('aria-checked', 'true');
     await expect(previewAvatar.locator('.bloub-body')).toHaveCSS('fill', 'rgb(241, 239, 233)');
     await previewTheme.getByRole('radio', {name: 'Light'}).click();
@@ -4138,8 +3859,8 @@ test.describe('chat drawer', () => {
     await expect(colours.first()).toHaveAttribute('aria-pressed', 'false');
     await colours.first().click();
     await expect(colours.first()).toHaveAttribute('aria-pressed', 'true');
-    const laptopAccess = bot.getByRole('button', {name: 'Laptop access'});
-    await expect(laptopAccess).toContainText('Ask me when needed');
+    const laptopAccess = bot.getByRole('button', {name: 'Access to This Mac', exact: true});
+    await expect(laptopAccess).toContainText('Allowed');
     const laptopAccessLayout = await laptopAccess.evaluate((button) => {
       const box = button.getBoundingClientRect();
       const label = button.querySelector(':scope > span:not(.select-menu-icon)')!.getBoundingClientRect();
@@ -4159,11 +3880,11 @@ test.describe('chat drawer', () => {
     await page.setViewportSize({width: 640, height: 420});
     await laptopAccess.scrollIntoViewIfNeeded();
     await laptopAccess.click();
-    const laptopAccessMenu = page.getByRole('menu', {name: 'Laptop access'});
-    await expect(laptopAccessMenu.getByRole('menuitemradio')).toHaveText(['Ask me when needed', 'Off']);
+    const laptopAccessMenu = page.getByRole('menu', {name: 'Access to This Mac', exact: true});
+    await expect(laptopAccessMenu.getByRole('menuitemradio')).toHaveText(['Allowed', 'Ask', 'Blocked']);
     const menuPlacement = await laptopAccessMenu.evaluate((menu) => {
       const menuBox = menu.getBoundingClientRect();
-      const triggerBox = document.querySelector('.team-laptop-access-menu .select-menu-trigger')!.getBoundingClientRect();
+      const triggerBox = document.querySelector('.team-device-access-menu .select-menu-trigger')!.getBoundingClientRect();
       return {
         portaled: menu.parentElement === document.body,
         overlapsTrigger: !(
@@ -4184,8 +3905,8 @@ test.describe('chat drawer', () => {
     expect(menuPlacement.top).toBeGreaterThanOrEqual(MENU_EDGE_MARGIN);
     expect(menuPlacement.right).toBeLessThanOrEqual(page.viewportSize()!.width - MENU_EDGE_MARGIN);
     expect(menuPlacement.bottom).toBeLessThanOrEqual(page.viewportSize()!.height - MENU_EDGE_MARGIN);
-    await laptopAccessMenu.getByRole('menuitemradio', {name: 'Off', exact: true}).click();
-    await expect(laptopAccess).toContainText('Off');
+    await laptopAccessMenu.getByRole('menuitemradio', {name: 'Blocked', exact: true}).click();
+    await expect(laptopAccess).toContainText('Blocked');
     await page.setViewportSize(originalViewport);
     const botHost = bot.getByRole('button', {name: 'Bot Host'});
     await expect(botHost).toContainText('This Mac');
@@ -4194,7 +3915,7 @@ test.describe('chat drawer', () => {
     await expect(botHost).toContainText('Studio Linux');
     await bot.getByRole('textbox', {name: 'Name'}).fill('Ari');
     await bot.getByRole('textbox', {name: 'Role'}).fill('Design reviewer');
-    await bot.getByRole('button', {name: 'Add bot'}).click();
+    await bot.getByRole('button', {name: 'Save', exact: true}).click();
     await expect(bot).toHaveCount(0);
     await expect(drawer.getByText('Ari', {exact: true})).toBeVisible();
     await expect(drawer.getByText('Design reviewer', {exact: true})).toBeVisible();
@@ -4202,7 +3923,7 @@ test.describe('chat drawer', () => {
     const ariAvatar = drawer.getByRole('img', {name: 'Ari avatar'}).locator('.bloub-body');
     await expect(ariAvatar).toHaveCSS('fill', 'rgb(241, 239, 233)');
 
-    await page.getByRole('button', {name: 'Settings'}).click();
+    await drawer.getByRole('button', {name: 'Settings', exact: true}).click();
     const settings = page.getByRole('region', {name: 'Settings'});
     await settings.getByRole('radiogroup', {name: 'Theme'}).getByRole('radio', {name: 'Light'}).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
@@ -4251,33 +3972,29 @@ test.describe('chat drawer', () => {
     const drawer = chatDrawer(page);
     await drawer.getByRole('button', {name: 'Team', exact: true}).click();
     await drawer.getByRole('button', {name: 'New chat', exact: true}).click();
-    await page.getByRole('dialog', {name: 'New chat'}).getByRole('button', {name: 'New bot', exact: true}).click();
-
-    const add = page.getByRole('dialog', {name: 'New bot'});
-    await add.getByRole('button', {name: 'Agent', exact: true}).click();
-    await page.getByRole('menu', {name: 'Agent', exact: true}).getByRole('menuitemradio', {name: 'Claude Code · ACP', exact: true}).click();
-    await expect(add.getByRole('button', {name: 'Profile'})).toHaveCount(0);
-    await add.getByRole('textbox', {name: 'Name'}).fill('Cora');
-    await add.getByRole('textbox', {name: 'Role'}).fill('Code reviewer');
-    await add.getByRole('button', {name: 'Add bot'}).click();
-    await expect(add).toHaveCount(0);
+    const bar = page.locator('.team-new-chat-bar');
+    await bar.getByRole('textbox', {name: 'Search or create Bots'}).fill('Cora');
+    await bar.getByRole('button', {name: 'Create bot “Cora”', exact: true}).click();
 
     // Options live on the drawer row rather than the conversation header.
     const coraOptions = drawer.getByRole('button', {name: 'Options for Cora'});
     await coraOptions.click();
     await drawer.getByRole('menu', {name: 'Options for Cora'}).getByRole('menuitem', {name: 'Edit'}).click();
-    const edit = page.getByRole('dialog', {name: 'Edit Cora'});
-    await expect(edit.getByRole('button', {name: 'Agent', exact: true})).toContainText('Claude Code · ACP');
-    await expect(edit.getByRole('button', {name: 'Profile'})).toHaveCount(0);
-
-    await edit.getByRole('button', {name: 'Agent', exact: true}).click();
-    await page.getByRole('menu', {name: 'Agent', exact: true}).getByRole('menuitemradio', {name: 'Polymux', exact: true}).click();
+    const edit = workspaceDrawer(page).getByRole('region', {name: 'Edit Cora', exact: true});
+    await expect(edit).toBeVisible();
+    // A bot created from the To: bar starts on Polymux; this one moves to an ACP agent.
+    await expect(edit.getByRole('radio', {name: 'Polymux Built in', exact: true})).toHaveAttribute('aria-checked', 'true');
+    await edit.getByRole('radio', {name: 'Claude Agent', exact: true}).click();
+    await expect(edit.getByRole('button', {name: 'Profile', exact: true})).toHaveCount(0);
+    await edit.getByRole('textbox', {name: 'Role'}).fill('Code reviewer');
     await edit.getByRole('button', {name: 'Save', exact: true}).click();
     await expect(edit).toHaveCount(0);
 
     await coraOptions.click();
     await drawer.getByRole('menu', {name: 'Options for Cora'}).getByRole('menuitem', {name: 'Edit'}).click();
-    await expect(page.getByRole('dialog', {name: 'Edit Cora'}).getByRole('button', {name: 'Agent', exact: true})).toContainText('Polymux');
+    const reopened = workspaceDrawer(page).getByRole('region', {name: 'Edit Cora', exact: true});
+    await expect(reopened.getByRole('radio', {name: 'Claude Agent', exact: true})).toHaveAttribute('aria-checked', 'true');
+    await expect(reopened.getByRole('button', {name: 'Profile', exact: true})).toHaveCount(0);
   });
 
   test('rings only for live work and shows the completion handoff', async ({page}) => {
@@ -4365,11 +4082,18 @@ test.describe('chat drawer', () => {
       return measured;
     };
 
+    // Summary is the conversation's default companion and an open panel wins
+    // over the next conversation, so the full track is measured with it closed.
+    const summaryToggle = page.getByRole('button', {name: 'Toggle Summary'});
+    if ((await summaryToggle.getAttribute('aria-pressed')) === 'true') await summaryToggle.click();
+    await expect(summaryCard(page)).toHaveCount(0);
+    await expect.poll(async () => (await geometry()).rightColumn).toBe(0);
+
     const open = await expectFullTeamTrack();
     expect(open.messages.width).toBeGreaterThan(1_000);
     expect(open.composer.width).toBeGreaterThan(1_000);
 
-    await page.getByRole('button', {name: 'Toggle Summary'}).click();
+    await summaryToggle.click();
     await expect(summaryCard(page)).toBeVisible();
     await expect.poll(async () => (await geometry()).rightColumn).toBe(337);
     const withSummary = await expectFullTeamTrack();
@@ -4411,80 +4135,106 @@ test.describe('chat drawer', () => {
     await expect(page.locator('main')).not.toHaveClass(/workspace-resizing/);
   });
 
-  test('filters Team contacts, prefills a new bot, and preserves filtered group selections', async ({page}) => {
+  test('filters Team contacts and creates a named bot from the To: bar', async ({page}) => {
     await page.goto('/?coldStart=0');
     const drawer = chatDrawer(page);
     await drawer.getByRole('button', {name: 'Team', exact: true}).click();
     await drawer.getByRole('button', {name: 'New chat', exact: true}).click();
-    const sheet = page.getByRole('dialog', {name: 'New chat', exact: true});
-    const search = sheet.getByRole('textbox', {name: 'Search bots and groups'});
+    const bar = page.locator('.team-new-chat-bar');
+    const search = bar.getByRole('textbox', {name: 'Search or create Bots'});
     await expect(search).toBeFocused();
-    await expect(sheet.getByRole('button', {name: 'Open group Launch room'})).toBeVisible();
+    await expect(bar.getByRole('button', {name: 'Open Maya'})).toBeVisible();
+    await expect(bar.getByRole('button', {name: 'Open Sol'})).toBeVisible();
+
     await search.fill('Zara');
-    await expect(sheet.getByText('No bots or groups named “Zara”')).toBeVisible();
-    await expect(sheet.locator('.team-new-chat-list')).toHaveClass(/at-bottom/);
-    await sheet.getByRole('button', {name: 'New bot “Zara” Create', exact: true}).click();
-    const bot = page.getByRole('dialog', {name: 'New bot', exact: true});
-    await expect(bot.getByRole('textbox', {name: 'Name', exact: true})).toHaveValue('Zara');
-    const connections = bot.getByRole('button', {name: /Connections/});
-    await expect(connections).toHaveAttribute('aria-expanded', 'false');
-    await connections.click();
-    await expect(connections).toHaveAttribute('aria-expanded', 'true');
-    // Cancel returns to the chooser that opened the bot dialog rather than the drawer.
-    await bot.getByRole('button', {name: 'Cancel', exact: true}).click();
-    await expect(bot).toHaveCount(0);
-    await expect(sheet).toBeVisible();
-    await sheet.getByRole('button', {name: 'New group', exact: true}).click();
-    const group = page.getByRole('dialog', {name: 'New group', exact: true});
-    const members = group.getByRole('textbox', {name: 'Search members'});
-    await expect(group).toContainText('3 selected');
-    await members.fill('Maya');
-    await expect(group.getByRole('checkbox')).toHaveCount(1);
-    await group.getByRole('checkbox', {name: 'Include Maya'}).uncheck();
-    await members.fill('unmatched member');
-    await expect(group.getByRole('status')).toHaveText('No matching members');
-    await expect(group).toContainText('2 selected');
-    await members.fill('');
-    await expect(group.getByRole('checkbox', {name: 'Include Linus'})).toBeChecked();
-    await expect(group.getByRole('checkbox', {name: 'Include Sol'})).toBeChecked();
-    await expect(group.getByRole('checkbox', {name: 'Include Maya'})).not.toBeChecked();
+    await expect(bar.getByRole('button', {name: 'Open Maya'})).toHaveCount(0);
+    await expect(bar.getByRole('status')).toHaveText('No bots found');
+    await bar.getByRole('button', {name: 'Create bot “Zara”'}).click();
+
+    await expect(bar).toHaveCount(0);
+    await expect(page.getByRole('region', {name: 'Conversation with Zara'})).toBeVisible();
+    await expect(drawer.getByRole('button', {name: /Open Zara/})).toBeVisible();
   });
 
-  test('creates and edits a Team group from selected agent identities', async ({page}) => {
+
+  test('creates a Team group from the To: bar and manages it from the title bar', async ({page}) => {
     await page.goto('/?coldStart=0');
     const drawer = chatDrawer(page);
     await drawer.getByRole('button', {name: 'Team', exact: true}).click();
 
     await drawer.getByRole('button', {name: 'New chat', exact: true}).click();
-    await page.getByRole('dialog', {name: 'New chat'}).getByRole('button', {name: 'New group', exact: true}).click();
-    const create = page.getByRole('dialog', {name: 'New group'});
-    await expect(create).toBeVisible();
-    await expect(create.getByRole('checkbox', {name: 'Include Maya'})).toBeChecked();
-    await expect(create.getByRole('checkbox', {name: 'Include Linus'})).toBeChecked();
-    await expect(create.getByRole('checkbox', {name: 'Include Sol'})).toBeChecked();
-    await create.getByRole('textbox', {name: 'Group name'}).fill('Release pair');
-    await create.getByRole('checkbox', {name: 'Include Sol'}).uncheck();
-    await expect(create).toContainText('2 selected');
-    await create.getByRole('button', {name: 'Create group', exact: true}).click();
+    const bar = page.locator('.team-new-chat-bar');
+    await bar.getByRole('button', {name: 'Create group chat', exact: true}).click();
 
-    await expect(create).toHaveCount(0);
+    // Group mode drops the two create rows and picks members as chips.
+    await expect(bar.getByRole('button', {name: 'Create new Bot'})).toHaveCount(0);
+    await expect(bar.getByRole('button', {name: 'Create group chat'})).toHaveCount(0);
+    await bar.getByRole('button', {name: 'Add Maya'}).click();
+    await expect(bar.getByRole('status')).toHaveText('Choose at least two bots');
+    await bar.getByRole('button', {name: 'Add Linus'}).click();
+    // A chosen bot leaves the list and becomes a chip that can be removed.
+    await expect(bar.getByRole('button', {name: 'Add Maya'})).toHaveCount(0);
+    await expect(bar.locator('.team-new-chat-chip')).toHaveCount(2);
+    await bar.getByRole('button', {name: 'Remove Maya'}).click();
+    await expect(bar.getByRole('button', {name: 'Add Maya'})).toBeVisible();
+
+    // Escaping group mode drops the selection; the numbered shortcuts pick a
+    // fresh pair by their position in the list.
+    await page.keyboard.press('Escape');
+    await expect(bar.getByRole('button', {name: 'Create group chat'})).toBeVisible();
+    await bar.getByRole('button', {name: 'Create group chat'}).click();
+    // The shortcuts number the list as it stands, so the second pick is the
+    // first bot still on offer.
+    await page.keyboard.press('Control+1');
+    await page.keyboard.press('Control+1');
+    await expect(bar.locator('.team-new-chat-chip')).toHaveCount(2);
+    await page.keyboard.press('Enter');
+
+    await expect(bar).toHaveCount(0);
+    await expect(page.getByRole('region', {name: 'Conversation with Maya, Linus'})).toBeVisible();
     await expect(drawer.locator('.chat-drawer-team-group-row')).toHaveCount(2);
-    await expect(page.getByRole('region', {name: 'Conversation with Release pair'})).toBeVisible();
-    await expect(page.getByRole('img', {name: 'Release pair group avatar'}).first()).toBeVisible();
+    await expect(drawer.getByRole('button', {name: 'Open group Maya, Linus'})).toBeVisible();
+    // The title bar names the group as you plus its members.
+    const titleIdentity = page.getByRole('button', {name: 'Edit group You, Maya, Linus', exact: true});
+    await expect(titleIdentity).toBeVisible();
 
-    await drawer.getByRole('button', {name: 'Options for Release pair'}).click();
-    const menu = drawer.getByRole('menu', {name: 'Options for Release pair'});
-    await expect(menu.getByRole('menuitem')).toHaveText(['Edit group', 'Delete group']);
-    await menu.getByRole('menuitem', {name: 'Edit group'}).click();
-    const edit = page.getByRole('dialog', {name: 'Edit Release pair'});
-    await edit.getByRole('textbox', {name: 'Group name'}).fill('Release room');
-    await edit.getByRole('checkbox', {name: 'Include Sol'}).check();
-    await edit.getByRole('button', {name: 'Save'}).click();
+    // The identity opens the group's own surface: rename, members, add.
+    await titleIdentity.click();
+    const menu = page.locator('.team-group-menu');
+    await expect(menu).toBeVisible();
+    await menu.getByRole('textbox', {name: 'Chat name'}).fill('Release pair');
+    await menu.getByRole('textbox', {name: 'Chat name'}).press('Enter');
+    await expect(page.locator('.team-conversation-title-bar').getByText('Release pair', {exact: true})).toBeVisible();
+    await expect(drawer.getByRole('button', {name: 'Open group Release pair'})).toBeVisible();
 
-    await expect(edit).toHaveCount(0);
-    await expect(page.locator('.team-conversation-title-bar').getByText('Release room', {exact: true})).toBeVisible();
-    await expect(drawer.getByRole('button', {name: 'Open group Release room'})).toBeVisible();
+    await menu.getByRole('button', {name: 'Add Member', exact: true}).click();
+    await menu.getByRole('textbox', {name: 'Add Member'}).fill('Sol');
+    await menu.getByRole('button', {name: 'Add Sol', exact: true}).click();
+    await expect(menu.getByRole('button', {name: 'Remove Sol', exact: true})).toBeVisible();
+    await menu.getByRole('button', {name: 'Remove Sol', exact: true}).click();
+    await expect(menu.getByRole('button', {name: 'Remove Sol', exact: true})).toHaveCount(0);
+
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
   });
+
+  test('reaches the group surface from the drawer row menu', async ({page}) => {
+    await page.goto('/?coldStart=0');
+    const drawer = chatDrawer(page);
+    await drawer.getByRole('button', {name: 'Team', exact: true}).click();
+
+    await drawer.getByRole('button', {name: 'Options for Launch room'}).click();
+    const rowMenu = drawer.getByRole('menu', {name: 'Options for Launch room'});
+    await expect(rowMenu.getByRole('menuitem')).toHaveText(['Edit group', 'Delete group']);
+    await rowMenu.getByRole('menuitem', {name: 'Edit group'}).click();
+
+    const menu = page.locator('.team-group-menu');
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole('textbox', {name: 'Chat name'})).toHaveValue('Launch room');
+    await menu.getByRole('button', {name: 'Remove Sol', exact: true}).click();
+    await expect(menu.getByRole('button', {name: 'Remove Sol', exact: true})).toHaveCount(0);
+  });
+
 
   test('queues rapid Team group sends and leaves historical replies settled', async ({page}) => {
     await page.goto('/?coldStart=0&teamGroupSend=slow');
@@ -4497,7 +4247,9 @@ test.describe('chat drawer', () => {
     await composer.fill('First queued update');
     await composer.press('Enter');
     await expect(group.getByText('Sending…', {exact: true})).toBeVisible();
-    await expect(group.locator('[data-team-speaker="team:linus"] [data-bloub-activity="idle"]')).toBeVisible();
+    // The historical reply stays settled: nothing on it is still working, and
+    // its time is still there while the new message sends.
+    await expect(group.locator('[data-team-speaker="team:linus"] [data-bloub-activity="working"]')).toHaveCount(0);
     await expect(group.locator('[data-team-speaker="team:linus"] .message-time')).toBeVisible();
     await composer.fill('Second queued update');
     await composer.press('Enter');
@@ -4527,26 +4279,27 @@ test.describe('chat drawer', () => {
     await expect(page.getByRole('alert')).toContainText('Demo group delivery failed');
   });
 
-  test('keeps keyboard focus inside Team dialogs and restores each opener', async ({page}) => {
+  test('keeps keyboard focus inside the Team chooser and restores its opener', async ({page}) => {
     await page.goto('/?coldStart=0');
     const drawer = chatDrawer(page);
     await drawer.getByRole('button', {name: 'Team', exact: true}).click();
 
-    const addBot = drawer.getByRole('button', {name: 'New chat', exact: true});
-    await addBot.click();
-    const newChatSheet = page.getByRole('dialog', {name: 'New chat'});
-    await expect(newChatSheet.getByRole('textbox', {name: 'Search bots and groups'})).toBeFocused();
+    const addChat = drawer.getByRole('button', {name: 'New chat', exact: true});
+    await addChat.click();
+    const bar = page.locator('.team-new-chat-bar');
+    const search = bar.getByRole('textbox', {name: 'Search or create Bots'});
+    await expect(search).toBeFocused();
+    // Escape dismisses the band and the + takes focus back.
     await page.keyboard.press('Escape');
-    await expect(addBot).toBeFocused();
-    await addBot.click();
-    await page.getByRole('dialog', {name: 'New chat'}).getByRole('button', {name: 'New bot', exact: true}).click();
-    const botDialog = page.getByRole('dialog', {name: 'New bot'});
-    await expect(botDialog.getByRole('textbox', {name: 'Name'})).toBeFocused();
+    await expect(bar).toHaveCount(0);
+    await expect(addChat).toBeFocused();
+
+    // Arrow keys read the list, and Enter takes the highlighted row.
+    await addChat.click();
+    await page.keyboard.press('ArrowDown');
+    await expect(bar.getByRole('button', {name: 'Create new Bot', exact: true})).toHaveAttribute('data-active', 'true');
     await page.keyboard.press('Escape');
-    // Closing the bot dialog returns to the chooser, and closing that returns to the drawer.
-    await expect(newChatSheet.getByRole('button', {name: 'New bot', exact: true})).toBeFocused();
-    await page.keyboard.press('Escape');
-    await expect(addBot).toBeFocused();
+    await expect(addChat).toBeFocused();
 
     const hostTrigger = page.getByRole('button', {name: 'Devices', exact: true});
     await hostTrigger.click();
@@ -4557,17 +4310,6 @@ test.describe('chat drawer', () => {
     await page.keyboard.press('Escape');
     await expect(hostTrigger).toBeFocused();
 
-    const groupTrigger = drawer.getByRole('button', {name: 'New chat', exact: true});
-    await groupTrigger.click();
-    await page.getByRole('dialog', {name: 'New chat'}).getByRole('button', {name: 'New group', exact: true}).click();
-    const groupDialog = page.getByRole('dialog', {name: 'New group'});
-    await expect(groupDialog.getByRole('textbox', {name: 'Group name'})).toBeFocused();
-    await page.keyboard.press('Shift+Tab');
-    await expect(groupDialog.getByRole('button', {name: 'Close'})).toBeFocused();
-    await page.keyboard.press('Tab');
-    await expect(groupDialog.getByRole('textbox', {name: 'Group name'})).toBeFocused();
-    await page.keyboard.press('Escape');
-    await expect(groupTrigger).toBeFocused();
   });
 
   test('keeps Team metadata legible and exposes dark keyboard focus', async ({page}) => {
@@ -4819,11 +4561,12 @@ test.describe('chat drawer', () => {
     await listOptions.click();
     let menu = drawer.getByRole('menu', {name: 'Chat list options'});
     await expect(menu.getByRole('menuitem')).toHaveText(['Group by', 'Sort by', 'Order', 'Filter']);
-    const menuTriggerBox = await listOptions.boundingBox();
+    const triggerIconBox = await listOptions.locator('svg').boundingBox();
     const optionsMenuBox = await menu.boundingBox();
-    expect(menuTriggerBox).not.toBeNull();
+    expect(triggerIconBox).not.toBeNull();
     expect(optionsMenuBox).not.toBeNull();
-    expect(optionsMenuBox!.x + optionsMenuBox!.width / 2).toBeCloseTo(menuTriggerBox!.x + menuTriggerBox!.width / 2, 0);
+    // The menu hangs from the trigger's icon rather than centring on the button.
+    expect(optionsMenuBox!.x).toBeCloseTo(triggerIconBox!.x, 0);
     let submenu = await openChatListSubmenu(drawer, 'Group by');
     await expect(submenu.getByRole('menuitemradio')).toHaveText([
       'Date', 'Folder', 'State', 'None',
@@ -5451,14 +5194,17 @@ test.describe('workspace drawer', () => {
     await drawer.getByRole('button', {name: 'Browser'}).click();
     await expect(content).not.toHaveClass(/empty/);
     await expect(content).toHaveClass(/browser/);
-    await expect(content).toHaveCSS('border-top-width', '0px');
+    await expect(content).toHaveCSS('border-top-width', '1px');
     await expect(drawer.locator('.browser-bar')).toHaveCSS('border-bottom-width', '1px');
 
     await drawer.getByLabel('New tab', {exact: true}).click();
+    await expect(content).toHaveClass(/empty/);
+    await expect(content).toHaveCSS('border-top-width', '1px');
     await drawer.locator('.workspace-launcher').getByRole('button', {name: 'Drive'}).click();
     await expect(content).not.toHaveClass(/browser/);
     await expect(content).toHaveCSS('border-top-width', '1px');
     await expect(drawer.locator('.fb')).toHaveCSS('border-top-width', '0px');
+
   });
 
   test('fits the browser page below its chrome without clipping the bottom', async ({page}) => {
@@ -5541,7 +5287,8 @@ test.describe('workspace drawer', () => {
     await address.fill('notion');
     await expect(suggestions.getByRole('option')).toHaveCount(7);
 
-    await address.press('ArrowDown');
+    // The list opens with its top row already highlighted, so the first
+    // ArrowDown steps off that row rather than onto it.
     await expect(suggestions.getByRole('option').filter({hasText: 'Roadmap'})).toHaveAttribute('aria-selected', 'true');
     await address.press('ArrowDown');
     const firstSearch = suggestions.locator('.address-suggestion:has(svg[data-icon="search"])').first();
@@ -5565,7 +5312,9 @@ test.describe('workspace drawer', () => {
     });
     expect(leftSpacing).toBe(8);
     await expect(page.getByRole('button', {name: 'Toggle Chats'})).toHaveCount(0);
-    await expect(page.getByRole('button', {name: 'Settings'})).toHaveCount(0);
+    // The app's own settings button still lives in the drawer footer, so only
+    // an exactly named Settings control counts as the main panel's chrome.
+    await expect(page.getByRole('button', {name: 'Settings', exact: true})).toHaveCount(0);
     await expect(page.getByRole('button', {name: 'Toggle Workspace'})).toHaveCount(0);
     const newTab = drawer.getByRole('button', {name: 'New Tab'});
     await expect(newTab).toBeVisible();
@@ -5983,16 +5732,23 @@ test.describe('workspace drawer', () => {
       const action = (await page.locator('.expand-workspace-action').boundingBox())!;
       return workspace.x - (action.x + action.width);
     };
+    const gapBetweenHeaderActions = async () => {
+      const plus = (await page.getByRole('button', {name: 'New tab'}).boundingBox())!;
+      const action = (await page.locator('.expand-workspace-action').boundingBox())!;
+      return action.x - (plus.x + plus.width);
+    };
     const expectedGap = await page.evaluate(() => {
       const styles = getComputedStyle(document.documentElement);
       return Number.parseFloat(styles.getPropertyValue('--main-control-gap'));
     });
     expect(await gapToWorkspace()).toBeCloseTo(expectedGap);
+    expect(await gapBetweenHeaderActions()).toBeCloseTo(expectedGap);
 
     await expand.click();
     await expect(workspaceDrawer(page)).toHaveClass(/expanded/);
     await page.waitForTimeout(500);
     expect(await gapToWorkspace()).toBeCloseTo(expectedGap);
+    expect(await gapBetweenHeaderActions()).toBeCloseTo(expectedGap);
   });
 });
 
@@ -6199,9 +5955,8 @@ test.describe('hub settings mail', () => {
     const modal = await openAppConnection(page, 'Hub');
 
     // One entry, summarising the set — not a row per account.
-    const mail = modal.getByRole('button', {name: /^Mail/});
+    const mail = modal.getByRole('tab', {name: 'Mail', exact: true});
     await expect(mail).toHaveCount(1);
-    await expect(mail).toContainText('3 mailboxes');
     await mail.click();
 
     await expect(modal.getByRole('heading', {name: 'Mail', exact: true})).toBeVisible();
@@ -6254,105 +6009,36 @@ test.describe('hub settings mail', () => {
   test('signatures are managed per mailbox with a saved default', async ({page}) => {
     await page.setViewportSize({width: 760, height: 640});
     await page.goto('/');
-    const connections = await openConnections(page);
-    // At this width the chat drawer sits over the workspace, so it is closed
-    // once Connections is open and the connection detail has the room the
-    // signature toolbar is measured in.
-    await page.getByRole('button', {name: 'Toggle Chats'}).click();
-    await connections.locator('.marketplace-strip').getByRole('button', {name: /^Hub,/}).click();
-    const modal = page.getByRole('dialog', {name: 'Hub'});
-    await expect(modal).toBeVisible();
-    await modal.getByRole('button', {name: /^Mail/}).click();
+    const modal = await openAppConnection(page, 'Hub');
     await modal.getByRole('button', {name: 'Manage signatures'}).click();
 
-    const accountMenu = modal.getByRole('button', {name: 'Mail accounts'});
-    await expect(accountMenu).toBeVisible();
-    const compactWidth = (await accountMenu.boundingBox())?.width ?? Infinity;
-    expect(Math.abs(compactWidth - 160)).toBeLessThanOrEqual(0.5);
-    const initialChevron = await accountMenu.evaluate((button) => {
-      const trigger = button.getBoundingClientRect();
-      const chevron = button.querySelector('[data-icon="chevron"]')?.getBoundingClientRect();
-      const icon = button.querySelector('.select-menu-icon')?.getBoundingClientRect();
-      const label = button.querySelector(':scope > span:not(.select-menu-icon)');
-      if (!chevron) throw new Error('Account menu lost its chevron');
-      if (!icon || !label) throw new Error('Account menu lost its icon or label');
-      const range = document.createRange();
-      range.selectNodeContents(label);
-      return {
-        x: chevron.left,
-        labelGap: range.getBoundingClientRect().left - icon.right,
-        topInset: chevron.top - trigger.top,
-        rightInset: trigger.right - chevron.right,
-      };
-    });
-    expect(Math.abs(initialChevron.labelGap - 6)).toBeLessThanOrEqual(0.5);
-    expect(Math.abs(initialChevron.topInset - initialChevron.rightInset)).toBeLessThanOrEqual(1);
+    const accountTabs = modal.getByRole('tablist', {name: 'Mail accounts'});
+    await expect(accountTabs).toBeVisible();
+    // One tab per mailbox, plus the combined view the pane opens on.
+    for (const account of ['All Signatures', 'demo@example.com', 'demo@work.example', 'team@example.co'])
+      await expect(accountTabs.getByRole('tab', {name: account, exact: true})).toHaveCount(1);
+    await expect(accountTabs.getByRole('tab', {name: 'All Signatures', exact: true})).toHaveAttribute('aria-selected', 'true');
     await expect(modal.getByRole('region', {name: 'Signature choices'})).toContainText('Personal');
     await expect(modal.getByRole('region', {name: 'Signature choices'})).toContainText('Work');
 
-    await accountMenu.click();
-    const accountList = modal.getByRole('menu', {name: 'Mail accounts'});
-    const menuBounds = await accountList.evaluate((list) => {
+    await accountTabs.getByRole('tab', {name: 'demo@work.example', exact: true}).click();
+    await expect(accountTabs.getByRole('tab', {name: 'demo@work.example', exact: true})).toHaveAttribute('aria-selected', 'true');
+    await expect(modal.getByRole('region', {name: 'Signature choices'})).toContainText('Work');
+    await accountTabs.getByRole('tab', {name: 'All Signatures', exact: true}).click();
+    await expect(accountTabs.getByRole('tab', {name: 'All Signatures', exact: true})).toHaveAttribute('aria-selected', 'true');
+
+    // The account picker stays inside the settings pane rather than bleeding
+    // past its edges, however many mailboxes are linked.
+    const pickerBounds = await accountTabs.evaluate((list) => {
       const detail = list.closest('.comms-detail');
-      const trigger = detail?.querySelector<HTMLButtonElement>('.comms-signature-toolbar .select-menu-trigger');
-      if (!detail) throw new Error('Signature menu lost its detail pane');
-      if (!trigger) throw new Error('Signature menu lost its trigger');
-      const menu = list.getBoundingClientRect();
+      if (!detail) throw new Error('Signature picker lost its detail pane');
+      const picker = list.getBoundingClientRect();
       const pane = detail.getBoundingClientRect();
-      return {
-        menuLeft: menu.left,
-        menuRight: menu.right,
-        menuWidth: menu.width,
-        triggerLeft: trigger.getBoundingClientRect().left,
-        triggerWidth: trigger.getBoundingClientRect().width,
-        paneLeft: pane.left,
-        paneRight: pane.right,
-      };
+      return {left: picker.left, right: picker.right, paneLeft: pane.left, paneRight: pane.right};
     });
-    expect(Math.abs(menuBounds.menuLeft - menuBounds.triggerLeft)).toBeLessThanOrEqual(0.5);
-    expect(Math.abs(menuBounds.menuWidth - menuBounds.triggerWidth)).toBeLessThanOrEqual(0.5);
-    expect(menuBounds.menuLeft).toBeGreaterThanOrEqual(menuBounds.paneLeft - 1);
-    expect(menuBounds.menuRight).toBeLessThanOrEqual(menuBounds.paneRight + 1);
-    const overflowStyles = await accountList.evaluate((list) => {
-      const triggerLabel = list.parentElement?.querySelector<HTMLElement>('.select-menu-trigger > span:not(.select-menu-icon)');
-      const optionLabel = list.querySelector<HTMLElement>('.polymux-dropdown-item > span:not(.select-menu-icon):not(.select-menu-check-slot)');
-      if (!triggerLabel || !optionLabel) throw new Error('Account menu lost an ellipsis label');
-      const trigger = getComputedStyle(triggerLabel);
-      const option = getComputedStyle(optionLabel);
-      return {
-        trigger: [trigger.overflow, trigger.textOverflow, trigger.whiteSpace],
-        option: [option.overflow, option.textOverflow, option.whiteSpace],
-      };
-    });
-    expect(overflowStyles.trigger).toEqual(['hidden', 'ellipsis', 'nowrap']);
-    expect(overflowStyles.option).toEqual(['hidden', 'ellipsis', 'nowrap']);
-    const initialMenuWidth = (await accountList.boundingBox())?.width ?? 0;
-    const initialTriggerWidth = (await accountMenu.boundingBox())?.width ?? 0;
-    await modal.getByRole('menuitemradio', {name: 'demo@work.example'}).click();
-    await expect(accountList).toBeVisible();
-    await expect(modal.getByRole('menuitemradio', {name: 'demo@work.example'})).toHaveAttribute('aria-checked', 'true');
-    expect(Math.abs(((await accountList.boundingBox())?.width ?? 0) - initialMenuWidth)).toBeLessThanOrEqual(0.5);
-    expect(Math.abs(((await accountMenu.boundingBox())?.width ?? 0) - initialTriggerWidth)).toBeLessThanOrEqual(0.5);
-    const selectedTrigger = await accountMenu.evaluate((button) => {
-      const chevron = button.querySelector('[data-icon="chevron"]')?.getBoundingClientRect();
-      const icon = button.querySelector('.select-menu-icon')?.getBoundingClientRect();
-      const label = button.querySelector(':scope > span:not(.select-menu-icon)');
-      if (!chevron) throw new Error('Account menu lost its chevron');
-      if (!icon || !label) throw new Error('Account menu lost its icon or label');
-      const range = document.createRange();
-      range.selectNodeContents(label);
-      return {chevronX: chevron.left, labelGap: range.getBoundingClientRect().left - icon.right};
-    });
-    expect(Math.abs(selectedTrigger.chevronX - initialChevron.x)).toBeLessThanOrEqual(0.5);
-    expect(Math.abs(selectedTrigger.labelGap - initialChevron.labelGap)).toBeLessThanOrEqual(0.5);
-    await modal.getByRole('menuitemradio', {name: 'All Signatures'}).click();
-    await expect(accountList).toBeVisible();
-    expect(Math.abs(((await accountList.boundingBox())?.width ?? 0) - initialMenuWidth)).toBeLessThanOrEqual(0.5);
-    expect(Math.abs(((await accountMenu.boundingBox())?.width ?? 0) - initialTriggerWidth)).toBeLessThanOrEqual(0.5);
-    await modal.getByRole('menuitemradio', {name: 'demo@work.example'}).click();
-    await expect(accountList).toBeVisible();
-    await modal.getByRole('heading', {name: 'Signatures', exact: true}).click();
-    await expect(accountList).toHaveCount(0);
+    expect(pickerBounds.left).toBeGreaterThanOrEqual(pickerBounds.paneLeft - 1);
+    expect(pickerBounds.right).toBeLessThanOrEqual(pickerBounds.paneRight + 1);
+
     await modal.getByRole('button', {name: 'Add signature'}).click();
     const editor = modal.getByRole('region', {name: 'Signature editor'});
     await editor.getByLabel('Name').fill('Events');
@@ -6366,7 +6052,7 @@ test.describe('hub settings mail', () => {
     await defaultControl.click();
     await expect(defaultControl).toBeChecked();
     const choices = modal.getByRole('region', {name: 'Signature choices'});
-    await choices.getByRole('button', {name: /Work/}).click();
+    await choices.getByRole('button', {name: /Personal/}).click();
     await expect(editor.getByRole('checkbox')).not.toBeChecked();
     await choices.getByRole('button', {name: /Events/}).click();
     await expect(editor.getByRole('checkbox')).toBeChecked();
@@ -6396,7 +6082,7 @@ test.describe('hub settings mail', () => {
     await expect(modal.getByRole('button', {name: 'Save signatures'})).toBeDisabled();
 
     await modal.getByRole('button', {name: 'Cancel'}).click();
-    await modal.locator('.comms-mailboxes li', {hasText: 'demo@work.example'}).getByRole('button', {name: 'Signatures'}).click();
+    await modal.locator('.comms-mailboxes li', {hasText: 'demo@example.com'}).getByRole('button', {name: 'Signatures'}).click();
     await expect(modal.getByRole('region', {name: 'Signature choices'})).toContainText('Events');
     await modal.getByRole('region', {name: 'Signature choices'}).getByRole('button', {name: /Events/}).click();
     await expect(modal.getByRole('region', {name: 'Signature editor'}).getByRole('checkbox')).toBeChecked();
@@ -7050,8 +6736,9 @@ test.describe('hub view', () => {
     await incognito.click();
     await expect(incognito).toHaveAttribute('aria-checked', 'true');
     await page.keyboard.press('Escape');
-    await page.getByRole('button', {name: 'Close Connections'}).click();
-    await page.locator('.workspace-launcher-row', {hasText: 'Hub'}).click();
+    // The Hub tab is already the workspace's page, so leave its settings for
+    // the conversation list rather than reopening the app.
+    await page.locator('.hub-view').locator('.hub-view-source', {hasText: 'All Platforms'}).click();
     const view = page.locator('.hub-view');
     const chat = view.locator('.hub-view-row', {hasText: 'Family'});
     const unread = chat.locator('.hub-view-chat-unread');
@@ -9349,7 +9036,7 @@ test.describe('hub platform setup', () => {
   test('offers the official download when the WeChat desktop app is missing', async ({page}) => {
     await page.goto('/?wechat=missing');
     const modal = await openAppConnection(page, 'Hub');
-    await modal.getByRole('button', {name: /^WeChat/}).click();
+    await modal.getByRole('tab', {name: 'WeChat', exact: true}).click();
 
     const download = modal.getByRole('button', {name: 'Download WeChat'});
     await expect(download).toBeVisible();
@@ -9371,10 +9058,9 @@ test.describe('hub multi-account', () => {
     await page.goto('/');
     const modal = await openAppConnection(page, 'Hub');
 
-    // The rail summarises plurality instead of naming only the first account.
-    const rail = modal.getByRole('button', {name: /Instagram/});
-    await expect(rail).toContainText('2 accounts');
-    await rail.click();
+    // The platform picker switches the pane rather than naming only the first
+    // account, and every linked account is listed in it.
+    await modal.getByRole('tab', {name: 'Instagram', exact: true}).click();
 
     await expect(modal.getByRole('heading', {name: 'Linked accounts'})).toBeVisible();
     await expect(modal.getByRole('code').filter({hasText: '@carl.builds'})).toBeVisible();
@@ -9626,14 +9312,14 @@ test.describe('browser settings', () => {
   async function openBrowserTab(page: import('@playwright/test').Page) {
     await page.goto('/');
     // Browser is always available, so it is listed among the connections and
-    // configured in its own detail.
+    // configured in its own workspace tab.
     return openAppConnection(page, 'Browser');
   }
 
   test('opens on passwords, and the rail reaches every section', async ({page}) => {
     const modal = await openBrowserTab(page);
     await expect(
-      modal.getByText('Passwords, downloads, site permissions and browsing data.').first(),
+      modal.getByRole('heading', {name: 'Browser settings', exact: true}),
     ).toBeVisible();
 
     // Five sections, in the order the rail lists them.
@@ -9958,7 +9644,7 @@ test.describe('calendar workspace', () => {
     await page.goto('/?workspaceView=calendar&coldStart=0');
     const calendar = page.getByRole('region', {name: 'Calendar'});
     const toolbar = calendar.locator('.calendar-toolbar');
-    const compactMenu = calendar.getByRole('button', {name: 'Calendars', exact: true});
+    const compactMenu = calendar.locator('.compact-calendar-menu').getByRole('button', {name: 'Calendars', exact: true});
     await expect(compactMenu).toBeVisible();
     await expect(calendar.getByRole('button', {name: 'Hide calendars'})).toBeHidden();
     await expect(calendar.locator('.calendar-sidebar')).toBeHidden();
@@ -9982,11 +9668,31 @@ test.describe('calendar workspace', () => {
     await expect(toolbar).toHaveCSS('height', `${toolbarHeight}px`);
   });
 
+  test('keeps suggested events in the sidebar as a switchable view', async ({page}) => {
+    await page.setViewportSize({width: 1100, height: 720});
+    await page.goto('/?workspaceView=calendar&coldStart=0');
+    const calendar = page.getByRole('region', {name: 'Calendar'});
+    const sidebar = calendar.locator('.calendar-sidebar');
+    const suggestedView = sidebar.getByRole('button', {name: /Suggested events/});
+    await expect(suggestedView).toBeVisible();
+    await expect(calendar.locator('.suggestions-strip')).toHaveCount(0);
+    await suggestedView.click();
+    await expect(sidebar.getByRole('button', {name: 'Review Dinner Sunday'})).toBeVisible();
+
+    await sidebar.getByRole('button', {name: 'Calendars', exact: true}).click();
+    await expect(calendar.getByText('iCloud', {exact: true})).toBeVisible();
+    await expect(sidebar.getByRole('button', {name: 'Review Dinner Sunday'})).toHaveCount(0);
+
+    await suggestedView.click();
+    await expect(sidebar.getByRole('button', {name: 'Review Dinner Sunday'})).toBeVisible();
+  });
+
   test('switches views and creates, edits, and deletes an event', async ({page}) => {
     await page.goto('/?workspaceView=calendar&coldStart=0');
     const calendar = page.getByRole('region', {name: 'Calendar'});
     await expect(calendar).toBeVisible();
     await expect(calendar.locator('.month-grid')).toBeVisible();
+    await expect(calendar.getByRole('button', {name: 'Calendar settings'}).locator('svg')).toHaveAttribute('width', '14');
     await expect(calendar.getByText('iCloud', {exact: true})).toBeVisible();
     await expect(calendar.getByText('Google', {exact: true})).toBeVisible();
 

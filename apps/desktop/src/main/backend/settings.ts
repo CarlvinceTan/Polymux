@@ -1,5 +1,7 @@
 import {clearFaviconCache} from "../browser/favicon.js";
 import {SUPPORTED_LANGUAGES, supportedLanguage} from "@polymux/protocol";
+import { REASONING_EFFORTS, reasoningEffort } from "./models.js";
+export { REASONING_EFFORTS, reasoningEffort };
 import type {BrowserSettingsDto, GeneralSettingsDto, ReasoningEffort} from "@polymux/protocol";
 import {app, nativeTheme} from "electron";
 import {
@@ -173,7 +175,7 @@ export function generalSettingsUpdate(
   )
     throw new Error("reasoningLevel must be a supported reasoning effort");
   if (record.pinnedViews !== undefined && !validPinnedViews(record.pinnedViews))
-    throw new Error("pinnedViews must be an array of drive, calendar, hub, tasks, phone, locker, media, terminal, ide, usage, or finance");
+    throw new Error("pinnedViews must be an array of drive, calendar, hub, tasks, mobile, vault, media, terminal, ide, usage, or finance");
   const locationEnabled =
     typeof record.locationEnabled === "boolean"
       ? record.locationEnabled
@@ -241,29 +243,6 @@ export function generalSettingsUpdate(
   };
 }
 
-export const REASONING_EFFORTS: ReasoningEffort[] = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
-
-/** Returns the value when it names a supported effort, otherwise the fallback.
- * The fallback may be null when the caller needs to know whether a raw value
- * was accepted at all (update validation). */
-
-export function reasoningEffort(
-  value: unknown,
-  fallback: ReasoningEffort | null,
-): ReasoningEffort | null {
-  return typeof value === "string" &&
-    REASONING_EFFORTS.includes(value as ReasoningEffort)
-    ? (value as ReasoningEffort)
-    : fallback;
-}
 
 export const AUTO_STOP_MIN_SECONDS = 2;
 
@@ -317,23 +296,25 @@ export function requiredLocation(value: unknown): NonNullable<GeneralSettingsDto
   return { latitude, longitude, accuracy, updatedAt: record.updatedAt };
 }
 
-const PINNABLE_VIEWS = new Set(['drive', 'calendar', 'hub', 'tasks', 'phone', 'locker', 'media', 'terminal', 'ide', 'usage', 'finance']);
+const PINNABLE_VIEWS = new Set(['drive', 'calendar', 'hub', 'tasks', 'mobile', 'vault', 'media', 'terminal', 'ide', 'usage', 'finance']);
 
 function validPinnedViews(value: unknown): string[] | false {
   if (!Array.isArray(value)) return false;
   const seen = new Set<string>();
   const result: string[] = [];
   for (const item of value) {
-    if (typeof item !== 'string' || !PINNABLE_VIEWS.has(item) || seen.has(item)) return false;
-    seen.add(item);
-    result.push(item);
+    // One-time rename: the vault tab used to be called 'locker'.
+    const view = item === 'locker' ? 'vault' : item;
+    if (typeof view !== 'string' || !PINNABLE_VIEWS.has(view) || seen.has(view)) return false;
+    seen.add(view);
+    result.push(view);
   }
   return result;
 }
 
 function pinnedViewsPreference(value: unknown): GeneralSettingsDto['pinnedViews'] {
   if (!Array.isArray(value)) return [];
-  return value.filter(
+  return value.map((item) => (item === 'locker' ? 'vault' : item)).filter(
     (item): item is GeneralSettingsDto['pinnedViews'][number] =>
       typeof item === 'string' && PINNABLE_VIEWS.has(item),
   ).filter((item, i, arr) => arr.indexOf(item) === i);

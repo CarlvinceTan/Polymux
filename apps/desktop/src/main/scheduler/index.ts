@@ -49,6 +49,7 @@ export class Scheduler {
   readonly #listeners = new Set<(items: ScheduleDto[]) => void>();
   /** Ids currently executing, so a slow run is never started twice. */
   readonly #running = new Set<string>();
+  readonly #pauseAfterRun = new Set<string>();
   #items: ScheduleDto[] = [];
   #timer?: ReturnType<typeof setTimeout>;
   #started = false;
@@ -116,6 +117,7 @@ export class Scheduler {
     const now = this.#now();
     const item: ScheduleDto = {
       id: randomUUID(),
+      ...(input.botId ? {botId: input.botId} : {}),
       title: input.title.trim() || "Untitled schedule",
       prompt: input.prompt.trim(),
       frequency: withZone(input.frequency),
@@ -139,7 +141,11 @@ export class Scheduler {
     if (patch.status !== undefined) item.status = patch.status;
     // A running schedule keeps its live status: pausing it stops the next
     // firing, not the one already in flight.
-    if (this.#running.has(id)) item.status = "running";
+    if (this.#running.has(id)) {
+      if (patch.status === "paused") this.#pauseAfterRun.add(id);
+      else if (patch.status === "active") this.#pauseAfterRun.delete(id);
+      item.status = "running";
+    }
     else if (item.status !== "paused") {
       item.nextRunAt = this.#computeNext(item, this.#now());
       item.status = item.nextRunAt === undefined ? "done" : "active";
@@ -212,6 +218,7 @@ export class Scheduler {
 
   async #fire(item: ScheduleDto): Promise<void> {
     if (this.#running.has(item.id)) return;
+    if (item.status === "paused") this.#pauseAfterRun.add(item.id);
     this.#running.add(item.id);
     const startedAt = this.#now();
     const run: ScheduleRunDto = {id: randomUUID(), startedAt, outcome: "running"};
@@ -249,6 +256,11 @@ export class Scheduler {
     const run = item.history[0];
     if (run && run.outcome === "running") Object.assign(run, result, {finishedAt: now});
     item.unread = true;
+    if (this.#pauseAfterRun.delete(item.id)) {
+      item.status = "paused";
+      item.nextRunAt = undefined;
+      return;
+    }
     if (result.outcome === "failed") item.status = "failed";
     else item.status = item.nextRunAt === undefined ? "done" : "active";
   }
@@ -293,7 +305,7 @@ function withZone(frequency: ScheduleFrequencyDto): ScheduleFrequencyDto {
 }
 
 const STATUSES = new Set(["active", "paused", "running", "failed", "done"]);
-const KINDS = new Set(["once", "hourly", "daily", "weekly", "monthly", "yearly"]);
+const KINDS = new Set(["once", "hourly", "daily", "weekly", "monthly", "yearly", "cron"]);
 
 function readSchedule(value: unknown): ScheduleDto | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -302,6 +314,7 @@ function readSchedule(value: unknown): ScheduleDto | null {
   if (typeof input.id !== "string" || !frequency || !KINDS.has(frequency.kind)) return null;
   return {
     id: input.id,
+    ...(typeof input.botId === "string" && input.botId ? {botId: input.botId} : {}),
     title: typeof input.title === "string" ? input.title : "Untitled schedule",
     prompt: typeof input.prompt === "string" ? input.prompt : "",
     frequency,

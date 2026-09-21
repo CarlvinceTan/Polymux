@@ -29,6 +29,16 @@
     /** The step's own outcome, shown under its label. Set when a counted row
      * ("Ran 2 commands") folds each call it stands for in as one of its steps. */
     result?: string;
+    /** The operation a step stands for. Steps carry the kind of the call they
+     * came from so an indented row wears the glyph of what it actually did
+     * rather than reading as undifferentiated detail. */
+    kind?: AgentActivityKind;
+    /** The glyph this step draws, when the call it came from had one of its
+     * own (a browser tab, an exact window). */
+    icon?: 'globe' | 'computer';
+    /** A platform's own mark for a step, when the call was one of the hub's
+     * accounts. */
+    logo?: Platform;
   };
 
   export type AgentActivityItem = {
@@ -47,6 +57,8 @@
     target?: string;
     result?: string;
     steps?: AgentActivityStep[];
+    /** Draw this activity as a conversational event rather than in the tool trail. */
+    display?: 'inline';
     /** How many calls this row stands for. A collapsed stretch of identical
      * calls stays counted so the settled trail can still say "Ran 2 commands". */
     count?: number;
@@ -57,13 +69,11 @@
 
 <script lang="ts">
   import {onMount} from 'svelte';
-  import {fade, fly} from 'svelte/transition';
-  import {cubicOut} from 'svelte/easing';
-  import {activityDuration, collapseActivities, formatElapsedSeconds, nextDurationTickDelay, settledActivities} from './activities';
+  import {fade} from 'svelte/transition';
+  import {activityChainLabel, activityChains, activityDuration, collapseActivities, formatElapsedSeconds, nextDurationTickDelay} from './activities';
   import Icon from '../../shared/components/Icon.svelte';
   import LiveActivityPreview from '../../shared/components/LiveActivityPreview.svelte';
   import PlatformLogo from '../../shared/components/PlatformLogo.svelte';
-  import {MAIN_UI_ICON_SIZE, MAIN_UI_ICON_STROKE_WIDTH} from '../../shared/layout/iconSizing';
   import {t} from '../../../i18n';
 
   export let activities: AgentActivityItem[] = [];
@@ -71,91 +81,64 @@
   export let completedAt: string | undefined = undefined;
   export let streaming = false;
 
-  // A live run narrates itself in full, then folds back to its counted summary
-  // as soon as it settles. Starting from the incoming prop also covers the
-  // component's first paint, before a reactive streaming change can occur.
-  let expanded = streaming;
+  // The trail sits under one ruled heading. While the run is live the work
+  // stays in view — the heading and the rows are one block, the way ChatGPT's
+  // trail reads as it fills — and once the run settles the block folds to its
+  // heading so a finished run stops pushing the reply down the page.
+  let expanded = false;
   let previousStreaming = streaming;
-  let now = Date.now();
-  /** Per-row detail disclosure, keyed by activity id. Mirrors ChatGPT's
-   * trail, where a row's extra detail stays hidden until that row is opened. */
-  let detailOpen: Record<string, boolean> = {};
-  /** Computer and Browser rows share one content-only preview slot. */
-  let previewOpenId: string | null = null;
 
-  // Keep a user's manual fold choice for the rest of the current run, but do
-  // not let an opened live trail spill into the finished transcript. A future
-  // run mounted into the same component opens its narration again.
+  /** A step the agent is on right now, so the row can carry the sweep. */
+  function isWorking(activity: AgentActivityItem): boolean {
+    return activity.status === 'active' || activity.status === 'pending';
+  }
+  let now = Date.now();
+  /** Per-row disclosure, keyed by activity id: a row's own result, its steps,
+   * or its live preview waits behind its own chevron. */
+  let openRow: Record<string, boolean> = {};
+  /** Groups ("Read 3 files") open one level out to the calls behind them. */
+  let groupOpen: Record<string, boolean> = {};
+
+  // A manual choice lasts through the run; completion folds its history.
   $: if (streaming !== previousStreaming) {
     previousStreaming = streaming;
-    expanded = streaming;
-    detailOpen = {};
-    previewOpenId = null;
+    expanded = false;
+    openRow = {};
+    groupOpen = {};
   }
 
   $: elapsed = Math.max(1, activityDuration(startedAt, completedAt, now));
   $: collapsed = collapseActivities(activities);
-  $: settled = settledActivities(collapsed);
-  $: latest = collapsed.at(-1);
-  // Settled shows the codex-style summary: one counted row per stretch of the
-  // same work ("Ran 2 commands"), plus anything that failed. The full trail
-  // waits behind the heading. A manually folded live run keeps only its latest
-  // status line; otherwise its chronological narration stays visible.
-  $: visibleActivities = expanded ? collapsed : streaming && latest ? [latest] : settled;
-  // Collapsed streaming shows exactly one row, so a swap is a handoff: the
-  // outgoing row fades out, then the incoming one slides up into its place.
-  // Rows are stacked in a single grid cell so the two never push each other.
-  $: solo = !expanded && streaming;
-  $: if (previewOpenId && !collapsed.some((activity) => activity.id === previewOpenId && activity.preview)) previewOpenId = null;
+  $: chains = activityChains(collapsed);
+  $: failures = activities.filter((activity) => activity.status === 'failed').length;
+  $: trailVisible = activities.length > 0 && (streaming || expanded);
 
   function toggleExpanded(): void {
-    if (!activities.length) return;
+    if (!activities.length || streaming) return;
     expanded = !expanded;
-    if (!expanded) previewOpenId = null;
   }
 
-  function togglePreview(id: string): void {
-    previewOpenId = previewOpenId === id ? null : id;
+  function toggleGroup(id: string): void {
+    groupOpen = {...groupOpen, [id]: !(groupOpen[id] ?? false)};
   }
 
-  /** Reasoning opens as its tokens arrive, but stays a normal disclosure so a
-   * user can fold it for the rest of the turn. Other activity detail remains
-   * closed until explicitly requested. */
-  function detailIsOpen(activity: AgentActivityItem, opened: Record<string, boolean>, isStreaming: boolean): boolean {
-    return opened[activity.id] ?? (isStreaming && activity.kind === 'thinking' && Boolean(activity.result));
+  /** One preview at a time: two live frames would double the cost and split
+   * the trail's attention. Opening a second closes the first. */
+  function toggleRow(activity: AgentActivityItem): void {
+    const opening = !(openRow[activity.id] ?? false);
+    const next: Record<string, boolean> = {...openRow};
+    if (opening && activity.preview) {
+      for (const [id, open] of Object.entries(next)) {
+        if (open && collapsed.some((item) => item.id === id && item.preview)) delete next[id];
+      }
+    }
+    next[activity.id] = opening;
+    openRow = next;
   }
 
-  function toggleDetail(activity: AgentActivityItem): void {
-    detailOpen = {...detailOpen, [activity.id]: !detailIsOpen(activity, detailOpen, streaming)};
+  function rowHasDetail(activity: AgentActivityItem): boolean {
+    return Boolean(activity.result || activity.steps?.length || activity.preview);
   }
-
-  /** Live rows key on the activity's own id; settled ones key under a prefix
-   * of their own, so the handoff re-inserts the rows and they cross-fade in
-   * rather than the last live label hard-swapping into a summary row. */
-  function rowKey(activity: AgentActivityItem): string {
-    return streaming ? activity.id : `settled:${activity.id}`;
-  }
-
-
-  const OUT_MS = 140;
-  const IN_MS = 240;
-
-  /**
-   * A fixed 1s interval drifts and gets coalesced whenever the main thread is
-   * busy, which makes the counter stall and then jump. Each tick is instead
-   * scheduled to land just after the next true elapsed-second boundary, so the
-   * displayed value advances once per second regardless of interval jitter.
-   */
-  onMount(() => {
-    let timer = 0;
-    const tick = () => {
-      now = Date.now();
-      if (completedAt) return;
-      timer = window.setTimeout(tick, nextDurationTickDelay(startedAt, now) + 4);
-    };
-    tick();
-    return () => window.clearTimeout(timer);
-  });
 
   /** How far through its current cycle a looping animation is, 0–1. */
   function cycleFraction(animation: Animation): number {
@@ -181,7 +164,7 @@
      */
     const measure = () => {
       const row = node.getBoundingClientRect();
-      const label = node.querySelector('.activity-copy > span, .activity-copy .activity-row-line > span');
+      const label = node.querySelector('.activity-label');
       const box = label ? label.getBoundingClientRect() : row;
       const ink = String(Math.max(40, Math.round(box.right - row.left)));
       // Where the label starts within the row, so it can place the wave from the
@@ -207,6 +190,23 @@
     return {update: measure, destroy: () => observer.disconnect()};
   }
 
+  /**
+   * A fixed 1s interval drifts and gets coalesced whenever the main thread is
+   * busy, which makes the counter stall and then jump. Each tick is instead
+   * scheduled to land just after the next true elapsed-second boundary, so the
+   * displayed value advances once per second regardless of interval jitter.
+   */
+  onMount(() => {
+    let timer = 0;
+    const tick = () => {
+      now = Date.now();
+      if (completedAt || !streaming) return;
+      timer = window.setTimeout(tick, nextDurationTickDelay(startedAt, now) + 4);
+    };
+    tick();
+    return () => window.clearTimeout(timer);
+  });
+
   const activityIcons: Record<AgentActivityKind, 'brain' | 'compact' | 'book-open' | 'search' | 'terminal' | 'task' | 'sparkles' | 'wrench' | 'link' | 'edit' | 'chat' | 'archive' | 'mail'> = {
     thinking: 'brain',
     compacting: 'compact',
@@ -224,90 +224,158 @@
     plugin: 'wrench',
     commentary: 'chat',
   };
+
+  /** Rows draw a step down from the heading's own size, so a trail of dozens
+   * of calls still reads as one block rather than as a second column of text.
+   * Every glyph in the trail shares one size, nested steps included. */
+  const ROW_GLYPH = 13;
+  const ROW_CHEVRON = 12;
 </script>
 
-<section class:streaming class:expanded class="agent-activity" aria-label={$t('activity.title')}>
-  <button
-    type="button"
-    class="agent-activity-heading"
-    aria-expanded={expanded}
-    onclick={toggleExpanded}
-  >
-    <span>{streaming ? $t('activity.workingFor', {elapsed: formatElapsedSeconds(elapsed)}) : $t('activity.workedFor', {elapsed: formatElapsedSeconds(elapsed)})}</span>
-    {#if activities.length}<Icon name="chevron" size={MAIN_UI_ICON_SIZE} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>{/if}
-  </button>
+{#snippet glyph(kind: AgentActivityKind, icon: AgentActivityItem['icon'], logo: AgentActivityItem['logo'], size: number)}
+  <span class="activity-glyph" style={`--glyph-size:${size}px`}>
+    {#if logo}<PlatformLogo platform={logo} size={size}/>{:else}<Icon name={icon ?? activityIcons[kind]} size={size}/>{/if}
+  </span>
+{/snippet}
 
-  {#if visibleActivities.length}
-    <ul class="agent-activity-list" class:solo aria-live="polite">
-      {#each visibleActivities as activity (rowKey(activity))}
-        <li
-          in:fly|local={{y: solo ? 9 : 0, duration: solo ? IN_MS : 0, delay: solo ? OUT_MS : 0, easing: cubicOut}}
-          out:fade|local={{duration: solo ? OUT_MS : 0, easing: cubicOut}}
-          class:settled={!streaming}
-          use:glint={activity.label} class:active={activity.status === 'active'} class:live={streaming && activity.status === 'active'} class:failed={activity.status === 'failed'} class:commentary={activity.kind === 'commentary'}>
-          {#if activity.kind !== 'commentary'}
-            {#if activity.logo}
-              <PlatformLogo platform={activity.logo} size={17}/>
-            {:else}
-              <Icon name={activity.icon ?? activityIcons[activity.kind]} size={17}/>
-            {/if}
-          {/if}
-          {#if activity.kind === 'commentary'}
-            <!-- Narration is the model's own prose. Show it as ordinary wrapping
-                 text, not as a truncated disclosure row. -->
-            <span class="activity-copy">{activity.label}</span>
-          {:else if (expanded || !streaming) && activity.preview}
-            <button
-              type="button"
-              class="activity-copy activity-detail-toggle activity-preview-toggle"
-              aria-label={`${activity.label}${activity.target ? ` ${activity.target}` : ''}`}
-              aria-expanded={previewOpenId === activity.id}
-              onclick={() => togglePreview(activity.id)}
-            >
-              <span>{activity.label}{#if activity.target} <span class="activity-target">{activity.target}</span>{/if}</span>
-              {#if previewOpenId === activity.id}
-                <LiveActivityPreview source={activity.preview}/>
+{#snippet rowLabel(activity: AgentActivityItem, toggle: boolean)}
+  <span class="activity-text">
+    <span class="activity-label">{activity.label}</span>
+    {#if activity.target}<span class="activity-target">{activity.target}</span>{/if}
+  </span>
+  {#if toggle}<Icon name="chevron" size={ROW_CHEVRON}/>{/if}
+{/snippet}
+
+{#snippet row(activity: AgentActivityItem)}
+  {@const detail = rowHasDetail(activity)}
+  {@const open = openRow[activity.id] ?? false}
+  {@render glyph(activity.kind, activity.icon, activity.logo, ROW_GLYPH)}
+  <div class="activity-body">
+    {#if detail}
+      <button
+        type="button"
+        class="activity-row-line activity-detail-toggle"
+        class:activity-preview-toggle={Boolean(activity.preview)}
+        aria-label={`${activity.label}${activity.target ? ` ${activity.target}` : ''}`}
+        aria-expanded={open}
+        onclick={() => toggleRow(activity)}
+      >
+        {@render rowLabel(activity, true)}
+      </button>
+    {:else}
+      <span class="activity-row-line">{@render rowLabel(activity, false)}</span>
+    {/if}
+    {#if detail && open}
+      {#if activity.preview}
+        <LiveActivityPreview source={activity.preview}/>
+      {:else}
+        {#if activity.result}
+          {#if activity.kind === 'thinking'}
+            <!-- Reasoning is streamed provider text, not markdown. Keep
+                 whitespace and token boundaries exactly as delivered. -->
+            <span class="activity-thinking">{activity.result}</span>
+          {:else}<small class="activity-result">{activity.result}</small>{/if}
+        {/if}
+        {#if activity.steps?.length}
+          <ul class="activity-steps">
+            {#each activity.steps as step (step.id)}
+              <li class:active={step.status === 'active'} class:failed={step.status === 'failed'}>
+                <span class="activity-step-line">
+                  {@render glyph(step.kind ?? activity.kind, undefined, step.logo, ROW_GLYPH)}
+                  <span class="activity-label">{step.label}</span>
+                </span>
+                {#if step.result}<small>{step.result}</small>{/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+    {/if}
+  </div>
+{/snippet}
+
+<section class:streaming class="agent-activity" aria-label={$t('activity.title')}>
+  {#if streaming}
+    <p class="agent-activity-heading">
+      <span>{$t('activity.workingFor', {elapsed: formatElapsedSeconds(elapsed)})}{#if failures} · {failures} failed{/if}</span>
+    </p>
+  {:else if activities.length}
+    <button type="button" class="agent-activity-heading" aria-expanded={expanded} onclick={toggleExpanded}>
+      <span>{$t('activity.workedFor', {elapsed: formatElapsedSeconds(elapsed)})}{#if failures} · {failures} failed{/if}</span>
+    </button>
+  {:else}
+    <p class="agent-activity-heading">
+      <span>{$t('activity.workedFor', {elapsed: formatElapsedSeconds(elapsed)})}</span>
+    </p>
+  {/if}
+
+  {#if trailVisible}
+    <ul class="agent-activity-list" aria-live="polite">
+      {#each chains as chain (chain.id)}
+        {#if chain.kind === 'commentary'}
+          <!-- Narration is the model's own prose. It belongs in the trail where
+               it was said, as wrapping text rather than as a truncated row. -->
+          <li
+            class="activity-commentary"
+            class:live={streaming && isWorking(chain.items[0])}
+            use:glint={chain.items[0].label}
+            in:fade|local={{duration: 160}}
+          >
+            <span class="activity-label">{chain.items[0].label}</span>
+          </li>
+        {:else if chain.items.length === 1}
+          {@const item = chain.items[0]}
+          <li
+            class="activity-row"
+            class:live={streaming && isWorking(item)}
+            class:active={isWorking(item)}
+            class:failed={item.status === 'failed'}
+            use:glint={item.label}
+            in:fade|local={{duration: 160}}
+          >
+            {@render row(item)}
+          </li>
+        {:else}
+          {@const open = groupOpen[chain.id] ?? false}
+          <li
+            class="activity-row activity-group"
+            class:live={streaming && chain.items.some(isWorking)}
+            class:failed={chain.items.some((item) => item.status === 'failed')}
+            use:glint={activityChainLabel(chain.items)}
+            in:fade|local={{duration: 160}}
+          >
+            {@render glyph(chain.items[0].kind, chain.items[0].icon, chain.items[0].logo, ROW_GLYPH)}
+            <div class="activity-body">
+              <button
+                type="button"
+                class="activity-row-line activity-group-toggle"
+                aria-expanded={open}
+                onclick={() => toggleGroup(chain.id)}
+              >
+                <span class="activity-text">
+                  <span class="activity-label">{activityChainLabel(chain.items)}</span>
+                </span>
+                <Icon name="chevron" size={ROW_CHEVRON}/>
+              </button>
+              {#if open}
+                <ul class="activity-children">
+                  {#each chain.items as item (item.id)}
+                    <li
+                      class="activity-row"
+                      class:live={streaming && isWorking(item)}
+                      class:active={isWorking(item)}
+                      class:failed={item.status === 'failed'}
+                      use:glint={item.label}
+                      in:fade|local={{duration: 140}}
+                    >
+                      {@render row(item)}
+                    </li>
+                  {/each}
+                </ul>
               {/if}
-            </button>
-          {:else if (expanded || !streaming) && (activity.result || activity.steps?.length)}
-            <button
-              type="button"
-              class="activity-copy activity-detail-toggle"
-              aria-expanded={detailIsOpen(activity, detailOpen, streaming)}
-              onclick={() => toggleDetail(activity)}
-            >
-              <span class="activity-row-line">
-                <span>{activity.label}{#if activity.target} <span class="activity-target">{activity.target}</span>{/if}</span>
-                <Icon name="chevron" size={13}/>
-              </span>
-              {#if detailIsOpen(activity, detailOpen, streaming)}
-                {#if activity.steps?.length}
-                  <ul class="activity-steps">
-                    {#each activity.steps as step (step.id)}
-                      <li class:active={step.status === 'active'} class:failed={step.status === 'failed'}>
-                        {step.label}{#if step.result}<small>{step.result}</small>{/if}
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-                {#if activity.result}
-                  {#if activity.kind === 'thinking'}
-                    <!-- Reasoning is streamed provider text, not markdown. Keep
-                         whitespace and token boundaries exactly as delivered. -->
-                    <span class="activity-thinking">{activity.result}</span>
-                  {:else}<small>{activity.result}</small>{/if}
-                {/if}
-              {/if}
-            </button>
-          {:else}
-            <span class="activity-copy">
-              <span>{activity.label}{#if activity.target} <span class="activity-target">{activity.target}</span>{/if}</span>
-              {#if streaming && activity.status === 'active' && activity.steps?.length}
-                <small class="activity-live-step">{activity.steps.at(-1)?.label}</small>
-              {/if}
-            </span>
-          {/if}
-        </li>
+            </div>
+          </li>
+        {/if}
       {/each}
     </ul>
   {/if}

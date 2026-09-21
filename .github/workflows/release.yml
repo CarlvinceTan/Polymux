@@ -36,7 +36,7 @@ jobs:
       - run: npm ci --prefix apps/site
       - run: npm ci --prefix apps/connect/relay
       - run: npm ci --prefix apps/connect/edge
-      - run: npm ci --prefix apps/phone
+      - run: npm ci --prefix apps/mobile
       - run: npm run check
       - run: npm test
       - run: npm run check --prefix apps/site
@@ -61,7 +61,7 @@ jobs:
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
         run: node scripts/release/verify-published-extension.mjs
 
-  phone-ios-runtime:
+  mobile-ios-runtime:
     name: Build unsigned iPhone control runtime
     needs: verify
     runs-on: macos-14
@@ -70,26 +70,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: node scripts/phone/build-phone-wda.mjs
+      - run: node scripts/mobile/build-mobile-wda.mjs
       - name: Verify and archive WebDriverAgent
         run: |
-          WDA="resources/phone/ios/WebDriverAgentRunner-Runner.app"
+          WDA="resources/mobile/ios/WebDriverAgentRunner-Runner.app"
           test -x "$WDA/WebDriverAgentRunner-Runner"
           test -d "$WDA/PlugIns/WebDriverAgentRunner.xctest"
           test ! -e "$WDA/embedded.mobileprovision"
           test ! -e "$WDA/_CodeSignature"
-          test -f resources/phone/ios/LICENSE.WebDriverAgent.txt
+          test -f resources/mobile/ios/LICENSE.WebDriverAgent.txt
           plutil -extract CFBundleIdentifier raw "$WDA/Info.plist" | grep -q '^com.flarehq.polymux.wda.xctrunner$'
-          tar -czf phone-ios-wda.tar.gz -C resources/phone/ios \
+          tar -czf mobile-ios-wda.tar.gz -C resources/mobile/ios \
             WebDriverAgentRunner-Runner.app LICENSE.WebDriverAgent.txt WDA_SOURCE.json
       - uses: actions/upload-artifact@v4
         with:
           name: Polymux-iPhone-WDA
-          path: phone-ios-wda.tar.gz
+          path: mobile-ios-wda.tar.gz
           if-no-files-found: error
 
   macos:
-    needs: [verify, phone-ios-runtime]
+    needs: [verify, mobile-ios-runtime]
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -97,11 +97,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: Polymux-iPhone-WDA
-          path: .phone-ios-runtime
+          path: .mobile-ios-runtime
       - name: Restore unsigned iPhone runtime
         run: |
-          mkdir -p resources/phone/ios
-          tar -xzf .phone-ios-runtime/phone-ios-wda.tar.gz -C resources/phone/ios
+          mkdir -p resources/mobile/ios
+          tar -xzf .mobile-ios-runtime/mobile-ios-wda.tar.gz -C resources/mobile/ios
 
       - uses: actions/setup-node@v4
         with:
@@ -134,10 +134,10 @@ jobs:
           path: |
             resources/bridges
             resources/node
-            resources/phone
+            resources/mobile
             resources/whisper
             resources/native/bin
-          key: polymux-runtime-${{ runner.os }}-arm64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/phone/fetch-phone-tools.mjs', 'scripts/phone/fetch-phone-ios-tools.mjs', 'scripts/phone/build-phone-zsign.mjs', 'scripts/phone/build-phone-ios-signer.mjs', 'scripts/phone/build-phone-ios-signer-runtime.mjs', 'scripts/phone/phone-ios-signer-helper.py', 'scripts/phone/build-phone-ios-device.mjs', 'scripts/phone/phone-ios-device-helper.py', 'scripts/phone/phone-ios-device-*.lock', 'scripts/fetch-whisper.mjs', 'scripts/build-native-helpers.ts', 'resources/native/*.swift', 'apps/desktop/src/main/system/permission-usage.ts') }}
+          key: polymux-runtime-${{ runner.os }}-arm64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/mobile/fetch-mobile-tools.mjs', 'scripts/mobile/fetch-mobile-ios-tools.mjs', 'scripts/mobile/build-mobile-zsign.mjs', 'scripts/mobile/build-mobile-ios-signer.mjs', 'scripts/mobile/build-mobile-ios-signer-runtime.mjs', 'scripts/mobile/mobile-ios-signer-helper.py', 'scripts/mobile/build-mobile-ios-device.mjs', 'scripts/mobile/mobile-ios-device-helper.py', 'scripts/mobile/mobile-ios-device-*.lock', 'scripts/fetch-whisper.mjs', 'scripts/build-native-helpers.ts', 'resources/native/*.swift', 'apps/desktop/src/main/system/permission-usage.ts') }}
 
       - name: Require release credentials
         env:
@@ -217,35 +217,35 @@ jobs:
           done
           "$WHISPER/whisper-cli" --version
           "$WHISPER/whisper-server" --help >/dev/null
-          PHONE="$APP_PATH/Contents/Resources/resources/phone/android"
+          MOBILE_ANDROID="$APP_PATH/Contents/Resources/resources/mobile/android"
           for binary in adb scrcpy; do
-            test -x "$PHONE/$binary"
-            file "$PHONE/$binary" | grep -q 'arm64'
-            ! otool -L "$PHONE/$binary" | grep -E '/opt/homebrew|/usr/local'
+            test -x "$MOBILE_ANDROID/$binary"
+            file "$MOBILE_ANDROID/$binary" | grep -q 'arm64'
+            ! otool -L "$MOBILE_ANDROID/$binary" | grep -E '/opt/homebrew|/usr/local'
           done
-          test -f "$PHONE/scrcpy-server"
-          "$PHONE/adb" version
-          SCRCPY_SERVER_PATH="$PHONE/scrcpy-server" "$PHONE/scrcpy" --version
-          IOS_PHONE="$APP_PATH/Contents/Resources/resources/phone/ios/tools"
-          test -x "$IOS_PHONE/ios"
-          test -f "$IOS_PHONE/LICENSE.go-ios.txt"
-          file "$IOS_PHONE/ios" | grep -q 'arm64'
-          ! otool -L "$IOS_PHONE/ios" | grep -E '/opt/homebrew|/usr/local'
-          "$IOS_PHONE/ios" version
-          IOS_SIGNER="$APP_PATH/Contents/Resources/resources/phone/ios/signer"
+          test -f "$MOBILE_ANDROID/scrcpy-server"
+          "$MOBILE_ANDROID/adb" version
+          SCRCPY_SERVER_PATH="$MOBILE_ANDROID/scrcpy-server" "$MOBILE_ANDROID/scrcpy" --version
+          IOS_MOBILE="$APP_PATH/Contents/Resources/resources/mobile/ios/tools"
+          test -x "$IOS_MOBILE/ios"
+          test -f "$IOS_MOBILE/LICENSE.go-ios.txt"
+          file "$IOS_MOBILE/ios" | grep -q 'arm64'
+          ! otool -L "$IOS_MOBILE/ios" | grep -E '/opt/homebrew|/usr/local'
+          "$IOS_MOBILE/ios" version
+          IOS_SIGNER="$APP_PATH/Contents/Resources/resources/mobile/ios/signer"
           test -x "$IOS_SIGNER/python/bin/python3"
           test -x "$IOS_SIGNER/zsign"
           test -f "$IOS_SIGNER/MANIFEST.json"
           ! otool -L "$IOS_SIGNER/zsign" | grep -E '/opt/homebrew|/usr/local'
           printf '%s\n' '{"id":"release","method":"ping"}' | \
-            LOCALAPPDATA="$RUNNER_TEMP/polymux-phone-signer" PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1 \
+            LOCALAPPDATA="$RUNNER_TEMP/polymux-mobile-signer" PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1 \
             "$IOS_SIGNER/python/bin/python3" "$IOS_SIGNER/helper.py" | \
             grep -q '"protocolVersion":1'
           "$IOS_SIGNER/zsign" -v
-          IOS_DEVICE="$APP_PATH/Contents/Resources/resources/phone/ios/device"
+          IOS_DEVICE="$APP_PATH/Contents/Resources/resources/mobile/ios/device"
           for required in \
             "$IOS_DEVICE/LICENSE.pymobiledevice3.txt" \
-            "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt" \
+            "$IOS_DEVICE/LICENSE.mobile-ios-device-helper.txt" \
             "$IOS_DEVICE/SOURCE_ARCHIVES.json" \
             "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz" \
             "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz" \
@@ -261,42 +261,25 @@ jobs:
             ls -la "$IOS_DEVICE" || true
             exit 1
           }
-          DEVICE_PYTHON="$IOS_DEVICE/python/bin/python3"
-          DEVICE_VERSION="$("$DEVICE_PYTHON" --version 2>&1)" || {
-            echo "The macOS package could not run its iPhone tunnel Python: $DEVICE_VERSION"
-            exit 1
-          }
-          echo "$DEVICE_VERSION" | grep -q 'Python 3.13' || {
-            echo "The macOS package has an unexpected iPhone tunnel Python: $DEVICE_VERSION"
-            exit 1
-          }
-          DEVICE_PING="$("$DEVICE_PYTHON" "$IOS_DEVICE/helper.py" ping 2>&1)" || {
-            echo "The macOS package could not run its iPhone tunnel helper: $DEVICE_PING"
-            exit 1
-          }
-          echo "$DEVICE_PING" | grep -q '"protocolVersion":1' || {
-            echo "The macOS package helper returned an unexpected response: $DEVICE_PING"
-            exit 1
-          }
-          WDA="$APP_PATH/Contents/Resources/resources/phone/ios/WebDriverAgentRunner-Runner.app"
-          test -x "$WDA/WebDriverAgentRunner-Runner" || { echo "The macOS package is missing the WDA runner."; exit 1; }
-          test -d "$WDA/PlugIns/WebDriverAgentRunner.xctest" || { echo "The macOS package is missing the WDA test bundle."; exit 1; }
-          test -f "$APP_PATH/Contents/Resources/resources/phone/ios/WDA_SOURCE.json" || { echo "The macOS package is missing WDA_SOURCE.json."; exit 1; }
-          plutil -extract CFBundleIdentifier raw "$WDA/Info.plist" | grep -q '^com.flarehq.polymux.wda.xctrunner$' || {
-            echo "The macOS package WDA bundle identifier is wrong."
-            exit 1
-          }
+          "$IOS_DEVICE/python/bin/python3" --version | grep -q 'Python 3.13'
+          "$IOS_DEVICE/python/bin/python3" "$IOS_DEVICE/helper.py" ping | \
+            grep -q '"protocolVersion":1'
+          WDA="$APP_PATH/Contents/Resources/resources/mobile/ios/WebDriverAgentRunner-Runner.app"
+          test -x "$WDA/WebDriverAgentRunner-Runner"
+          test -d "$WDA/PlugIns/WebDriverAgentRunner.xctest"
+          test -f "$APP_PATH/Contents/Resources/resources/mobile/ios/WDA_SOURCE.json"
+          plutil -extract CFBundleIdentifier raw "$WDA/Info.plist" | grep -q '^com.flarehq.polymux.wda.xctrunner$'
           NATIVE="$APP_PATH/Contents/Resources/resources/native/bin"
           for helper in app-permissions ax-events ax-reader calendar contacts pill-image permission-guide reminders wechat-media-prepare wechat-launch-hidden wechat-prime wechat-session-state; do
-            test -x "$NATIVE/$helper" || { echo "The macOS package is missing native helper: $helper"; exit 1; }
-            file "$NATIVE/$helper" | grep -q 'arm64' || { echo "The macOS package native helper is not arm64: $helper"; exit 1; }
+            test -x "$NATIVE/$helper"
+            file "$NATIVE/$helper" | grep -q 'arm64'
           done
           WECHAT_WRITER="$APP_PATH/Contents/Resources/resources/wechat-writer"
-          test -x "$WECHAT_WRITER/polymux-wechat-driver.mjs" || { echo "The macOS package is missing the WeChat driver."; exit 1; }
+          test -x "$WECHAT_WRITER/polymux-wechat-driver.mjs"
           for file in wechat-daemon-coordination.mjs wechat-wire.mjs wechat_native_cdn_upload_lldb.py wechat_native_task_lldb.py; do
-            test -f "$WECHAT_WRITER/$file" || { echo "The macOS package is missing WeChat writer file: $file"; exit 1; }
+            test -f "$WECHAT_WRITER/$file"
           done
-          test -d "$WECHAT_WRITER/node_modules/silk-wasm/lib" || { echo "The macOS package is missing the silk-wasm runtime."; exit 1; }
+          test -d "$WECHAT_WRITER/node_modules/silk-wasm/lib"
           DMG="$(find out/make -type f -name '*.dmg' -print -quit)"
           ZIP="$(find out/make -type f -name '*.zip' -print -quit)"
           test -n "$DMG" && test -n "$ZIP"
@@ -321,19 +304,19 @@ jobs:
           if-no-files-found: error
 
   windows:
-    needs: [verify, phone-ios-runtime]
+    needs: [verify, mobile-ios-runtime]
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: Polymux-iPhone-WDA
-          path: .phone-ios-runtime
+          path: .mobile-ios-runtime
       - name: Restore unsigned iPhone runtime
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force resources/phone/ios | Out-Null
-          tar -xzf .phone-ios-runtime/phone-ios-wda.tar.gz -C resources/phone/ios
+          New-Item -ItemType Directory -Force resources/mobile/ios | Out-Null
+          tar -xzf .mobile-ios-runtime/mobile-ios-wda.tar.gz -C resources/mobile/ios
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -363,9 +346,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: |
-            resources/phone
+            resources/mobile
             resources/whisper
-          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/phone/fetch-phone-tools.mjs', 'scripts/phone/fetch-phone-ios-tools.mjs', 'scripts/phone/build-phone-ios-signer.mjs', 'scripts/phone/build-phone-ios-signer-runtime.mjs', 'scripts/phone/phone-ios-signer-helper.py', 'scripts/phone/build-phone-ios-device.mjs', 'scripts/phone/phone-ios-device-helper.py', 'scripts/phone/phone-ios-device-*.lock', 'scripts/fetch-whisper.mjs') }}
+          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/mobile/fetch-mobile-tools.mjs', 'scripts/mobile/fetch-mobile-ios-tools.mjs', 'scripts/mobile/build-mobile-ios-signer.mjs', 'scripts/mobile/build-mobile-ios-signer-runtime.mjs', 'scripts/mobile/mobile-ios-signer-helper.py', 'scripts/mobile/build-mobile-ios-device.mjs', 'scripts/mobile/mobile-ios-device-helper.py', 'scripts/mobile/mobile-ios-device-*.lock', 'scripts/fetch-whisper.mjs') }}
       - name: Build installers
         shell: pwsh
         env:
@@ -450,26 +433,26 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The packaged whisper-cli could not run on Windows.' }
           & (Join-Path $whisper 'whisper-server.exe') --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'The packaged whisper-server could not run on Windows.' }
-          $phone = 'out/Polymux-win32-x64/resources/resources/phone/android'
+          $mobile = 'out/Polymux-win32-x64/resources/resources/mobile/android'
           foreach ($name in @('adb.exe', 'scrcpy.exe', 'scrcpy-server', 'LICENSE.scrcpy.txt', 'MANIFEST.json', 'VERSION')) {
-            if (-not (Test-Path (Join-Path $phone $name))) {
-              throw "The Windows package is missing $name from its Android phone runtime."
+            if (-not (Test-Path (Join-Path $mobile $name))) {
+              throw "The Windows package is missing $name from its Android mobile runtime."
             }
           }
-          & (Join-Path $phone 'adb.exe') version
+          & (Join-Path $mobile 'adb.exe') version
           if ($LASTEXITCODE -ne 0) { throw 'The packaged adb could not run on Windows.' }
-          $env:SCRCPY_SERVER_PATH = Join-Path $phone 'scrcpy-server'
-          & (Join-Path $phone 'scrcpy.exe') --version
+          $env:SCRCPY_SERVER_PATH = Join-Path $mobile 'scrcpy-server'
+          & (Join-Path $mobile 'scrcpy.exe') --version
           if ($LASTEXITCODE -ne 0) { throw 'The packaged scrcpy could not run on Windows.' }
-          $iosPhone = 'out/Polymux-win32-x64/resources/resources/phone/ios/tools'
+          $iosMobile = 'out/Polymux-win32-x64/resources/resources/mobile/ios/tools'
           foreach ($name in @('ios.exe', 'LICENSE.go-ios.txt', 'MANIFEST.json', 'VERSION')) {
-            if (-not (Test-Path (Join-Path $iosPhone $name))) {
+            if (-not (Test-Path (Join-Path $iosMobile $name))) {
               throw "The Windows package is missing $name from its iPhone runtime."
             }
           }
-          & (Join-Path $iosPhone 'ios.exe') version
+          & (Join-Path $iosMobile 'ios.exe') version
           if ($LASTEXITCODE -ne 0) { throw 'The packaged go-ios runtime could not run on Windows.' }
-          $iosSigner = 'out/Polymux-win32-x64/resources/resources/phone/ios/signer'
+          $iosSigner = 'out/Polymux-win32-x64/resources/resources/mobile/ios/signer'
           foreach ($name in @('python/python.exe', 'helper.py', 'zsign.exe', 'MANIFEST.json', 'VERSION')) {
             if (-not (Test-Path (Join-Path $iosSigner $name))) {
               throw "The Windows package is missing $name from its local iPhone signer."
@@ -483,8 +466,8 @@ jobs:
           }
           & (Join-Path $iosSigner 'zsign.exe') -v
           if ($LASTEXITCODE -ne 0) { throw 'The packaged zsign could not run on Windows.' }
-          $iosDevice = 'out/Polymux-win32-x64/resources/resources/phone/ios/device'
-          foreach ($name in @('helper.py', 'LICENSE.pymobiledevice3.txt', 'LICENSE.phone-ios-device-helper.txt', 'SOURCE_ARCHIVES.json', 'sources/pymobiledevice3-11.3.0.tar.gz', 'sources/pmd_pytcp-0.3.7.tar.gz', 'sources/pygnuutils-0.1.1.tar.gz', 'MANIFEST.json', 'VERSION')) {
+          $iosDevice = 'out/Polymux-win32-x64/resources/resources/mobile/ios/device'
+          foreach ($name in @('helper.py', 'LICENSE.pymobiledevice3.txt', 'LICENSE.mobile-ios-device-helper.txt', 'SOURCE_ARCHIVES.json', 'sources/pymobiledevice3-11.3.0.tar.gz', 'sources/pmd_pytcp-0.3.7.tar.gz', 'sources/pygnuutils-0.1.1.tar.gz', 'MANIFEST.json', 'VERSION')) {
             if (-not (Test-Path (Join-Path $iosDevice $name))) {
               throw "The Windows package is missing $name from its iPhone tunnel runtime."
             }
@@ -497,12 +480,12 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $deviceResponse -notmatch '"protocolVersion":1') {
             throw 'The packaged iPhone tunnel helper could not run on Windows.'
           }
-          $wda = 'out/Polymux-win32-x64/resources/resources/phone/ios/WebDriverAgentRunner-Runner.app'
+          $wda = 'out/Polymux-win32-x64/resources/resources/mobile/ios/WebDriverAgentRunner-Runner.app'
           foreach ($path in @(
             (Join-Path $wda 'Info.plist'),
             (Join-Path $wda 'WebDriverAgentRunner-Runner'),
             (Join-Path $wda 'PlugIns/WebDriverAgentRunner.xctest'),
-            'out/Polymux-win32-x64/resources/resources/phone/ios/WDA_SOURCE.json'
+            'out/Polymux-win32-x64/resources/resources/mobile/ios/WDA_SOURCE.json'
           )) {
             if (-not (Test-Path $path)) { throw "The Windows package is missing iPhone WDA content: $path" }
           }
@@ -516,18 +499,18 @@ jobs:
           if-no-files-found: error
 
   linux:
-    needs: [verify, phone-ios-runtime]
+    needs: [verify, mobile-ios-runtime]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: Polymux-iPhone-WDA
-          path: .phone-ios-runtime
+          path: .mobile-ios-runtime
       - name: Restore unsigned iPhone runtime
         run: |
-          mkdir -p resources/phone/ios
-          tar -xzf .phone-ios-runtime/phone-ios-wda.tar.gz -C resources/phone/ios
+          mkdir -p resources/mobile/ios
+          tar -xzf .mobile-ios-runtime/mobile-ios-wda.tar.gz -C resources/mobile/ios
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -537,9 +520,9 @@ jobs:
           path: |
             resources/bridges
             resources/node
-            resources/phone
+            resources/mobile
             resources/whisper
-          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/phone/fetch-phone-tools.mjs', 'scripts/phone/fetch-phone-ios-tools.mjs', 'scripts/phone/build-phone-ios-signer.mjs', 'scripts/phone/build-phone-ios-signer-runtime.mjs', 'scripts/phone/phone-ios-signer-helper.py', 'scripts/phone/build-phone-ios-device.mjs', 'scripts/phone/phone-ios-device-helper.py', 'scripts/phone/phone-ios-device-*.lock', 'scripts/fetch-whisper.mjs') }}
+          key: polymux-runtime-${{ runner.os }}-x64-${{ hashFiles('scripts/fetch-bridges.mjs', 'scripts/fetch-node.mjs', 'scripts/mobile/fetch-mobile-tools.mjs', 'scripts/mobile/fetch-mobile-ios-tools.mjs', 'scripts/mobile/build-mobile-ios-signer.mjs', 'scripts/mobile/build-mobile-ios-signer-runtime.mjs', 'scripts/mobile/mobile-ios-signer-helper.py', 'scripts/mobile/build-mobile-ios-device.mjs', 'scripts/mobile/mobile-ios-device-helper.py', 'scripts/mobile/mobile-ios-device-*.lock', 'scripts/fetch-whisper.mjs') }}
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run test:tools
@@ -571,8 +554,9 @@ jobs:
           npm run build:cli
           mkdir -p out/cli-release
           cp apps/cli/dist/polymux.mjs out/cli-release/polymux.mjs
+          cp apps/cli/dist/usage-worker.js out/cli-release/
           cp apps/cli/dist/LICENSE.grok-mermaid.txt out/cli-release/
-          tar -czf out/cli-release/polymux-cli.tar.gz -C out/cli-release polymux.mjs LICENSE.grok-mermaid.txt
+          tar -czf out/cli-release/polymux-cli.tar.gz -C out/cli-release polymux.mjs usage-worker.js LICENSE.grok-mermaid.txt
           (cd out/cli-release && sha256sum polymux-cli.tar.gz > polymux-cli.tar.gz.sha256)
           test "$(node apps/cli/dist/polymux.mjs --version)" = "$(node -p 'require("./package.json").version')"
       - name: Verify Linux artifacts
@@ -629,23 +613,23 @@ jobs:
           ! ldd "$WHISPER/whisper-server" | grep -q 'not found'
           "$WHISPER/whisper-cli" --version
           "$WHISPER/whisper-server" --help >/dev/null
-          PHONE="$EXTRACTED/squashfs-root/resources/resources/phone/android"
-          test -x "$PHONE/adb"
-          test -x "$PHONE/scrcpy"
-          test -f "$PHONE/scrcpy-server"
-          file "$PHONE/adb" | grep -q 'ELF 64-bit.*x86-64'
-          file "$PHONE/scrcpy" | grep -q 'ELF 64-bit.*x86-64'
-          ! ldd "$PHONE/adb" | grep -q 'not found'
-          ! ldd "$PHONE/scrcpy" | grep -q 'not found'
-          "$PHONE/adb" version
-          SCRCPY_SERVER_PATH="$PHONE/scrcpy-server" "$PHONE/scrcpy" --version
-          IOS_PHONE="$EXTRACTED/squashfs-root/resources/resources/phone/ios/tools"
-          test -x "$IOS_PHONE/ios"
-          test -f "$IOS_PHONE/LICENSE.go-ios.txt"
-          file "$IOS_PHONE/ios" | grep -q 'ELF 64-bit.*x86-64'
-          ! ldd "$IOS_PHONE/ios" | grep -q 'not found'
-          "$IOS_PHONE/ios" version
-          IOS_SIGNER="$EXTRACTED/squashfs-root/resources/resources/phone/ios/signer"
+          MOBILE_ANDROID="$EXTRACTED/squashfs-root/resources/resources/mobile/android"
+          test -x "$MOBILE_ANDROID/adb"
+          test -x "$MOBILE_ANDROID/scrcpy"
+          test -f "$MOBILE_ANDROID/scrcpy-server"
+          file "$MOBILE_ANDROID/adb" | grep -q 'ELF 64-bit.*x86-64'
+          file "$MOBILE_ANDROID/scrcpy" | grep -q 'ELF 64-bit.*x86-64'
+          ! ldd "$MOBILE_ANDROID/adb" | grep -q 'not found'
+          ! ldd "$MOBILE_ANDROID/scrcpy" | grep -q 'not found'
+          "$MOBILE_ANDROID/adb" version
+          SCRCPY_SERVER_PATH="$MOBILE_ANDROID/scrcpy-server" "$MOBILE_ANDROID/scrcpy" --version
+          IOS_MOBILE="$EXTRACTED/squashfs-root/resources/resources/mobile/ios/tools"
+          test -x "$IOS_MOBILE/ios"
+          test -f "$IOS_MOBILE/LICENSE.go-ios.txt"
+          file "$IOS_MOBILE/ios" | grep -q 'ELF 64-bit.*x86-64'
+          ! ldd "$IOS_MOBILE/ios" | grep -q 'not found'
+          "$IOS_MOBILE/ios" version
+          IOS_SIGNER="$EXTRACTED/squashfs-root/resources/resources/mobile/ios/signer"
           test -x "$IOS_SIGNER/python/bin/python3"
           test -x "$IOS_SIGNER/zsign"
           test -f "$IOS_SIGNER/MANIFEST.json"
@@ -655,10 +639,10 @@ jobs:
             "$IOS_SIGNER/python/bin/python3" "$IOS_SIGNER/helper.py" | \
             grep -q '"protocolVersion":1'
           "$IOS_SIGNER/zsign" -v
-          IOS_DEVICE="$EXTRACTED/squashfs-root/resources/resources/phone/ios/device"
+          IOS_DEVICE="$EXTRACTED/squashfs-root/resources/resources/mobile/ios/device"
           for required in \
             "$IOS_DEVICE/LICENSE.pymobiledevice3.txt" \
-            "$IOS_DEVICE/LICENSE.phone-ios-device-helper.txt" \
+            "$IOS_DEVICE/LICENSE.mobile-ios-device-helper.txt" \
             "$IOS_DEVICE/SOURCE_ARCHIVES.json" \
             "$IOS_DEVICE/sources/pymobiledevice3-11.3.0.tar.gz" \
             "$IOS_DEVICE/sources/pmd_pytcp-0.3.7.tar.gz" \
@@ -674,27 +658,13 @@ jobs:
             ls -la "$IOS_DEVICE" || true
             exit 1
           }
-          DEVICE_PYTHON="$IOS_DEVICE/python/bin/python3"
-          DEVICE_VERSION="$("$DEVICE_PYTHON" --version 2>&1)" || {
-            echo "The Linux package could not run its iPhone tunnel Python: $DEVICE_VERSION"
-            exit 1
-          }
-          echo "$DEVICE_VERSION" | grep -q 'Python 3.13' || {
-            echo "The Linux package has an unexpected iPhone tunnel Python: $DEVICE_VERSION"
-            exit 1
-          }
-          DEVICE_PING="$("$DEVICE_PYTHON" "$IOS_DEVICE/helper.py" ping 2>&1)" || {
-            echo "The Linux package could not run its iPhone tunnel helper: $DEVICE_PING"
-            exit 1
-          }
-          echo "$DEVICE_PING" | grep -q '"protocolVersion":1' || {
-            echo "The Linux package helper returned an unexpected response: $DEVICE_PING"
-            exit 1
-          }
-          WDA="$EXTRACTED/squashfs-root/resources/resources/phone/ios/WebDriverAgentRunner-Runner.app"
+          "$IOS_DEVICE/python/bin/python3" --version | grep -q 'Python 3.13'
+          "$IOS_DEVICE/python/bin/python3" "$IOS_DEVICE/helper.py" ping | \
+            grep -q '"protocolVersion":1'
+          WDA="$EXTRACTED/squashfs-root/resources/resources/mobile/ios/WebDriverAgentRunner-Runner.app"
           test -x "$WDA/WebDriverAgentRunner-Runner"
           test -d "$WDA/PlugIns/WebDriverAgentRunner.xctest"
-          test -f "$EXTRACTED/squashfs-root/resources/resources/phone/ios/WDA_SOURCE.json"
+          test -f "$EXTRACTED/squashfs-root/resources/resources/mobile/ios/WDA_SOURCE.json"
           file "$WDA/WebDriverAgentRunner-Runner" | grep -q 'Mach-O 64-bit.*arm64'
           rm -rf "$EXTRACTED"
       - uses: actions/upload-artifact@v4

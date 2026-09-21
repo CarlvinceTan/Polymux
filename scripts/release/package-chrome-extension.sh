@@ -24,10 +24,10 @@ rsync -aL \
   --exclude 'safari' \
   --exclude 'scripts' \
   --exclude 'manifest.firefox.json' \
-  --exclude 'locker/config.local.js' \
+  --exclude 'vault/config.local.js' \
   "$repo_root/apps/extension/" "$package_root/"
 
-node "$repo_root/apps/extension/scripts/build-locker.mjs" --output-dir "$package_root"
+node "$repo_root/apps/extension/scripts/build-vault.mjs" --output-dir "$package_root"
 
 node - "$package_root" <<'NODE'
 const fs = require("node:fs");

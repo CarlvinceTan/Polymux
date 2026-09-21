@@ -62,7 +62,7 @@ test("Device pairing requires approval and RPC requires its bearer secret", asyn
     });
     assert.equal(health.headers.get("access-control-allow-origin"), "http://localhost:1420");
     assert.deepEqual((await health.json() as {capabilities: string[]}).capabilities, [
-      "assistant", "team", "hub", "runs", "uploads", "locker",
+      "assistant", "team", "hub", "runs", "uploads", "vault",
     ]);
 
     const rejected = await fetch(`${snapshot.endpoint}/polymux-host/v1/pair`, {
@@ -78,27 +78,27 @@ test("Device pairing requires approval and RPC requires its bearer secret", asyn
   }
 });
 
-test("Host RPC allows locker vault methods", async () => {
+test("Host RPC allows vault vault methods", async () => {
   const storage = new SqliteStorage(":memory:");
   const methods: string[] = [];
   const server = new TeamHostServer({
     storage,
     call: async (method) => {
       methods.push(method);
-      if (method === "locker.status")
+      if (method === "vault.status")
         return {exists: true, unlocked: false, itemCount: 0, idleLockSeconds: 300};
-      if (method === "locker.export")
+      if (method === "vault.export")
         return {bytes: "ZmFrZQ==", meta: {storage: "account"}};
       return null;
     },
   });
   try {
     const snapshot = await server.start();
-    server.authorizePeer("phone", "Phone", "phone-secret", "phone");
-    const client = new TeamHostClient(snapshot.endpoint!, "phone-secret");
-    assert.equal((await client.call("locker.status") as {exists: boolean}).exists, true);
-    assert.equal((await client.call("locker.export") as {bytes: string}).bytes, "ZmFrZQ==");
-    assert.deepEqual(methods, ["locker.status", "locker.export"]);
+    server.authorizePeer("mobile", "Mobile", "mobile-secret", "mobile");
+    const client = new TeamHostClient(snapshot.endpoint!, "mobile-secret");
+    assert.equal((await client.call("vault.status") as {exists: boolean}).exists, true);
+    assert.equal((await client.call("vault.export") as {bytes: string}).bytes, "ZmFrZQ==");
+    assert.deepEqual(methods, ["vault.status", "vault.export"]);
   } finally {
     await server.close();
     storage.close();
@@ -186,8 +186,8 @@ test("Host brokers a device action to the paired Desktop", async () => {
     const request = await client.nextDeviceRequest();
     assert.equal(request?.memberName, "Maya");
     assert.equal(request?.requiresApproval, true);
-    await client.resolveDeviceRequest(request!.id, true, {content: "two tabs"});
-    assert.deepEqual(await pending, {approved: true, result: {content: "two tabs"}});
+    await client.resolveDeviceRequest(request!.id, true, {content: "two tabs"}, true);
+    assert.deepEqual(await pending, {hostId: "desktop-a", approved: true, result: {content: "two tabs"}});
   } finally {
     await server.close();
     storage.close();
@@ -307,7 +307,7 @@ test('device metadata and online status follow authenticated activity', async t 
   } finally { await server.close(); storage.close(); }
 });
 
-test('phone notification subscriptions are scoped to authenticated peers and removed on revocation', async () => {
+test('mobile notification subscriptions are scoped to authenticated peers and removed on revocation', async () => {
   const names = ['POLYMUX_APNS_KEY_PATH', 'POLYMUX_APNS_KEY_ID', 'POLYMUX_APNS_TEAM_ID'] as const;
   const previous = names.map(name => process.env[name]);
   names.forEach(name => process.env[name] = 'test-only');
@@ -315,8 +315,8 @@ test('phone notification subscriptions are scoped to authenticated peers and rem
   const server = new TeamHostServer({storage, adminSecret: 'admin', call: async () => null});
   try {
     const state = await server.start();
-    server.authorizePeer('phone-a', 'Phone A', 'secret-a', 'phone');
-    server.authorizePeer('phone-b', 'Phone B', 'secret-b', 'phone');
+    server.authorizePeer('mobile-a', 'Mobile A', 'secret-a', 'mobile');
+    server.authorizePeer('mobile-b', 'Mobile B', 'secret-b', 'mobile');
     const a = new TeamHostClient(state.endpoint!, 'secret-a');
     const b = new TeamHostClient(state.endpoint!, 'secret-b');
     await assert.rejects(new TeamHostClient(state.endpoint!, 'invalid').call('notifications.register', [{token: 'a'.repeat(64), environment: 'sandbox'}]), /authorised/);
@@ -329,10 +329,82 @@ test('phone notification subscriptions are scoped to authenticated peers and rem
     assert.deepEqual(await a.call('notifications.status'), {available: true, enabled: true});
     await a.call('notifications.unregister');
     assert.deepEqual(await a.call('notifications.status'), {available: true, enabled: false});
-    server.revokePeer('phone-a');
+    server.revokePeer('mobile-a');
     await assert.rejects(a.call('notifications.status'), /authorised/);
   } finally {
     await server.close(); storage.close();
     names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index]; });
   }
+});
+
+
+test("actual destination policy controls delivery and automatic access with several paired devices", async () => {
+  const storage = new SqliteStorage(":memory:");
+  const server = new TeamHostServer({storage, call: async () => null, devicePollWaitMs: 100});
+  try {
+    const snapshot = await server.start();
+    server.authorizePeer("device-a", "A", "secret-a");
+    server.authorizePeer("device-b", "B", "secret-b");
+    const a = new TeamHostClient(snapshot.endpoint!, "secret-a");
+    const b = new TeamHostClient(snapshot.endpoint!, "secret-b");
+    const input = {memberId: "bot", memberName: "Bot", capability: "files" as const, tool: "read_file", input: {}, requiresApproval: true};
+    const policy = (hostId: string) => ({allowed: hostId === "device-b", requiresApproval: false});
+    const pending = server.requestDevice(input, {accessForDevice: policy});
+    assert.equal(await a.nextDeviceRequest(), null);
+    const request = await b.nextDeviceRequest();
+    assert.ok(request);
+    assert.equal(request.requiresApproval, false);
+    await assert.rejects(a.resolveDeviceRequest(request.id, true, {content: "wrong"}), /another device/);
+    await b.resolveDeviceRequest(request.id, true, {content: "B"});
+    assert.deepEqual(await pending, {hostId: "device-b", approved: false, result: {content: "B"}});
+
+    // The same policy applies when a Desktop is already waiting for work.
+    const pollingA = a.nextDeviceRequest();
+    const pollingB = b.nextDeviceRequest();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    const queued = server.requestDevice(input, {accessForDevice: policy});
+    assert.equal(await pollingA, null);
+    const next = await pollingB;
+    assert.ok(next);
+    assert.equal(next.requiresApproval, false);
+    await b.resolveDeviceRequest(next.id, true, {content: "B again"});
+    assert.equal((await queued)?.hostId, "device-b");
+    assert.equal(await server.requestDevice(input, {accessForDevice: () => ({allowed: false, requiresApproval: false})}), null);
+  } finally { await server.close(); storage.close(); }
+});
+
+
+test("a delivered request rechecks tightened access and never treats automatic success as user approval", async () => {
+  const storage = new SqliteStorage(":memory:");
+  const server = new TeamHostServer({storage, call: async () => null});
+  try {
+    const snapshot = await server.start();
+    server.authorizePeer("device-a", "A", "secret-a");
+    server.authorizePeer("device-b", "B", "secret-b");
+    const a = new TeamHostClient(snapshot.endpoint!, "secret-a");
+    const b = new TeamHostClient(snapshot.endpoint!, "secret-b");
+    const input = {memberId: "bot", memberName: "Bot", capability: "files" as const, tool: "write_file", input: {}, requiresApproval: false};
+    let policy = {allowed: true, requiresApproval: false};
+    const pending = server.requestDevice(input, {accessForDevice: () => policy});
+    const request = (await a.nextDeviceRequest())!;
+    assert.equal(request.requiresApproval, false);
+    await assert.rejects(b.deviceRequestAccess(request.id), /another device/);
+    policy = {allowed: true, requiresApproval: true};
+    assert.deepEqual(await a.deviceRequestAccess(request.id), policy);
+    await a.resolveDeviceRequest(request.id, true, {content: "automatic response"});
+    const denied = await pending;
+    assert.equal(denied?.approved, false);
+    assert.equal(denied?.result.isError, true);
+
+    const asking = server.requestDevice(input, {accessForDevice: () => policy});
+    const asked = (await a.nextDeviceRequest())!;
+    assert.equal(asked.requiresApproval, true);
+    policy = {allowed: false, requiresApproval: false};
+    assert.deepEqual(await a.deviceRequestAccess(asked.id), policy);
+    await a.resolveDeviceRequest(asked.id, true, {content: "stale approval"}, true);
+    const blocked = await asking;
+    assert.equal(blocked?.approved, false);
+    assert.equal(blocked?.result.isError, true);
+    assert.match(String(blocked?.result.content), /blocked/);
+  } finally { await server.close(); storage.close(); }
 });

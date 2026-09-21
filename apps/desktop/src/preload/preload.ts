@@ -3,23 +3,23 @@ import { channels } from "@polymux/protocol";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api: PolymuxApi = {
-  phone: {
-    status: () => ipcRenderer.invoke(channels.phoneStatus),
-    connect: () => ipcRenderer.invoke(channels.phoneConnect),
+  mobile: {
+    status: () => ipcRenderer.invoke(channels.mobileStatus),
+    connect: () => ipcRenderer.invoke(channels.mobileConnect),
     pairAndroid: (pairingAddress, pairingCode, connectAddress) =>
-      ipcRenderer.invoke(channels.phonePairAndroid, pairingAddress, pairingCode, connectAddress),
-    iosSigningStatus: () => ipcRenderer.invoke(channels.phoneIosSigningStatus),
+      ipcRenderer.invoke(channels.mobilePairAndroid, pairingAddress, pairingCode, connectAddress),
+    iosSigningStatus: () => ipcRenderer.invoke(channels.mobileIosSigningStatus),
     iosSigningBegin: (email, password) =>
-      ipcRenderer.invoke(channels.phoneIosSigningBegin, email, password),
-    iosSigningComplete: (code) => ipcRenderer.invoke(channels.phoneIosSigningComplete, code),
-    iosSigningLogout: () => ipcRenderer.invoke(channels.phoneIosSigningLogout),
-    stop: () => ipcRenderer.invoke(channels.phoneStop),
-    frame: () => ipcRenderer.invoke(channels.phoneFrame),
-    tap: (point) => ipcRenderer.invoke(channels.phoneTap, point),
+      ipcRenderer.invoke(channels.mobileIosSigningBegin, email, password),
+    iosSigningComplete: (code) => ipcRenderer.invoke(channels.mobileIosSigningComplete, code),
+    iosSigningLogout: () => ipcRenderer.invoke(channels.mobileIosSigningLogout),
+    stop: () => ipcRenderer.invoke(channels.mobileStop),
+    frame: () => ipcRenderer.invoke(channels.mobileFrame),
+    tap: (point) => ipcRenderer.invoke(channels.mobileTap, point),
     swipe: (from, to, durationMs) =>
-      ipcRenderer.invoke(channels.phoneSwipe, from, to, durationMs),
-    type: (value) => ipcRenderer.invoke(channels.phoneType, value),
-    home: () => ipcRenderer.invoke(channels.phoneHome),
+      ipcRenderer.invoke(channels.mobileSwipe, from, to, durationMs),
+    type: (value) => ipcRenderer.invoke(channels.mobileType, value),
+    home: () => ipcRenderer.invoke(channels.mobileHome),
   },
   terminal: {
     create: (cwd) => ipcRenderer.invoke(channels.terminalCreate, cwd),
@@ -88,36 +88,40 @@ const api: PolymuxApi = {
   clipboard: {
     write: (content) => ipcRenderer.invoke(channels.clipboardWrite, content),
   },
-  locker: {
-    status: () => ipcRenderer.invoke(channels.lockerStatus),
-    create: (password) => ipcRenderer.invoke(channels.lockerCreate, password),
-    unlock: (password) => ipcRenderer.invoke(channels.lockerUnlock, password),
-    lock: () => ipcRenderer.invoke(channels.lockerLock),
-    touch: () => ipcRenderer.invoke(channels.lockerTouch),
-    list: () => ipcRenderer.invoke(channels.lockerList),
-    reveal: (id) => ipcRenderer.invoke(channels.lockerReveal, id),
-    totp: (id) => ipcRenderer.invoke(channels.lockerTotp, id),
-    codes: () => ipcRenderer.invoke(channels.lockerCodes),
-    otpauth: (id) => ipcRenderer.invoke(channels.lockerOtpauth, id),
-    save: (item) => ipcRenderer.invoke(channels.lockerSave, item),
-    remove: (id) => ipcRenderer.invoke(channels.lockerRemove, id),
-    restore: (ids) => ipcRenderer.invoke(channels.lockerRestore, ids),
-    purge: (ids) => ipcRenderer.invoke(channels.lockerPurge, ids),
-    emptyTrash: () => ipcRenderer.invoke(channels.lockerEmptyTrash),
-    pin: (ids, pinned) => ipcRenderer.invoke(channels.lockerPin, ids, pinned),
-    reorder: (ids) => ipcRenderer.invoke(channels.lockerReorder, ids),
-    changePassword: (current, next) => ipcRenderer.invoke(channels.lockerChangePassword, current, next),
+  vault: {
+    status: () => ipcRenderer.invoke(channels.vaultStatus),
+    create: (password) => ipcRenderer.invoke(channels.vaultCreate, password),
+    unlock: (password) => ipcRenderer.invoke(channels.vaultUnlock, password),
+    unlockBiometric: () => ipcRenderer.invoke(channels.vaultUnlockBiometric),
+    biometricStatus: () => ipcRenderer.invoke(channels.vaultBiometricStatus),
+    enrollBiometric: (password) => ipcRenderer.invoke(channels.vaultBiometricEnroll, password),
+    disenrollBiometric: () => ipcRenderer.invoke(channels.vaultBiometricDisenroll),
+    lock: () => ipcRenderer.invoke(channels.vaultLock),
+    touch: () => ipcRenderer.invoke(channels.vaultTouch),
+    list: () => ipcRenderer.invoke(channels.vaultList),
+    reveal: (id) => ipcRenderer.invoke(channels.vaultReveal, id),
+    totp: (id) => ipcRenderer.invoke(channels.vaultTotp, id),
+    codes: () => ipcRenderer.invoke(channels.vaultCodes),
+    otpauth: (id) => ipcRenderer.invoke(channels.vaultOtpauth, id),
+    save: (item) => ipcRenderer.invoke(channels.vaultSave, item),
+    remove: (id) => ipcRenderer.invoke(channels.vaultRemove, id),
+    restore: (ids) => ipcRenderer.invoke(channels.vaultRestore, ids),
+    purge: (ids) => ipcRenderer.invoke(channels.vaultPurge, ids),
+    emptyTrash: () => ipcRenderer.invoke(channels.vaultEmptyTrash),
+    pin: (ids, pinned) => ipcRenderer.invoke(channels.vaultPin, ids, pinned),
+    reorder: (ids) => ipcRenderer.invoke(channels.vaultReorder, ids),
+    changePassword: (current, next) => ipcRenderer.invoke(channels.vaultChangePassword, current, next),
     copy: (id, field, recoveryIndex) =>
-      ipcRenderer.invoke(channels.lockerCopy, id, field, recoveryIndex),
-    importBegin: () => ipcRenderer.invoke(channels.lockerImportBegin),
-    importConfirm: (password) => ipcRenderer.invoke(channels.lockerImportConfirm, password),
-    sync: () => ipcRenderer.invoke(channels.lockerSync),
-    setStorage: (mode, resolve) => ipcRenderer.invoke(channels.lockerSetStorage, mode, resolve),
+      ipcRenderer.invoke(channels.vaultCopy, id, field, recoveryIndex),
+    importBegin: () => ipcRenderer.invoke(channels.vaultImportBegin),
+    importConfirm: (password) => ipcRenderer.invoke(channels.vaultImportConfirm, password),
+    sync: () => ipcRenderer.invoke(channels.vaultSync),
+    setStorage: (mode, resolve) => ipcRenderer.invoke(channels.vaultSetStorage, mode, resolve),
     subscribe(listener) {
-      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").LockerStatusDto) =>
+      const receive = (_event: Electron.IpcRendererEvent, value: import("@polymux/protocol").VaultStatusDto) =>
         listener(value);
-      ipcRenderer.on(channels.lockerChanged, receive);
-      return () => ipcRenderer.removeListener(channels.lockerChanged, receive);
+      ipcRenderer.on(channels.vaultChanged, receive);
+      return () => ipcRenderer.removeListener(channels.vaultChanged, receive);
     },
   },
   finance: {
@@ -198,10 +202,13 @@ const api: PolymuxApi = {
     removeGroup: (id) => ipcRenderer.invoke(channels.teamGroupRemove, id),
     sendGroup: (request) => ipcRenderer.invoke(channels.teamGroupSend, request),
     profiles: (hostId) => ipcRenderer.invoke(channels.teamProfiles, hostId),
+    agentRegistry: (hostId) => ipcRenderer.invoke(channels.teamAgentRegistry, hostId),
+    agentSettings: (id, request) => ipcRenderer.invoke(channels.teamAgentSettings, id, request),
     create: (request) => ipcRenderer.invoke(channels.teamCreate, request),
     update: (id, request) => ipcRenderer.invoke(channels.teamUpdate, id, request),
     markRead: (id) => ipcRenderer.invoke(channels.teamMarkRead, id),
     remove: (id) => ipcRenderer.invoke(channels.teamRemove, id),
+    retrySetup: (id) => ipcRenderer.invoke(channels.teamRetrySetup, id),
     send: (request) => ipcRenderer.invoke(channels.teamSend, request),
     startComputer: (id) => ipcRenderer.invoke(channels.teamComputerStart, id),
     stopComputer: (id) => ipcRenderer.invoke(channels.teamComputerStop, id),
@@ -591,6 +598,7 @@ const api: PolymuxApi = {
     assignRole: (role, provider, id, reasoning) =>
       ipcRenderer.invoke(channels.modelsAssignRole, role, provider, id, reasoning),
     clearRole: (role) => ipcRenderer.invoke(channels.modelsClearRole, role),
+    resetRole: (role) => ipcRenderer.invoke(channels.modelsResetRole, role),
   },
   browser: {
     embedded: true,

@@ -4,7 +4,7 @@ slug: drive
 description: Work with local files, cloud drives, network folders, and S3-compatible storage inside Polymux.
 section: Using Polymux
 sectionOrder: 2
-order: 3
+order: 5
 published: true
 ---
 

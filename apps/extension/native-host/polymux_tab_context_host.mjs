@@ -402,7 +402,7 @@ function writeSnapshot(snapshot) {
   renameSync(temporary, CACHE_PATH); // os.replace: atomic on the same volume
 }
 
-export function lockerConnection({
+export function vaultConnection({
   browser = process.env.POLYMUX_NATIVE_BROWSER ?? "chromium",
   extensionId = process.env.POLYMUX_EXTENSION_ID,
   caller = process.argv[browser === "firefox" ? 3 : 2],
@@ -417,16 +417,16 @@ export function lockerConnection({
       manifestPath === path.join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts", "com.polymux.tab_context.json")
     : browser === "chromium" && /^[a-p]{32}$/.test(extensionId ?? "") &&
       (caller === `chrome-extension://${extensionId}/` || caller === `chrome-extension://${extensionId}`);
-  if (!approved) throw new Error("Unapproved Locker extension");
-  const file = path.join(home, instance ? `.polymux-${instance}` : ".polymux", "locker-extension-capability");
+  if (!approved) throw new Error("Unapproved Vault extension");
+  const file = path.join(home, instance ? `.polymux-${instance}` : ".polymux", "vault-extension-capability");
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || (process.platform !== "win32" &&
       ((stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.())))
-      throw new Error("Locker extension capability is not private");
+      throw new Error("Vault extension capability is not private");
     const token = readFileSync(fd, "utf8").trim();
-    if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("Invalid Locker extension capability");
+    if (!/^[a-f0-9]{64}$/.test(token)) throw new Error("Invalid Vault extension capability");
     return {ok: true, token};
   } finally { closeSync(fd); }
 }
@@ -435,9 +435,9 @@ function main() {
   for (;;) {
     const message = readMessage();
     if (message === null) return 0;
-    if (message.get("type") === "polymux:locker-connection") {
-      try { sendMessage(lockerConnection()); }
-      catch { sendMessage({ok: false, error: "Locker connection unavailable. Open Polymux and reinstall its browser host if needed."}); }
+    if (message.get("type") === "polymux:vault-connection") {
+      try { sendMessage(vaultConnection()); }
+      catch { sendMessage({ok: false, error: "Vault connection unavailable. Open Polymux and reinstall its browser host if needed."}); }
     } else if (message.has("tabs") && Array.isArray(message.get("tabs"))) {
       try {
         writeSnapshot(message);

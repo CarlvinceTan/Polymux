@@ -18,13 +18,17 @@ This guide takes you from a fresh install to your first conversation. You can co
 
 If your operating system asks for permission, only enable the access needed for the features you plan to use. You can change permissions later.
 
-## 2. Choose how Polymux thinks
+## 2. Connect another computer when needed
+
+Signing in is optional. To use Polymux on more than one computer, sign in on each computer, or open **Devices** from the chat drawer and pair with a QR code or one-time code. Choose which device runs Assistant work before starting a conversation.
+
+## 3. Choose how Polymux thinks
 
 Select a model provider and model during setup. Depending on the provider, you may sign in, paste an API key, or select a compatible local runtime already running on your computer.
 
 You can change this later under **Settings → Providers** and **Settings → Models**, including the full model and role configuration.
 
-## 3. Start a conversation
+## 4. Start a conversation
 
 Open a new chat and make a concrete request. For example:
 
@@ -32,19 +36,20 @@ Open a new chat and make a concrete request. For example:
 
 Polymux shows the agent’s progress in the conversation. If an action needs permission or your decision, the run pauses and asks.
 
-## 4. Open the workspace
+## 5. Open the workspace
 
 Use the workspace control to place supporting views beside the chat:
 
 - Open **Browser** to keep research visible.
 - Open **Drive** to work with files.
 - Open **Hub** after connecting a messaging or email account.
+- Open **Locker** to manage saved passwords, authenticator codes, recovery codes, and passkeys.
 - Open **Tasks** or **Subagents** to follow delegated work.
 
 Views open as tabs, so the files and pages connected to a task can remain visible while you talk to the agent.
 
-## 5. Add connections when you need them
+## 6. Add connections when you need them
 
 Open Settings to connect storage, communication services, skills, or MCP servers. Nothing requires you to configure every integration up front.
 
-Next, read [The workspace](/docs/workspace/) for the main interface or [Models and agents](/docs/models-and-agents/) to customise the intelligence behind it.
+Next, read [The workspace](/docs/workspace/) for the main interface, [Devices](/docs/devices/) to choose where work runs, or [Models and agents](/docs/models-and-agents/) to customise the intelligence behind it.

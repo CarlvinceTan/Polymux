@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { installLockerWebAuthn } from "./webauthn.js";
+import { installVaultWebAuthn } from "./webauthn.js";
 
 /**
  * Runs inside every embedded browser tab.
@@ -205,4 +205,4 @@ document.addEventListener("focusout", () => requestAnimationFrame(report), true)
 // preload rather than being tree-shaken to nothing, and so page scripts cannot
 // reach ipcRenderer.
 contextBridge.exposeInMainWorld("__polymuxAutofill", { present: true });
-installLockerWebAuthn();
+installVaultWebAuthn();

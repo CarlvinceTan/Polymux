@@ -24,7 +24,7 @@ export function permissionPrompts(kind: SystemPermissionKind): boolean {
   return kind !== "full-disk-access";
 }
 
-const REASONING_EFFORTS: ReasoningEffort[] = [
+export const REASONING_EFFORTS: ReasoningEffort[] = [
   "off",
   "minimal",
   "low",
@@ -33,6 +33,29 @@ const REASONING_EFFORTS: ReasoningEffort[] = [
   "xhigh",
   "max",
 ];
+
+/** Detect whether a model ID or name conventionally denotes a reasoning model. */
+export function isReasoningModelId(id: string, name?: string): boolean {
+  const target = `${id} ${name ?? ""}`.toLowerCase();
+  const slash = id.lastIndexOf("/");
+  const bare = (slash >= 0 ? id.slice(slash + 1) : id).toLowerCase();
+
+  // OpenAI o-series: o1, o1-mini, o1-preview, o3, o3-mini, o4-mini, etc.
+  if (/^o[1-9](?:-|$)/i.test(bare)) return true;
+  // Models with explicit reasoning tokens / words
+  if (/\b(r1|qwq)\b/i.test(target)) return true;
+  if (/(?:^|[-/_.: ])(reasoner|reasoning|thinking)(?:[-/_.: ]|$)/i.test(target)) return true;
+  return false;
+}
+
+/** Detect whether a model ID or name conventionally denotes a vision/multimodal model. */
+export function isMultimodalModelId(id: string, name?: string) {
+  const target = `${id} ${name ?? ""}`.toLowerCase();
+  if (/(?:^|[-\/_.: ])(vision|vl|multimodal|multimedia)(?:[-\/_.: ]|$)/i.test(target)) return true;
+  if (/\b(image|images|audio|video|omni)\b/i.test(target)) return true;
+  if (/gpt-4o|gpt-4-vision|gemini.*(flash|pro)|claude-3|claude-sonnet-4|llama-3\.2.*vision|pixtral|glm-4v|qwen.*vl/i.test(target)) return true;
+  return false;
+}
 
 /** Model servers that run on the user's own machine. They all speak the
  * OpenAI Chat Completions API, so a runtime is nothing but the port it listens

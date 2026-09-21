@@ -379,3 +379,28 @@ test("unidentified ACP history never becomes bundled assistant usage", () => {
   assert.equal(team.lifetimeTokens, 0);
   assert.equal(team.agents.length, 0);
 });
+
+test('global usage includes external history while app scopes partition only Polymux', () => {
+  const at = day(0);
+  const data = source({
+    conversations: [{id: 'a', metadata: {}}, {id: 't', metadata: {bot: 'bot'}}, {id: 'outside', metadata: {usageOrigin: 'external'}}],
+    runs: [
+      {conversationId: 'a', createdAt: at, startedAt: at, finishedAt: at, parentRunId: null, model: 'gpt', usage: usage(100)},
+      {conversationId: 't', createdAt: at, startedAt: at, finishedAt: at, parentRunId: null, model: 'gpt', usage: usage(200), agent: {id: 'codex', name: 'Codex', kind: 'acp'}},
+      {conversationId: 'outside', createdAt: at, startedAt: at, finishedAt: at, parentRunId: null, model: 'gpt', usage: usage(600, 1, 50), runCount: 3, agent: {id: 'external:codex', name: 'Codex', kind: 'external'}},
+    ],
+  });
+  const all = summarizeUsage(data, new Date(at));
+  const app = summarizeUsage(data, new Date(at), {scope: 'polymux'});
+  const assistant = summarizeUsage(data, new Date(at), {scope: 'assistant'});
+  const team = summarizeUsage(data, new Date(at), {scope: 'team'});
+  assert.equal(all.lifetimeTokens, 900);
+  assert.equal(app.lifetimeTokens, 300);
+  assert.equal(app.lifetimeTokens, assistant.lifetimeTokens + team.lifetimeTokens);
+  assert.equal(app.totalChats, 2);
+  assert.equal(all.totalChats, 3);
+  assert.equal(all.agents.find(agent => agent.kind === 'external')?.runs, 3);
+  assert.equal(all.reasoningPercent, 60);
+  assert.deepEqual(app.agents.map(agent => agent.kind).sort(), ['acp', 'polymux']);
+  assert.equal(summarizeUsage(data, new Date(at), {scope: 'assistant', agentId: 'external:codex'}).lifetimeTokens, 0);
+});

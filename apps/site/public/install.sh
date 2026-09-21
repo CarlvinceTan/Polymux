@@ -82,6 +82,7 @@ if [ ! -x "$runtime/bin/node" ]; then
   mv "$temporary/node-v${node_version}-${platform}-${architecture}" "$runtime"
 fi
 
+install -m 644 "$temporary/usage-worker.js" "$library/usage-worker.js"
 install -m 755 "$temporary/polymux.mjs" "$library/polymux.mjs"
 node_path="$runtime/bin/node"
 launcher="$bin/polymux"

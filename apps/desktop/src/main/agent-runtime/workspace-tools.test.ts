@@ -18,7 +18,7 @@ test("the external-agent workspace bridge includes every host-owned app tool fam
   const names = hostWorkspaceTools({
     workspace: tool("workspace_show"),
     hubDraft: tool("hub_draft"),
-    phone: tool("phone"),
+    mobile: tool("mobile"),
     browser: [tool("browser"), tool("browser_snapshot_many"), tool("browser_read")],
     communications: [tool("message_contacts"), tool("email_search")],
     drive: [tool("drive_sources"), tool("drive_list"), tool("drive_read")],
@@ -32,7 +32,7 @@ test("the external-agent workspace bridge includes every host-owned app tool fam
   assert.deepEqual(names, [
     "workspace_show",
     "hub_draft",
-    "phone",
+    "mobile",
     "browser",
     "browser_snapshot_many",
     "browser_read",

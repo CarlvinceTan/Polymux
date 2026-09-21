@@ -8,5 +8,5 @@ export * from "./qr.js";
 export * from "./relay.js";
 export * from './device-pairing.js';
 export * from './account.js';
-export * from './locker.js';
-export * from './locker-edit.js';
+export * from './vault.js';
+export * from './vault-edit.js';

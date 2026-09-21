@@ -5,9 +5,9 @@
 const extensionCapabilities = Object.freeze([
   "surface-commands-v1",
   "tab-snapshots-v1",
-  "locker-fill-v1",
+  "vault-fill-v1",
 ]);
-const desktopCapabilities = Object.freeze(["surface-feed-v1", "locker-fill-v1"]);
+const desktopCapabilities = Object.freeze(["surface-feed-v1", "vault-fill-v1"]);
 
 export const SURFACE_PROTOCOL = Object.freeze({
   desktop: Object.freeze({

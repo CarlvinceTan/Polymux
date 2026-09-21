@@ -29,6 +29,7 @@
     {tag: tags.moduleKeyword, class: 'ide-tok-keyword'},
     {tag: tags.definitionKeyword, class: 'ide-tok-keyword'},
     {tag: tags.operatorKeyword, class: 'ide-tok-keyword'},
+    {tag: tags.self, class: 'ide-tok-keyword'},
     {tag: tags.atom, class: 'ide-tok-atom'},
     {tag: tags.bool, class: 'ide-tok-atom'},
     {tag: tags.null, class: 'ide-tok-atom'},
@@ -44,10 +45,16 @@
     {tag: tags.className, class: 'ide-tok-type'},
     {tag: tags.namespace, class: 'ide-tok-type'},
     {tag: tags.macroName, class: 'ide-tok-type'},
+    {tag: tags.function(tags.definition(tags.variableName)), class: 'ide-tok-function'},
     {tag: tags.function(tags.variableName), class: 'ide-tok-function'},
-    {tag: tags.definition(tags.variableName), class: 'ide-tok-function'},
+    {tag: tags.constant(tags.variableName), class: 'ide-tok-constant'},
+    {tag: tags.definition(tags.variableName), class: 'ide-tok-variable'},
+    {tag: tags.special(tags.variableName), class: 'ide-tok-variable'},
+    {tag: tags.local(tags.variableName), class: 'ide-tok-variable'},
+    {tag: tags.variableName, class: 'ide-tok-variable'},
     {tag: tags.propertyName, class: 'ide-tok-property'},
     {tag: tags.attributeName, class: 'ide-tok-property'},
+    {tag: tags.labelName, class: 'ide-tok-property'},
     {tag: tags.attributeValue, class: 'ide-tok-string'},
     {tag: tags.tagName, class: 'ide-tok-tag'},
     {tag: tags.angleBracket, class: 'ide-tok-tag'},
@@ -185,20 +192,22 @@
     width: 100%;
     height: 100%;
   }
-  .ide-editor-host :global(.ide-tok-comment) { color: var(--neutral-500); }
-  .ide-editor-host :global(.ide-tok-keyword) { color: var(--link-text); }
-  .ide-editor-host :global(.ide-tok-atom) { color: var(--link-text); }
-  .ide-editor-host :global(.ide-tok-number) { color: var(--warning-text); }
-  .ide-editor-host :global(.ide-tok-string) { color: var(--status-success-text); }
-  .ide-editor-host :global(.ide-tok-regexp) { color: var(--warning-text); }
-  .ide-editor-host :global(.ide-tok-type) { color: var(--link-text); }
-  .ide-editor-host :global(.ide-tok-function) { color: var(--neutral-950); }
-  .ide-editor-host :global(.ide-tok-property) { color: var(--neutral-800); }
-  .ide-editor-host :global(.ide-tok-tag) { color: var(--link-text); }
-  .ide-editor-host :global(.ide-tok-operator) { color: var(--neutral-700); }
-  .ide-editor-host :global(.ide-tok-punctuation) { color: var(--neutral-700); }
-  .ide-editor-host :global(.ide-tok-heading) { color: var(--neutral-950); font-weight: 560; }
+  .ide-editor-host :global(.ide-tok-comment) { color: var(--syntax-comment); }
+  .ide-editor-host :global(.ide-tok-keyword) { color: var(--syntax-keyword); }
+  .ide-editor-host :global(.ide-tok-atom) { color: var(--syntax-constant); }
+  .ide-editor-host :global(.ide-tok-number) { color: var(--syntax-number); }
+  .ide-editor-host :global(.ide-tok-string) { color: var(--syntax-string); }
+  .ide-editor-host :global(.ide-tok-regexp) { color: var(--syntax-constant); }
+  .ide-editor-host :global(.ide-tok-type) { color: var(--syntax-type); }
+  .ide-editor-host :global(.ide-tok-function) { color: var(--syntax-function); }
+  .ide-editor-host :global(.ide-tok-variable) { color: var(--syntax-variable); }
+  .ide-editor-host :global(.ide-tok-constant) { color: var(--syntax-constant); }
+  .ide-editor-host :global(.ide-tok-property) { color: var(--syntax-property); }
+  .ide-editor-host :global(.ide-tok-tag) { color: var(--syntax-tag); }
+  .ide-editor-host :global(.ide-tok-operator) { color: var(--syntax-operator); }
+  .ide-editor-host :global(.ide-tok-punctuation) { color: var(--syntax-punctuation); }
+  .ide-editor-host :global(.ide-tok-heading) { color: var(--syntax-heading); font-weight: 560; }
   .ide-editor-host :global(.ide-tok-link) { color: var(--link-text); }
-  .ide-editor-host :global(.ide-tok-meta) { color: var(--neutral-600); }
+  .ide-editor-host :global(.ide-tok-meta) { color: var(--syntax-meta); }
   .ide-editor-host :global(.ide-tok-invalid) { color: var(--status-error-text); }
 </style>

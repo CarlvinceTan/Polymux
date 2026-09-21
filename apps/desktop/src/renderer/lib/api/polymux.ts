@@ -61,8 +61,8 @@ import type {
   MarketplacePluginDto,
   PluginDto,
   PluginMarketplaceDto,
-  PhoneIosSigningStatusDto,
-  PhoneStatusDto,
+  MobileIosSigningStatusDto,
+  MobileStatusDto,
   SkillDto,
   SendMailRequest,
   StartRunRequest,
@@ -74,12 +74,12 @@ import type {
   IdeFileDto,
   BotDto,
 } from '@polymux/protocol';
-import {LOCAL_RUNTIMES, parseDriveSourceId} from '@polymux/protocol';
+import {isMultimodalModelId, isReasoningModelId, LOCAL_RUNTIMES, parseDriveSourceId} from '@polymux/protocol';
 import {isBinaryFileName, languageForName} from '../../../main/ide/language';
 import {EXTENSION_INSTALL_URL} from '../../../shared/extension';
 
 let browserApi: PolymuxApi | undefined;
-let demoDevicePairing: import('@polymux/protocol').DevicePairingState = {approvals: typeof location !== 'undefined' && new URLSearchParams(location.search).has('deviceApproval') ? [{id: 'incoming', deviceName: 'Test Phone', choices: ['17', '42', '68'], expiresAt: new Date(Date.now() + 120000).toISOString()}] : [], connectedDevices: [], outgoing: null};
+let demoDevicePairing: import('@polymux/protocol').DevicePairingState = {approvals: typeof location !== 'undefined' && new URLSearchParams(location.search).has('deviceApproval') ? [{id: 'incoming', deviceName: 'Test Mobile', choices: ['17', '42', '68'], expiresAt: new Date(Date.now() + 120000).toISOString()}] : [], connectedDevices: [], outgoing: null};
 
 export function polymuxApi(): PolymuxApi {
   if (typeof window !== 'undefined' && window.polymux) return window.polymux;
@@ -130,6 +130,8 @@ function createBrowserDemoApi(): PolymuxApi {
   const weChatMissingPreview = new URLSearchParams(window.location.search).get('wechat') === 'missing';
   const emptyTeamPreview = new URLSearchParams(window.location.search).get('team') === 'empty';
   const emptyChatsPreview = new URLSearchParams(window.location.search).get('chats') === 'empty';
+  /** Overlapping timed events, so the time grid's stacking can be previewed. */
+  const calendarOverlapPreview = new URLSearchParams(window.location.search).has('calendarOverlap');
   const teamGroupSendPreview = new URLSearchParams(window.location.search).get('teamGroupSend');
   const now = Date.now();
   let conversations: ConversationDto[] = emptyChatsPreview ? [] : [
@@ -198,6 +200,13 @@ function createBrowserDemoApi(): PolymuxApi {
       deviceName: 'Studio Linux', deviceType: 'server', fingerprint: '71ad 309c 14fe a992', pairedAt: new Date(now - 86_400_000).toISOString(), detail: null, isDefault: false,
     },
   ];
+  const teamDevicesPreview = new URLSearchParams(window.location.search).get('teamDevices');
+  if (teamDevicesPreview === 'empty') demoHosts = [];
+  if (teamDevicesPreview === 'varied') demoHosts = demoHosts.map((host) => host.mode === 'local' ? host : {
+    ...host,
+    deviceName: 'Studio workstation for video editing and long-running research projects',
+    state: 'disconnected',
+  });
   const demoTeamListeners = new Set<(members: BotDto[]) => void>();
   const demoTeamGroupListeners = new Set<(groups: TeamGroupDto[]) => void>();
   let demoBots: BotDto[] = emptyTeamPreview ? [] : [
@@ -229,7 +238,9 @@ function createBrowserDemoApi(): PolymuxApi {
         deliveredAt: new Date(now - 90_000).toISOString(),
       },
     } as unknown as JsonValue),
-    message('team-maya-reply', 'team-maya', 'assistant', [{type: 'text', text: 'I’m checking the claims against primary sources and will flag anything the brief overstates.'}], now - 42_000),
+    message('team-maya-reply', 'team-maya', 'assistant', [{type: 'text', text: 'I’m checking the claims against primary sources and will flag anything the brief overstates.'}], now - 42_000, null, {
+      activities: [{id: 'team-maya-message-linus', kind: 'messaging', status: 'completed', label: 'Messaged Linus', target: 'Linus', display: 'inline'}],
+    }),
   ]);
   messages.set('team-group-launch', [
     message('team-group-question', 'team-group-launch', 'user', 'What is still blocking launch?', now - 120_000),
@@ -249,6 +260,7 @@ function createBrowserDemoApi(): PolymuxApi {
     } as unknown as JsonValue),
   ]);
   let demoAgentRuntime: AgentRuntimeDto = {kind: 'polymux', name: 'Polymux Agent'};
+  const demoBotAgentSettings = new Map<string, import('@polymux/protocol').AgentSettingsDto>();
   const demoCompactAgentSettings: AgentSettingsDto = {
     authMethods: [{id: 'account', name: 'Sign in with agent account', description: 'Continue with the account managed by this agent.', type: 'agent', available: true}],
     authRequired: false,
@@ -335,16 +347,18 @@ function createBrowserDemoApi(): PolymuxApi {
   let demoRoleOverrides: Partial<Record<ModelRole, {provider: string; id: string; reasoning?: ReasoningEffort}>> = {};
   const demoRoles = (): ModelRolesDto => {
     const assignment = (ref?: {provider: string; id: string; reasoning?: ReasoningEffort}): ModelRoleAssignmentDto | null => {
+      if (ref && ref.provider === "none" && ref.id === "none") {
+        return {provider: "none", id: "none", name: "None"};
+      }
       const model = ref && demoModels.find((item) => item.provider === ref.provider && item.id === ref.id);
       if (!model) return null;
       const reasoning = model.reasoning ? ref?.reasoning : undefined;
       return {provider: model.provider, id: model.id, name: model.name, ...(reasoning ? {reasoning} : {})};
     };
-    const main = demoModels.find((item) => item.selected);
-    // Main's level lives in the general settings, the same place the composer
-    // reads it from, so the two can never disagree.
+    const selected = demoModels.find((item) => item.selected);
+    const main = demoRoleOverrides.main ?? (selected ? {provider: selected.provider, id: selected.id, reasoning: demoGeneral.reasoningLevel} : undefined);
     return {
-      main: assignment(main && {provider: main.provider, id: main.id, reasoning: demoGeneral.reasoningLevel}),
+      main: assignment(main),
       subagent: assignment(demoRoleOverrides.subagent),
       judge: assignment(demoRoleOverrides.judge),
       compaction: assignment(demoRoleOverrides.compaction),
@@ -427,8 +441,8 @@ function createBrowserDemoApi(): PolymuxApi {
       {id: 'media', name: 'Media', description: 'Photos and videos.', official: true, enabled: true, workspaceKind: 'media', settingsKind: null, entry: null, pinnable: true},
       {id: 'tasks', name: 'Tasks', description: 'Tasks created and managed by you and your agent.', official: true, enabled: true, workspaceKind: 'tasks', settingsKind: null, entry: null, pinnable: true},
       {id: 'calendar', name: 'Calendar', description: 'Events and availability from connected calendars.', official: true, enabled: true, workspaceKind: 'calendar', settingsKind: null, entry: null, pinnable: true},
-      {id: 'phone', name: 'Phone', description: 'Your connected Android or iPhone screen.', official: true, enabled: true, workspaceKind: 'phone', settingsKind: null, entry: null, pinnable: true},
-      {id: 'locker', name: 'Locker', description: 'Passwords, authenticator codes, recovery codes and passkeys.', official: true, enabled: true, workspaceKind: 'locker', settingsKind: null, entry: null, pinnable: true},
+      {id: 'mobile', name: 'Mobile', description: 'Your connected Android or iPhone screen.', official: true, enabled: true, workspaceKind: 'mobile', settingsKind: null, entry: null, pinnable: true},
+      {id: 'vault', name: 'Vault', description: 'Passwords, authenticator codes, recovery codes and passkeys.', official: true, enabled: true, workspaceKind: 'vault', settingsKind: null, entry: null, pinnable: true},
       {id: 'terminal', name: 'Terminal', description: 'A command line on this computer.', official: true, enabled: true, workspaceKind: 'terminal', settingsKind: null, entry: null, pinnable: true},
       {id: 'ide', name: 'IDE', description: 'A project folder, the file in front of you, and a terminal.', official: true, enabled: true, workspaceKind: 'ide', settingsKind: null, entry: null, pinnable: true},
       {id: 'finance', name: 'Finance', description: 'Bank accounts and agent payments.', official: true, enabled: true, workspaceKind: 'finance', settingsKind: null, entry: null, pinnable: true},
@@ -436,7 +450,7 @@ function createBrowserDemoApi(): PolymuxApi {
     ],
     pinnedIds: ['drive', 'calendar', 'hub', 'tasks'],
   };
-  type DemoLockerEntry = {
+  type DemoVaultEntry = {
     id: string;
     title: string;
     username: string;
@@ -458,29 +472,30 @@ function createBrowserDemoApi(): PolymuxApi {
     trashed: boolean;
     updatedAt: string;
   };
-  let demoLockerExists = false;
-  let demoLockerUnlocked = false;
-  let demoLockerMaster = '';
-  let demoLockerStorage: import('@polymux/protocol').LockerStorageMode = 'account';
-  const demoLockerItems: DemoLockerEntry[] = [];
-  const demoLockerListeners = new Set<(status: import('@polymux/protocol').LockerStatusDto) => void>();
-  const demoLockerStatus = (): import('@polymux/protocol').LockerStatusDto => ({
-    exists: demoLockerExists,
-    unlocked: demoLockerUnlocked,
-    itemCount: demoLockerItems.filter((item) => !item.trashed).length,
+  let demoVaultExists = false;
+  let demoVaultUnlocked = false;
+  let demoVaultMaster = '';
+  let demoVaultStorage: import('@polymux/protocol').VaultStorageMode = 'account';
+  const demoVaultItems: DemoVaultEntry[] = [];
+  const demoVaultListeners = new Set<(status: import('@polymux/protocol').VaultStatusDto) => void>();
+  const demoVaultStatus = (): import('@polymux/protocol').VaultStatusDto => ({
+    exists: demoVaultExists,
+    unlocked: demoVaultUnlocked,
+    itemCount: demoVaultItems.filter((item) => !item.trashed).length,
     idleLockSeconds: 300,
     sync: {
       signedIn: false,
       available: false,
-      state: demoLockerStorage === 'local' ? 'local' : 'offline',
-      storage: demoLockerStorage,
+      state: demoVaultStorage === 'local' ? 'local' : 'offline',
+      storage: demoVaultStorage,
       revision: 0,
       lastSyncedAt: null,
     },
+    biometric: {available: false, enrolled: false},
   });
-  const notifyDemoLocker = (): void => {
-    const status = demoLockerStatus();
-    for (const listener of demoLockerListeners) listener(status);
+  const notifyDemoVault = (): void => {
+    const status = demoVaultStatus();
+    for (const listener of demoVaultListeners) listener(status);
   };
   const demoUsageStats = (): UsageStatsDto => {
     const origin = new Date();
@@ -551,22 +566,22 @@ function createBrowserDemoApi(): PolymuxApi {
       spendIncomplete: false,
     };
   };
-  const demoLockerList = (): import('@polymux/protocol').LockerListDto => ({
-    groups: [{id: 'general', name: 'Locker', parentId: null}],
-    items: demoLockerItems
+  const demoVaultList = (): import('@polymux/protocol').VaultListDto => ({
+    groups: [{id: 'general', name: 'Vault', parentId: null}],
+    items: demoVaultItems
       .filter((item) => !item.trashed)
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.sortIndex - b.sortIndex || a.title.localeCompare(b.title))
-      .map(demoLockerSummary),
-    trash: demoLockerItems.filter((item) => item.trashed).map(demoLockerSummary),
+      .map(demoVaultSummary),
+    trash: demoVaultItems.filter((item) => item.trashed).map(demoVaultSummary),
   });
-  const demoLockerSummary = (item: DemoLockerEntry): import('@polymux/protocol').LockerItemDto => ({
+  const demoVaultSummary = (item: DemoVaultEntry): import('@polymux/protocol').VaultItemDto => ({
     id: item.id,
     title: item.title,
     username: item.username,
     url: item.url,
     notes: item.notes,
     groupId: 'general',
-    groupName: item.groupName || 'Locker',
+    groupName: item.groupName || 'Vault',
     hasPassword: item.password.length > 0,
     hasTotp: item.totpSecret.length > 0,
     hasRecoveryCodes: item.recoveryCodes.length > 0,
@@ -575,7 +590,7 @@ function createBrowserDemoApi(): PolymuxApi {
     sortIndex: item.sortIndex,
     updatedAt: item.updatedAt,
   });
-  const demoTotp = (secret: string): import('@polymux/protocol').LockerTotpDto => {
+  const demoTotp = (secret: string): import('@polymux/protocol').VaultTotpDto => {
     const period = 30;
     const remaining = period - (Math.floor(Date.now() / 1000) % period);
     const digits = String(Math.floor(Date.now() / 1000 / period) % 1_000_000).padStart(6, '0');
@@ -994,6 +1009,21 @@ function createBrowserDemoApi(): PolymuxApi {
     {folder: 'INBOX', body: 'Your invoice for August is ready to view.', html: '<br><div style="height:40px"></div><div style="margin-top:36px;font-family:system-ui"><img src="cid:logo@example" alt="Billing"><img src="https://example.com/seal.png" alt="Paid"><h2 style="margin:0 0 8px">Invoice #1042</h2><p>Your invoice for August is <b>ready to view</b>.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left" style="border-bottom:1px solid #ddd">Item</th><th align="right" style="border-bottom:1px solid #ddd">Amount</th></tr><tr><td>Subscription</td><td align="right">$42.00</td></tr></table><p><a href="https://example.com/invoice/1042">View invoice</a></p></div>', envelope: {id: '3', subject: 'Invoice ready', from: {name: 'Billing', address: 'billing@example.com'}, to: {name: null, address: 'demo@example.com'}, date: new Date(now - 172_800_000).toISOString(), seen: true, flagged: false, answered: true, draft: false, hasAttachment: false}},
     {folder: '[Gmail]/Spam', body: 'You have definitely won a prize.', envelope: {id: '4', subject: 'YOU WON', from: {name: null, address: 'noreply@spam.example'}, to: null, date: new Date(now - 200_000_000).toISOString(), seen: false, flagged: false, answered: false, draft: false, hasAttachment: false}},
   ];
+  /** The trail the activity demo reports after its skill reads: one call per
+   * kind of work, so the activity block can be checked against a run with
+   * several rows rather than a single one. */
+  const demoActivityCalls: Array<{id: string; name: string; arguments: Record<string, JsonValue>}> = [
+    {id: 'demo-read-arch', name: 'read', arguments: {path: 'docs/ARCHITECTURE.md'}},
+    {id: 'demo-grep-status', name: 'grep', arguments: {pattern: 'statusFallback|statusPhrase|statusText'}},
+    {id: 'demo-bash-check', name: 'bash', arguments: {command: 'npm run check'}},
+    {id: 'demo-glob-views', name: 'glob', arguments: {pattern: 'apps/desktop/src/renderer/**/*.svelte'}},
+  ];
+  const demoActivityResults: Record<string, string> = {
+    'demo-read-arch': 'Read 180 lines.',
+    'demo-grep-status': '12 matches in 4 files.',
+    'demo-bash-check': '376 tests passed.',
+    'demo-glob-views': '41 files.',
+  };
   const demoWorkspaceSnapshots = new Map<string, WorkspaceSnapshotDto>();
   let demoDictationPass = 0;
   let demoComputerHistoryEnabled = true;
@@ -1092,60 +1122,60 @@ function createBrowserDemoApi(): PolymuxApi {
     promptToInstall: demoExtensionMissing && !demoExtensionDismissed,
   });
 
-  let demoPhoneConnected = false;
-  const demoPhoneMode = typeof location !== 'undefined'
-    ? new URLSearchParams(location.search).get('phone')
+  let demoMobileConnected = false;
+  const demoMobileMode = typeof location !== 'undefined'
+    ? new URLSearchParams(location.search).get('mobile')
     : null;
-  let demoPhonePlatform: 'ios' | 'android' =
-    demoPhoneMode === 'android-pair' ? 'android' : 'ios';
-  let demoIosSigningStage: PhoneIosSigningStatusDto['stage'] =
-    demoPhoneMode === 'ios-signing' ? 'signed-out' : 'authenticated';
+  let demoMobilePlatform: 'ios' | 'android' =
+    demoMobileMode === 'android-pair' ? 'android' : 'ios';
+  let demoIosSigningStage: MobileIosSigningStatusDto['stage'] =
+    demoMobileMode === 'ios-signing' ? 'signed-out' : 'authenticated';
   const demoIosProfileAvailable = () =>
-    demoPhoneMode !== 'ios-signing' || demoPhoneConnected;
-  const demoPhoneStatus = (): PhoneStatusDto => ({
+    demoMobileMode !== 'ios-signing' || demoMobileConnected;
+  const demoMobileStatus = (): MobileStatusDto => ({
     supported: true,
-    stage: demoPhoneConnected
+    stage: demoMobileConnected
       ? 'connected'
-      : demoPhoneMode === 'android-pair'
+      : demoMobileMode === 'android-pair'
         ? 'disconnected'
         : demoIosProfileAvailable()
           ? 'ready'
           : 'needs-signing',
-    device: demoPhoneMode === 'android-pair' && !demoPhoneConnected
+    device: demoMobileMode === 'android-pair' && !demoMobileConnected
       ? null
-      : demoPhonePlatform === 'android'
+      : demoMobilePlatform === 'android'
         ? {platform: 'android', id: 'demo-phone', udid: 'demo', name: 'Pixel 9', model: 'Pixel 9', osVersion: '16', transport: 'wireless', pairingState: 'paired', developerMode: true, tunnelAddress: null}
         : {platform: 'ios', id: 'demo-phone', udid: 'demo', name: 'Demo iPhone', model: 'iPhone 16 Pro', osVersion: '26.6', transport: 'wireless', pairingState: 'paired', developerMode: true, tunnelAddress: null},
     signing: {
-      available: demoPhonePlatform === 'ios' && demoIosProfileAvailable(),
-      source: demoPhonePlatform === 'ios' && demoIosProfileAvailable()
+      available: demoMobilePlatform === 'ios' && demoIosProfileAvailable(),
+      source: demoMobilePlatform === 'ios' && demoIosProfileAvailable()
         ? 'existing-profile'
         : 'none',
-      expiresAt: demoPhonePlatform === 'ios' && demoIosProfileAvailable()
+      expiresAt: demoMobilePlatform === 'ios' && demoIosProfileAvailable()
         ? new Date(Date.now() + 6 * 86_400_000).toISOString()
         : null,
       teamId: null,
       message: null,
     },
     wda: {
-      available: demoPhonePlatform === 'ios',
-      installed: demoPhonePlatform === 'ios',
-      running: demoPhoneConnected && demoPhonePlatform === 'ios',
-      bundleId: demoPhonePlatform === 'ios' ? 'com.polymux.phone.wda' : null,
+      available: demoMobilePlatform === 'ios',
+      installed: demoMobilePlatform === 'ios',
+      running: demoMobileConnected && demoMobilePlatform === 'ios',
+      bundleId: demoMobilePlatform === 'ios' ? 'com.polymux.mobile.wda' : null,
     },
     controller: {
-      kind: demoPhonePlatform === 'ios' ? 'wda' : 'adb',
+      kind: demoMobilePlatform === 'ios' ? 'wda' : 'adb',
       available: true,
       installed: true,
-      running: demoPhoneConnected,
+      running: demoMobileConnected,
     },
-    message: demoPhoneConnected
+    message: demoMobileConnected
       ? null
-      : demoPhoneMode === 'android-pair'
+      : demoMobileMode === 'android-pair'
         ? 'Connect with USB, or pair Android wirelessly.'
         : 'Ready to connect.',
   });
-  const demoIosSigningStatus = (): PhoneIosSigningStatusDto => ({
+  const demoIosSigningStatus = (): MobileIosSigningStatusDto => ({
     supported: true,
     stage: demoIosSigningStage,
     email: demoIosSigningStage === 'signed-out' ? null : 'owner@example.com',
@@ -1156,16 +1186,16 @@ function createBrowserDemoApi(): PolymuxApi {
   });
 
   const api: PolymuxApi = {
-    phone: {
-      status: async () => demoPhoneStatus(),
+    mobile: {
+      status: async () => demoMobileStatus(),
       connect: async () => {
-        demoPhoneConnected = true;
-        return demoPhoneStatus();
+        demoMobileConnected = true;
+        return demoMobileStatus();
       },
       pairAndroid: async () => {
-        demoPhonePlatform = 'android';
-        demoPhoneConnected = true;
-        return demoPhoneStatus();
+        demoMobilePlatform = 'android';
+        demoMobileConnected = true;
+        return demoMobileStatus();
       },
       iosSigningStatus: async () => demoIosSigningStatus(),
       iosSigningBegin: async () => {
@@ -1181,11 +1211,11 @@ function createBrowserDemoApi(): PolymuxApi {
         return demoIosSigningStatus();
       },
       stop: async () => {
-        demoPhoneConnected = false;
-        return demoPhoneStatus();
+        demoMobileConnected = false;
+        return demoMobileStatus();
       },
       frame: async () => ({
-        deviceId: 'demo-phone',
+        deviceId: 'demo-mobile',
         dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
         width: 402,
         height: 874,
@@ -1525,37 +1555,45 @@ function createBrowserDemoApi(): PolymuxApi {
         }
       },
     },
-    locker: {
-      status: async () => demoLockerStatus(),
+    vault: {
+      status: async () => demoVaultStatus(),
       create: async (password) => {
         if (password.length < 8) throw new Error('Use at least 8 characters');
-        demoLockerExists = true;
-        demoLockerUnlocked = true;
-        demoLockerMaster = password;
-        notifyDemoLocker();
-        return demoLockerStatus();
+        demoVaultExists = true;
+        demoVaultUnlocked = true;
+        demoVaultMaster = password;
+        notifyDemoVault();
+        return demoVaultStatus();
       },
       unlock: async (password) => {
-        if (!demoLockerExists) throw new Error('Create a locker first');
-        if (password !== demoLockerMaster) throw new Error('Wrong master password');
-        demoLockerUnlocked = true;
-        notifyDemoLocker();
-        return demoLockerStatus();
+        if (!demoVaultExists) throw new Error('Create a vault first');
+        if (password !== demoVaultMaster) throw new Error('Wrong master password');
+        demoVaultUnlocked = true;
+        notifyDemoVault();
+        return demoVaultStatus();
       },
+      unlockBiometric: async () => {
+        throw new Error('Touch ID unlock is available in the desktop app');
+      },
+      biometricStatus: async () => ({available: false, enrolled: false}),
+      enrollBiometric: async () => {
+        throw new Error('Touch ID unlock is available in the desktop app');
+      },
+      disenrollBiometric: async () => demoVaultStatus(),
       lock: async () => {
-        demoLockerUnlocked = false;
-        notifyDemoLocker();
-        return demoLockerStatus();
+        demoVaultUnlocked = false;
+        notifyDemoVault();
+        return demoVaultStatus();
       },
       touch: async () => {},
       list: async () => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        return demoLockerList();
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        return demoVaultList();
       },
       reveal: async (id) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        const item = demoLockerItems.find((entry) => entry.id === id);
-        if (!item) throw new Error('That item is not in the locker');
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        const item = demoVaultItems.find((entry) => entry.id === id);
+        if (!item) throw new Error('That item is not in the vault');
         return {
           password: item.password,
           totp: item.totpSecret ? demoTotp(item.totpSecret) : null,
@@ -1571,13 +1609,13 @@ function createBrowserDemoApi(): PolymuxApi {
         };
       },
       totp: async (id) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        const item = demoLockerItems.find((entry) => entry.id === id && !entry.trashed);
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        const item = demoVaultItems.find((entry) => entry.id === id && !entry.trashed);
         return item?.totpSecret ? demoTotp(item.totpSecret) : null;
       },
       codes: async () => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        return demoLockerItems
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        return demoVaultItems
           .filter((entry) => !entry.trashed && entry.totpSecret)
           .map((entry) => {
             const totp = demoTotp(entry.totpSecret);
@@ -1585,29 +1623,29 @@ function createBrowserDemoApi(): PolymuxApi {
           });
       },
       otpauth: async (id) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        const item = demoLockerItems.find((entry) => entry.id === id);
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        const item = demoVaultItems.find((entry) => entry.id === id);
         if (!item?.totpSecret) return null;
-        const issuer = encodeURIComponent(item.title || 'Locker');
-        const account = encodeURIComponent(item.username || item.title || 'Locker');
+        const issuer = encodeURIComponent(item.title || 'Vault');
+        const account = encodeURIComponent(item.username || item.title || 'Vault');
         return `otpauth://totp/${issuer}:${account}?secret=${item.totpSecret.replace(/\s+/g, '')}&issuer=${issuer}`;
       },
       save: async (input) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        const existing = input.id ? demoLockerItems.find((entry) => entry.id === input.id) : undefined;
-        const entry: DemoLockerEntry = existing ?? {
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        const existing = input.id ? demoVaultItems.find((entry) => entry.id === input.id) : undefined;
+        const entry: DemoVaultEntry = existing ?? {
           id: crypto.randomUUID(),
           title: input.title,
           username: '',
           url: '',
           notes: '',
-          groupName: 'Locker',
+          groupName: 'Vault',
           password: '',
           totpSecret: '',
           recoveryCodes: [],
           passkey: null,
           pinned: false,
-          sortIndex: demoLockerItems.length,
+          sortIndex: demoVaultItems.length,
           trashed: false,
           updatedAt: new Date().toISOString(),
         };
@@ -1630,73 +1668,73 @@ function createBrowserDemoApi(): PolymuxApi {
               }
             : null;
         entry.updatedAt = new Date().toISOString();
-        if (!existing) demoLockerItems.push(entry);
-        notifyDemoLocker();
-        return demoLockerList().items.find((item) => item.id === entry.id)!;
+        if (!existing) demoVaultItems.push(entry);
+        notifyDemoVault();
+        return demoVaultList().items.find((item) => item.id === entry.id)!;
       },
       remove: async (id) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        const item = demoLockerItems.find((entry) => entry.id === id && !entry.trashed);
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        const item = demoVaultItems.find((entry) => entry.id === id && !entry.trashed);
         if (item) item.trashed = true;
-        notifyDemoLocker();
-        return demoLockerList();
+        notifyDemoVault();
+        return demoVaultList();
       },
       restore: async (ids) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
         for (const id of ids) {
-          const item = demoLockerItems.find((entry) => entry.id === id);
+          const item = demoVaultItems.find((entry) => entry.id === id);
           if (item) item.trashed = false;
         }
-        notifyDemoLocker();
-        return demoLockerList();
+        notifyDemoVault();
+        return demoVaultList();
       },
       purge: async (ids) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
         for (const id of ids) {
-          const index = demoLockerItems.findIndex((entry) => entry.id === id && entry.trashed);
-          if (index >= 0) demoLockerItems.splice(index, 1);
+          const index = demoVaultItems.findIndex((entry) => entry.id === id && entry.trashed);
+          if (index >= 0) demoVaultItems.splice(index, 1);
         }
-        notifyDemoLocker();
-        return demoLockerList();
+        notifyDemoVault();
+        return demoVaultList();
       },
       emptyTrash: async () => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        for (let index = demoLockerItems.length - 1; index >= 0; index -= 1) {
-          if (demoLockerItems[index]?.trashed) demoLockerItems.splice(index, 1);
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        for (let index = demoVaultItems.length - 1; index >= 0; index -= 1) {
+          if (demoVaultItems[index]?.trashed) demoVaultItems.splice(index, 1);
         }
-        notifyDemoLocker();
-        return demoLockerList();
+        notifyDemoVault();
+        return demoVaultList();
       },
       pin: async (ids, pinned) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
         for (const id of ids) {
-          const item = demoLockerItems.find((entry) => entry.id === id && !entry.trashed);
+          const item = demoVaultItems.find((entry) => entry.id === id && !entry.trashed);
           if (item) item.pinned = pinned;
         }
-        notifyDemoLocker();
-        return demoLockerList();
+        notifyDemoVault();
+        return demoVaultList();
       },
       reorder: async (ids) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
         ids.forEach((id, index) => {
-          const item = demoLockerItems.find((entry) => entry.id === id);
+          const item = demoVaultItems.find((entry) => entry.id === id);
           if (item) item.sortIndex = index;
         });
-        notifyDemoLocker();
-        return demoLockerList();
+        notifyDemoVault();
+        return demoVaultList();
       },
       changePassword: async (current, next) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        if (current !== demoLockerMaster) throw new Error('Wrong master password');
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        if (current !== demoVaultMaster) throw new Error('Wrong master password');
         if (next.length < 8) throw new Error('Use at least 8 characters');
-        demoLockerMaster = next;
-        notifyDemoLocker();
-        return demoLockerStatus();
+        demoVaultMaster = next;
+        notifyDemoVault();
+        return demoVaultStatus();
       },
       copy: async (id, field, recoveryIndex) => {
-        if (!demoLockerUnlocked) throw new Error('Locker is locked');
-        const item = demoLockerItems.find((entry) => entry.id === id);
-        if (!item) throw new Error('That item is not in the locker');
+        if (!demoVaultUnlocked) throw new Error('Vault is locked');
+        const item = demoVaultItems.find((entry) => entry.id === id);
+        if (!item) throw new Error('That item is not in the vault');
         const text =
           field === 'password' ? item.password
           : field === 'username' ? item.username
@@ -1713,15 +1751,15 @@ function createBrowserDemoApi(): PolymuxApi {
       },
       importBegin: async () => ({status: 'cancelled' as const}),
       importConfirm: async () => ({imported: 0, skipped: 0, problems: ['Import is available in the desktop app']}),
-      sync: async () => demoLockerStatus(),
+      sync: async () => demoVaultStatus(),
       setStorage: async (mode) => {
-        demoLockerStorage = mode;
-        notifyDemoLocker();
-        return demoLockerStatus();
+        demoVaultStorage = mode;
+        notifyDemoVault();
+        return demoVaultStatus();
       },
       subscribe(listener) {
-        demoLockerListeners.add(listener);
-        return () => demoLockerListeners.delete(listener);
+        demoVaultListeners.add(listener);
+        return () => demoVaultListeners.delete(listener);
       },
     },
     finance: {
@@ -1731,9 +1769,11 @@ function createBrowserDemoApi(): PolymuxApi {
       get: async (filter = {}) => {
         const stats = demoUsageStats();
         const scope = filter.scope ?? 'all';
+        if (scope === 'all') stats.agents.push({id: 'external:opencode', kind: 'external', name: 'OpenCode',
+          tokens: stats.lifetimeTokens * .4, costUsd: stats.costUsd * .4, runs: 120, chats: 30});
         const shares: Record<string, number> = scope === 'assistant'
           ? {polymux: 5 / 6, 'acp:claude': 1}
-          : scope === 'team' ? {polymux: 1 / 6, 'acp:codex': 1} : {polymux: 1, 'acp:claude': 1, 'acp:codex': 1};
+          : scope === 'team' ? {polymux: 1 / 6, 'acp:codex': 1} : {polymux: 1, 'acp:claude': 1, 'acp:codex': 1, 'external:opencode': 1};
         const agents = stats.agents.filter(agent => shares[agent.id]).map(agent => ({...agent,
           tokens: Math.round(agent.tokens * shares[agent.id]), costUsd: agent.costUsd * shares[agent.id],
           runs: Math.round(agent.runs * shares[agent.id]), chats: Math.round(agent.chats * shares[agent.id]),
@@ -1744,6 +1784,7 @@ function createBrowserDemoApi(): PolymuxApi {
         const ratio = stats.lifetimeTokens ? tokens / stats.lifetimeTokens : 0;
         return {
           ...stats, scope, agents, agentId: filter.agentId ?? null,
+          ...(scope === 'all' ? {discovery: {status: 'ready' as const, updatedAt: new Date().toISOString(), detectedAgents: 1, supportedAgents: 40, estimated: false}} : {}),
           lifetimeTokens: tokens, peakTokens: Math.round(stats.peakTokens * ratio), costUsd: spend,
           totalChats: selected.reduce((sum, agent) => sum + agent.chats, 0),
           days: stats.days.map(day => ({...day, tokens: Math.round(day.tokens * ratio), costUsd: day.costUsd * ratio, runs: Math.round(day.runs * ratio)})),
@@ -1869,7 +1910,7 @@ function createBrowserDemoApi(): PolymuxApi {
         if (request.action === 'start') {
           demoDevicePairing = {approvals: [], connectedDevices: [], outgoing: {id: 'demo-pair', number: '42', deviceName: 'Home Mac mini', expiresAt: new Date(Date.now() + 120000).toISOString()}};
         }
-        if (request.action === 'approve') demoDevicePairing = {approvals: [], outgoing: null, connectedDevices: request.number === '42' ? [{deviceId: 'test-phone', deviceName: 'Test Phone', deviceType: 'phone', online: true, pairedAt: new Date().toISOString()}] : []};
+        if (request.action === 'approve') demoDevicePairing = {approvals: [], outgoing: null, connectedDevices: request.number === '42' ? [{deviceId: 'test-mobile', deviceName: 'Test Mobile', deviceType: 'mobile', online: true, pairedAt: new Date().toISOString()}] : []};
         if (request.action === 'cancel') demoDevicePairing = {approvals: [], connectedDevices: [], outgoing: null};
         if (request.action === 'invitation') return {...demoDevicePairing, installCommand: 'curl -fsSL https://polymux.com/install.sh | sh -s -- connect demo-invitation'};
         return structuredClone(demoDevicePairing);
@@ -1929,6 +1970,29 @@ function createBrowserDemoApi(): PolymuxApi {
       };
     })(),
     team: {
+      agentRegistry: async () => structuredClone(demoAcpRegistry),
+      agentSettings: async (id, request) => {
+        const bot = demoBots.find(item => item.id === id);
+        if (!bot) throw new Error('Unknown bot');
+        const runtime = bot.agentRuntime ?? {kind:'polymux' as const};
+        if (new URLSearchParams(window.location.search).get('botAgentSettings') === 'fail') throw new Error('Could not load this bot’s agent settings');
+        let settings = demoBotAgentSettings.get(id);
+        if (!settings) {
+          settings = structuredClone(runtime.kind === 'acp' ? runtime.name === 'pi ACP' ? demoPiAgentSettings : demoCompactAgentSettings : {authMethods:[],authRequired:false,supportsLogout:false,configOptions:[],providers:[],supportsProviders:false});
+          if(runtime.kind === 'acp') settings.configOptions = settings.configOptions.map(option => ({...option, currentValue:runtime.config?.[option.id] ?? option.currentValue} as typeof option));
+        }
+        if(request.action === 'option') {
+          if(runtime.kind !== 'acp') throw new Error('Bot is not an ACP agent');
+          bot.agentRuntime = {...runtime,config:{...runtime.config,[request.id]:request.value}};
+          settings.configOptions = settings.configOptions.map(option => option.id === request.id ? {...option,currentValue:request.value} as typeof option : option);
+          demoTeamListeners.forEach(listener => listener(structuredClone(demoBots)));
+        } else if(request.action === 'authenticate') settings.authRequired = false;
+        else if(request.action === 'logout') settings.authRequired = true;
+        else if(request.action === 'provider') settings.providers = settings.providers.map(provider => provider.id === request.provider.id ? {...provider,apiType:request.provider.apiType,baseUrl:request.provider.baseUrl} : provider);
+        else if(request.action === 'disableProvider') settings.providers = settings.providers.map(provider => provider.id === request.id ? {...provider,apiType:null,baseUrl:null} : provider);
+        demoBotAgentSettings.set(id,settings);
+        return structuredClone({runtime:bot.agentRuntime ?? runtime, settings});
+      },
       list: async () => structuredClone(demoBots),
       groups: async () => structuredClone(demoTeamGroups),
       createGroup: async (request) => {
@@ -1996,11 +2060,13 @@ function createBrowserDemoApi(): PolymuxApi {
         );
         member.avatar = structuredClone(request.avatar);
         member.profileId = request.profileId;
+        member.agentRuntime = request.agentRuntime;
         member.profileName = demoTeamProfileOptions().find((profile) => profile.id === request.profileId)?.name ?? 'Missing profile';
         member.hostId = host.hostId;
         member.hostName = host.deviceName;
         member.deviceType = host.deviceType;
-        member.laptopAccess = request.laptopAccess === 'ask' ? 'ask' : 'off';
+        member.laptopAccess = request.laptopAccess ?? 'allow';
+        member.deviceAccess = {...request.deviceAccess};
         member.skills = request.skills;
         member.mcpServers = request.mcpServers;
         member.plugins = request.plugins;
@@ -2012,6 +2078,9 @@ function createBrowserDemoApi(): PolymuxApi {
       update: async (id, request) => {
         const current = demoBots.find((member) => member.id === id);
         if (!current) throw new Error('Unknown Team member');
+        if (request.agentRuntime && JSON.stringify(request.agentRuntime) !== JSON.stringify(current.agentRuntime)) demoBotAgentSettings.delete(id);
+        if (new URLSearchParams(window.location.search).get('teamSave') === 'fail')
+          throw new Error('Could not save device access. Try again.');
         const updated: BotDto = {
           ...current,
           ...request,
@@ -2046,6 +2115,11 @@ function createBrowserDemoApi(): PolymuxApi {
         demoTeamListeners.forEach((listener) => listener(structuredClone(demoBots)));
         demoTeamGroupListeners.forEach((listener) => listener(structuredClone(demoTeamGroups)));
         return true;
+      },
+      retrySetup: async (id) => {
+        const current = demoBots.find((member) => member.id === id);
+        if (!current) throw new Error('Unknown Team member');
+        return structuredClone(current);
       },
       send: async (request) => {
         const target = demoBots.find((member) => member.id === request.to || member.name.toLowerCase() === request.to.toLowerCase());
@@ -2082,7 +2156,7 @@ function createBrowserDemoApi(): PolymuxApi {
       },
       leases: async () => [],
       grantLease: async (id, capabilities, minutes = 15) => ({
-        id: crypto.randomUUID(), memberId: id, capabilities,
+        id: crypto.randomUUID(), memberId: id, hostId: 'demo-host', capabilities,
         createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + minutes * 60_000).toISOString(),
       }),
       revokeLease: async () => true,
@@ -2251,6 +2325,7 @@ function createBrowserDemoApi(): PolymuxApi {
         create: async (input) => {
           const created: ScheduleDto = {
             id: crypto.randomUUID(),
+            ...(input.botId ? {botId: input.botId} : {}),
             title: input.title,
             prompt: input.prompt,
             frequency: input.frequency,
@@ -2293,6 +2368,20 @@ function createBrowserDemoApi(): PolymuxApi {
         {id: 'demo-event-3', calendarId: 'demo-personal', title: 'Exchange planning', start: new Date(today.getTime() + 4 * day).toISOString(), end: new Date(today.getTime() + 5 * day).toISOString(), allDay: true, availability: 'free', attendees: [], editable: true},
         {id: 'demo-event-4', calendarId: 'demo-birthdays', title: 'Percival’s Birthday', start: new Date(today.getTime() + 7 * day).toISOString(), end: new Date(today.getTime() + 8 * day).toISOString(), allDay: true, recurrence: {frequency: 'yearly', interval: 1}, availability: 'free', attendees: [], editable: false},
       ];
+      if (calendarOverlapPreview) {
+        const at = (from: number, to: number) => ({
+          start: new Date(today.getTime() + from * 3_600_000).toISOString(),
+          end: new Date(today.getTime() + to * 3_600_000).toISOString(),
+        });
+        events = [...events,
+          {id: 'demo-overlap-long', calendarId: 'demo-exchange', title: 'CS3210', ...at(12, 15), allDay: false, location: 'COM3-01-20', availability: 'busy', attendees: [], editable: true},
+          {id: 'demo-overlap-short', calendarId: 'demo-personal', title: 'Appian Interview', ...at(13, 14), allDay: false, availability: 'busy', attendees: [], editable: true},
+          {id: 'demo-overlap-shortest', calendarId: 'demo-personal', title: 'Coffee with Maya', ...at(13.5, 14), allDay: false, availability: 'free', attendees: [], editable: true},
+          // The same slot twice: these belong side by side, not nested.
+          {id: 'demo-overlap-twin-a', calendarId: 'demo-exchange', title: 'EC1101E Tutorial', ...at(16, 17), allDay: false, location: 'AS3-0307', availability: 'busy', attendees: [], editable: true},
+          {id: 'demo-overlap-twin-b', calendarId: 'demo-personal', title: 'EC1101E Lecture', ...at(16, 17), allDay: false, location: 'LT19', availability: 'busy', attendees: [], editable: true},
+        ];
+      }
       const listeners = new Set<() => void>();
       const publish = () => { for (const listener of listeners) listener(); };
       const eventsInRange = (start: string, end: string, ids?: string[]) => {
@@ -3165,10 +3254,20 @@ function createBrowserDemoApi(): PolymuxApi {
         return demoRoles();
       },
       clearRole: async (role) => {
-        if (role === 'main') throw new Error('The main model cannot be cleared');
+        demoRoleOverrides = {...demoRoleOverrides, [role]: {provider: "none", id: "none"}};
+        if (role === "main") {
+          demoModels = demoModels.map((item) => ({...item, selected: false}));
+        }
+        if (role === "speech") demoGeneral = {...demoGeneral, speechModeEnabled: false};
+        return demoRoles();
+      },
+      resetRole: async (role) => {
         const {[role]: _removed, ...rest} = demoRoleOverrides;
         demoRoleOverrides = rest;
-        if (role === 'speech') demoGeneral = {...demoGeneral, speechModeEnabled: false};
+        if (role === "main") {
+          demoModels = demoModels.map((item) => ({...item, selected: false}));
+        }
+        if (role === "speech") demoGeneral = {...demoGeneral, speechModeEnabled: false};
         return demoRoles();
       },
     },
@@ -3477,7 +3576,9 @@ function createBrowserDemoApi(): PolymuxApi {
         demoProviders.push(provider);
         demoModels = [...demoModels, ...request.models.map((model) => ({
           provider: id, id: model.id, name: model.name?.trim() || model.id,
-          contextWindow: 0, maxOutputTokens: 0, reasoning: false, input: ['text' as const],
+          contextWindow: 0, maxOutputTokens: 0,
+          reasoning: typeof model.reasoning === 'boolean' ? model.reasoning : isReasoningModelId(model.id, model.name),
+          input: (isMultimodalModelId(model.id, (model as {name?: string}).name) ? ['text' as const, 'image' as const] : ['text' as const]),
           cost: {input: null, output: null, cacheRead: null, cacheWrite: null}, selected: false, custom: true,
         }))];
         if (request.apiKey) demoKeys.set(id, [{id: crypto.randomUUID(), label: `${request.apiKey.slice(0, 4)}••••${request.apiKey.slice(-4)}`, active: true, status: 'ready'}]);
@@ -3495,7 +3596,9 @@ function createBrowserDemoApi(): PolymuxApi {
           ...demoModels.filter((model) => model.provider !== request.id),
           ...request.models.map((model, index) => ({
             provider: request.id, id: model.id, name: model.name?.trim() || model.id,
-            contextWindow: 0, maxOutputTokens: 0, reasoning: false, input: ['text' as const],
+            contextWindow: 0, maxOutputTokens: 0,
+            reasoning: typeof model.reasoning === 'boolean' ? model.reasoning : isReasoningModelId(model.id, model.name),
+            input: (isMultimodalModelId(model.id, (model as {name?: string}).name) ? ['text' as const, 'image' as const] : ['text' as const]),
             cost: {input: null, output: null, cacheRead: null, cacheWrite: null},
             selected: selectedId ? model.id === selectedId : index === 0, custom: true,
           })),
@@ -3519,7 +3622,9 @@ function createBrowserDemoApi(): PolymuxApi {
           ...demoModels.filter((model) => model.provider !== provider.id),
           ...detected.map((model, index) => ({
             provider: provider.id, id: model.id, name: model.id,
-            contextWindow: 0, maxOutputTokens: 0, reasoning: false, input: ['text' as const],
+            contextWindow: 0, maxOutputTokens: 0,
+            reasoning: isReasoningModelId(model.id),
+            input: (isMultimodalModelId(model.id, (model as {name?: string}).name) ? ['text' as const, 'image' as const] : ['text' as const]),
             cost: {input: null, output: null, cacheRead: null, cacheWrite: null},
             selected: index === 0, custom: true,
           })),
@@ -3621,8 +3726,12 @@ function createBrowserDemoApi(): PolymuxApi {
     // browser demo exercises anything that only exists mid-run (steering, the
     // queue behind a running agent).
     const held = /^__demo_run_(\d+)__$/.exec(request.text);
-    const duration = held ? Number(held[1]) : 900;
-    const isActivityDemo = request.text === '__demo_activity__';
+    // The activity fixture names its own hold so a visual check can watch the
+    // trail fill and open its rows; the bare form keeps the default timing the
+    // interaction tests are written against.
+    const activityHold = /^__demo_activity_(\d+)__$/.exec(request.text);
+    const duration = Number(held?.[1] ?? activityHold?.[1]) || 900;
+    const isActivityDemo = request.text === '__demo_activity__' || Boolean(activityHold);
     // A delegated task, its subagent's run, and the link between them, which is
     // what lets a task row open the run it started.
     if (request.text === '__demo_task__') {
@@ -3661,12 +3770,17 @@ function createBrowserDemoApi(): PolymuxApi {
       emit(runId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}});
       emit(runId, request.conversationId, 'tool.progress', {toolCallId: 'demo-skill-read-3', message: 'Scanning the skill manifest'});
       emit(runId, request.conversationId, 'tool.progress', {toolCallId: 'demo-skill-read-3', message: 'Reading workflow steps'});
+      // A real trail is several kinds of work, not one line: reads of
+      // different files, a search, a command and a listing. The preview needs
+      // that shape to show the group rows and the single rows beside them.
+      demoActivityCalls.forEach((call) => emit(runId, request.conversationId, 'tool.started', {toolCall: call}));
     }
     timers.set(runId, setTimeout(() => {
       const text = 'This is the assembled Polymux chat surface. Connect the send handler to your agent backend when it is ready.';
       if (isActivityDemo) {
         const args = {path: '/skills/window-control/SKILL.md'};
         emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-skill-read-3', name: 'read', arguments: args}, result: {content: 'Read the window-control workflow.'}});
+        demoActivityCalls.forEach((call) => emit(runId, request.conversationId, 'tool.completed', {toolCall: call, result: {content: demoActivityResults[String(call.id)] ?? 'Done.'}}));
         const browserArgs = {action: 'read', tabId: 'demo-browser-tab', url: 'https://polymux.com/docs'};
         emit(runId, request.conversationId, 'tool.started', {toolCall: {id: 'demo-browser-1', name: 'browser', arguments: browserArgs}});
         emit(runId, request.conversationId, 'tool.completed', {toolCall: {id: 'demo-browser-1', name: 'browser', arguments: browserArgs}, result: {content: JSON.stringify({ok: true, tabId: 'demo-browser-tab', pageUrl: browserArgs.url, pageTitle: 'Polymux Docs'})}});
@@ -3818,7 +3932,7 @@ function demoBot(
     profileId: 'default', profileName: 'Default Profile',
     hostId: 'demo-host', hostName: 'This Mac', deviceType: 'laptop',
     avatar: {shape, color},
-    laptopAccess: 'ask', status, preview,
+    laptopAccess: 'allow', deviceAccess: {}, status, preview,
     updatedAt: new Date(timestamp).toISOString(), unread: false,
     computer: {provider: 'remote', state: 'running', detail: null, persistent: true, network: 'none'},
     skills, mcpServers, plugins,

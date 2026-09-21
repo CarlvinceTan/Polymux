@@ -51,13 +51,20 @@
       term.options.theme = terminalTheme();
     });
     const unsubscribe = api.terminal.subscribe(applyEvent);
+    let lastCols = 0;
+    let lastRows = 0;
     const resize = () => {
-      if (disposed) return;
+      // Settings hides the mounted terminal. Keep its last usable dimensions
+      // until it is visible again, so the shell does not reflow into one row.
+      if (disposed || !node.clientWidth || !node.clientHeight) return;
       try {
         fit.fit();
       } catch {
         return;
       }
+      if (term.cols === lastCols && term.rows === lastRows) return;
+      lastCols = term.cols;
+      lastRows = term.rows;
       void api.terminal.resize(id, term.cols, term.rows).catch(() => {});
     };
     const observer = new ResizeObserver(() => resize());

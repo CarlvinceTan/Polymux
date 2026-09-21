@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AppSettingsButton from './AppSettingsButton.svelte';
   import {onMount} from 'svelte';
   import {fade} from 'svelte/transition';
   import type {FinanceAccountDto, FinanceTransactionDto} from '@polymux/protocol';
@@ -7,8 +8,10 @@
   import {scrollFade, scrollFadeX} from '../../shared/scrollFade';
   import {clockTime} from '../../shared/displayTime';
 
+  let {onOpenSettings, settingsOnly = false}: {onOpenSettings?: () => void; settingsOnly?: boolean} = $props();
   const api = polymuxApi();
   let tab = $state<'accounts' | 'payments' | 'access'>('accounts');
+  const currentTab = $derived(settingsOnly ? 'access' : tab);
   let connections = $state<Array<{id: string; name: string}>>([]);
   let serverId = $state('');
   let accounts = $state<FinanceAccountDto[]>([]);
@@ -84,14 +87,14 @@
 </script>
 
 <div class="finance">
-  <header><h1>Finance</h1><button class="manage" aria-label="Manage connections" onclick={() => tab = tab === 'access' ? 'accounts' : 'access'}><Icon name="settings" size={16}/><span>Manage</span></button></header>
+  {#if !settingsOnly}<header><h1>Finance</h1><AppSettingsButton name="Finance" onclick={onOpenSettings}/></header>
   <nav aria-label="Finance sections">
-    <button class:active={tab === 'accounts'} onclick={() => tab = 'accounts'}>Accounts</button>
-    <button class:active={tab === 'payments'} onclick={() => tab = 'payments'}>Agent cards</button>
+    <button class:active={currentTab === 'accounts'} onclick={() => tab = 'accounts'}>Accounts</button>
+    <button class:active={currentTab === 'payments'} onclick={() => tab = 'payments'}>Agent cards</button>
 
-  </nav>
+  </nav>{/if}
   <div class="finance-content" use:scrollFade>
-    {#if tab === 'accounts'}
+    {#if currentTab === 'accounts'}
       {#if connections.length}<div class="toolbar">
         <select aria-label="BankMCP connection" bind:value={serverId} onchange={changeConnection} disabled={loading || discovering}>
           <option value="">Choose bank connection</option>
@@ -161,7 +164,7 @@
           <section class="activity"><h2>Transactions</h2><div class="empty small"><Icon name="chart" size={20}/><p>{loading || discovering ? 'Loading…' : 'No activity yet'}</p><small>Transactions appear when you connect a bank.</small></div></section>
         </div>
       {/if}
-    {:else if tab === 'payments'}
+    {:else if currentTab === 'payments'}
       <section class="payment-intro"><div class="agent-card"><span class="card-top"><span class="card-brand">Polymux</span><Icon name="shield" size={18}/></span><strong>Agent card</strong><span>Not issued</span><span class="card-bottom">You set the limits.</span></div></section>
       <div class="statement-panel payment-details"><div class="section-heading"><h2>Agent spending</h2><span class="muted">Not connected</span></div><p class="muted">Give your agent a separate card with a budget you control.</p><div class="payment-row"><span>Provider</span><span>Stripe Issuing</span></div><div class="payment-row"><span>Card & funding</span><span>Setup required</span></div><a class="provider-link" href="https://docs.stripe.com/issuing/agents" target="_blank" rel="noreferrer">View provider requirements ↗</a></div>
     {:else}
@@ -175,7 +178,6 @@
   header {display:flex;align-items:center;justify-content:space-between;padding:24px 28px 12px;flex-shrink:0}
   h1,h2,h3,p {margin:0}h1 {font-size:19px;font-weight:550;letter-spacing:-.5px}h2 {font-size:13px;font-weight:550}p {line-height:1.6}.muted,small {color:var(--secondary)}small {font-size:11px}
   button,a {font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer;text-decoration:none;transition:color .15s}button:hover,a:hover {color:var(--secondary)}button:disabled {color:var(--disabled-text);cursor:default}button:focus-visible,a:focus-visible,summary:focus-visible {outline:2px solid var(--link-text);outline-offset:4px}
-  .manage {display:flex;align-items:center;gap:8px;font-size:12px;color:var(--secondary)}.manage:hover {color:var(--on-surface)}
   nav {display:flex;gap:24px;padding:0 28px;flex-shrink:0}nav button {font-size:12px;color:var(--secondary);padding:9px 0 12px}nav button.active {color:var(--on-surface);font-weight:550;text-decoration:underline;text-underline-offset:12px;text-decoration-thickness:1px}
    .finance-content {display:block;position:relative;box-sizing:border-box;width:100%;height:auto;flex:1;min-width:0;min-height:0;overflow:auto;scrollbar-width:none;padding:0 28px 28px}.finance-content::-webkit-scrollbar,.card-rail::-webkit-scrollbar {display:none}.finance-content>* {max-width:900px;min-width:0;box-sizing:border-box;margin-left:auto;margin-right:auto}
   .toolbar {display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:20px;font-size:11px}select {font:inherit;border:0;background:var(--app-bg);color:var(--secondary);max-width:75%;min-width:0;padding:4px 0}.toolbar button {color:var(--secondary)}[role='alert'] {color:var(--danger);font-size:12px;margin-top:16px}
@@ -187,7 +189,7 @@
   .statement-panel {border-radius:18px;background:var(--surface-low);overflow:hidden}.insights {padding:20px 24px 22px}.insights-heading,.section-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}.insights-heading {font-size:12px;font-weight:500;margin-bottom:20px}.insights-heading small {font-weight:400;font-size:10px}.metrics {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.metrics>div {display:flex;flex-direction:column;gap:7px;min-width:0}.metrics span {font-size:10px;color:var(--secondary)}.metrics strong {font-size:19px;line-height:1.25;font-weight:500;letter-spacing:-.5px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.insights>small {display:block;margin-top:12px}.incoming {color:var(--success-text)}
   .activity {margin:0 6px 6px;background:var(--app-bg);border-radius:13px;padding:20px 18px 4px}.section-heading>.muted {font-size:10px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.transaction-group {margin-top:22px}.transaction-group h3 {font-size:10px;font-weight:450;color:var(--secondary);margin-bottom:5px}.transaction {display:flex;gap:8px;align-items:flex-start;padding:13px 0;min-width:0}.transaction-icon {height:18px;flex:0 0 20px;display:flex;align-items:center;color:var(--secondary)}.transaction-copy {display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}.transaction-copy>span {font-size:12px;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.transaction-copy small {font-size:10px}.amount {font-size:12px;line-height:18px;flex-shrink:0;white-space:nowrap;font-variant-numeric:tabular-nums}.load-more {display:block;margin:18px auto;font-size:11px}.empty.small {min-height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--secondary);text-align:center}.empty p {font-size:12px;color:var(--on-surface)}.empty small {font-size:10px}.empty :global(svg) {margin-bottom:4px}
   .payment-intro {padding:32px 0}.agent-card strong {font-size:27px;font-weight:450;letter-spacing:-.7px;margin-top:30px}.agent-card>span:not(.card-top) {font-size:11px;color:#ffffff9c;margin-top:6px}.agent-card .card-bottom {margin-top:auto}.payment-details {padding:24px}.payment-details>p {font-size:12px;margin-top:10px}.payment-row {display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:12px;padding:16px 0}.payment-row span:last-child {color:var(--secondary);text-align:right}.provider-link {display:inline-block;margin-top:12px;font-size:12px}.setup {padding-top:32px}.setup>p {margin-top:10px;font-size:12px}.connection-actions {display:flex;gap:24px;font-size:12px;margin:10px 0 28px}details {font-size:12px;color:var(--secondary)}summary {cursor:pointer}details p {margin-top:14px;max-width:480px}
-  @container(max-width:400px){header {padding:20px 18px 10px}nav {padding:0 18px} .finance-content {padding:0 18px 18px}.card-area {padding-top:24px}.bank-card,.unconnected-card,.agent-card {padding:20px;min-height:190px}.insights {padding:18px}.metrics {gap:10px}.metrics strong {font-size:16px}.activity {padding:18px 12px 0}.manage span {display:none}}
+  @container(max-width:400px){header {padding:20px 18px 10px}nav {padding:0 18px} .finance-content {padding:0 18px 18px}.card-area {padding-top:24px}.bank-card,.unconnected-card,.agent-card {padding:20px;min-height:190px}.insights {padding:18px}.metrics {gap:10px}.metrics strong {font-size:16px}.activity {padding:18px 12px 0}}
   @container(min-width:780px){.card-rail {justify-content:safe center}.card-area {padding-top:36px;padding-bottom:28px}.insights {padding:24px 28px}.activity {padding:24px 22px 8px}.metrics strong {font-size:23px}}
   @container(max-width:340px){.metrics {grid-template-columns:repeat(2,minmax(0,1fr))}.metrics>div:first-child {grid-column:1 / -1}.insights-heading {align-items:flex-start;gap:8px}.insights-heading small {text-align:right}.card-caption {flex-wrap:wrap;gap:4px}.bank-card,.unconnected-card {padding:16px;min-height:180px}.card-balance {font-size:26px}.empty small {max-width:180px}}
   @media(prefers-reduced-motion:reduce){button,a {transition:none}}

@@ -1,6 +1,6 @@
 <script module lang="ts">
-  export type WorkspaceTabKind = 'new' | 'media' | 'browser' | 'summary' | 'drive' | 'calendar' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'phone' | 'locker' | 'terminal' | 'ide' | 'usage' | 'finance' | 'view' | 'settings' | 'connections';
-  export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; appId?: string; section?: 'outputs' | 'references' | 'tasks'};
+  export type WorkspaceTabKind = 'bot' | 'bot-schedule' | 'new' | 'media' | 'browser' | 'summary' | 'drive' | 'calendar' | 'hub' | 'subagent' | 'subagents' | 'tasks' | 'mobile' | 'vault' | 'terminal' | 'ide' | 'usage' | 'finance' | 'view' | 'settings' | 'connections';
+  export type WorkspaceTab = {id: string; title: string; kind: WorkspaceTabKind; url?: string; favicon?: string | null; appId?: string; settingsOpen?: boolean; section?: 'outputs' | 'references' | 'tasks'; botId?: string};
 
   /**
    * Favicons this session has already tried to decode, and the ones that
@@ -143,8 +143,8 @@
     hub: 'workspace-hub',
     subagents: 'workspace-subagents',
     tasks: 'workspace-tasks',
-    phone: 'workspace-phone',
-    locker: 'workspace-locker',
+    mobile: 'workspace-mobile',
+    vault: 'workspace-vault',
     ide: 'workspace-ide',
     finance: 'workspace-finance',
     usage: 'workspace-usage',
@@ -154,7 +154,7 @@
 </script>
 
 <script lang="ts">
-  import {onDestroy, type ComponentProps} from 'svelte';
+  import {onDestroy, tick, type ComponentProps, type Snippet} from 'svelte';
   import Icon from '../../shared/components/Icon.svelte';
   import {leasedUrls, isLeased} from './agentSurfaceLeases';
   import {
@@ -178,19 +178,21 @@
   import type HubViewComponent from './HubView.svelte';
   import SummaryView, {type SummaryViewData} from './SummaryView.svelte';
   import DriveView, {type DriveEntry, type DriveSource} from './DriveView.svelte';
-  import type {ScheduleItem, ScheduleFrequency, ScheduleRun} from './ScheduleView.svelte';
+  import ScheduleView, {type ScheduleItem, type ScheduleFrequency, type ScheduleRun} from './ScheduleView.svelte';
   import CalendarView from './CalendarView.svelte';
   import TasksView, {type TaskCard} from './TasksView.svelte';
   import type {GeneralSettingsDto, WorkspaceAppDto, WorkspaceAppsDto} from '@polymux/protocol';
-  import PhoneView from './PhoneView.svelte';
+  import MobileView from './MobileView.svelte';
   import TerminalView from './TerminalView.svelte';
   import IDEview from './IDEview.svelte';
-  import LockerView from './LockerView.svelte';
+  import VaultView from './VaultView.svelte';
   import UsageView from './UsageView.svelte';
   import FinanceView from './FinanceView.svelte';
+  import AppSettingsPane from './AppSettingsPane.svelte';
   import type SettingsPageComponent from '../settings/SettingsPage.svelte';
   import {t, translate, type MessageKey} from '../../../i18n';
 
+  let viewportWidth = window.innerWidth;
   export let tabs: WorkspaceTab[] = [];
   export let unavailableKinds: WorkspaceTabKind[] = [];
   export let activeTabId: string | null = null;
@@ -219,6 +221,9 @@
     return SettingsView = await settingsViewPromise;
   }
   export let settingsMode: ComponentProps<typeof SettingsPageComponent>['initialMode'] = '';
+  /** The Team bot editor, drawn by App: the drawer owns the frame, App owns the
+   * bot's data and callbacks. */
+  export let botPage: Snippet<[WorkspaceTab]> | undefined = undefined;
   export let currentPinnedViews: GeneralSettingsDto['pinnedViews'] = [];
   export let onAgentNotice: (severity: 'warning' | 'error', message: string) => void = () => {};
   export let onGeneralChange: (settings: GeneralSettingsDto) => void = () => {};
@@ -260,6 +265,7 @@
     remove: (entries: DriveEntry[]) => void;
   } | null = null;
   export let scheduleItems: ScheduleItem[] = [];
+  export let scheduleBotId: string | undefined = undefined;
   export let scheduleError = '';
   /** Counted by the caller, which owns the list. */
   export let unreadSchedules = 0;
@@ -271,6 +277,7 @@
   export let onSaveSchedule: (
     input: {title: string; prompt: string; frequency: ScheduleFrequency},
     id: string | null,
+    botId?: string,
   ) => void = () => {};
   export let onDeleteSchedule: (item: ScheduleItem) => void = () => {};
   export let onRunSchedule: (item: ScheduleItem) => void = () => {};
@@ -304,7 +311,7 @@
   /** True while another surface covers the drawer; the embedded browser's
    * native view must hide under it. */
   export let browserObscured = false;
-  export let onTabState: (id: string, patch: {title?: string; url?: string; favicon?: string | null}) => void = () => {};
+  export let onTabState: (id: string, patch: {title?: string; url?: string; favicon?: string | null; settingsOpen?: boolean}) => void = () => {};
   type PinnedView = GeneralSettingsDto['pinnedViews'][number];
   export let pinnedViews: PinnedView[] = [];
   export let onTogglePin: (kind: PinnedView) => void = () => {};
@@ -383,11 +390,26 @@
   }
 
   $: isSingletonKind = (kind: WorkspaceTabKind): kind is PinnedView =>
-    kind === 'drive' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'phone' || kind === 'locker' || kind === 'media' || kind === 'terminal' || kind === 'ide' || (kind === 'usage' || kind === 'finance');
+    kind === 'drive' || kind === 'calendar' || kind === 'hub' || kind === 'tasks' || kind === 'mobile' || kind === 'vault' || kind === 'media' || kind === 'terminal' || kind === 'ide' || (kind === 'usage' || kind === 'finance');
 
   $: activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
   $: if (activeTab?.kind === 'hub') void loadHubView();
   $: if (activeTab?.kind === 'settings' || activeTab?.kind === 'connections') void loadSettingsView();
+  $: activeWorkspaceApp = activeTab?.kind === 'browser'
+    ? {id: 'browser', name: translate('workspace.browser'), description: '', official: true, enabled: true, workspaceKind: null, settingsKind: null, entry: null, pinnable: false}
+    : apps.find(app => app.id === (activeTab?.appId ?? activeTab?.kind)) ?? null;
+  $: appSettingsOpen = Boolean(activeWorkspaceApp && activeTab?.kind !== 'hub' && activeTab?.settingsOpen);
+  function openAppSettings(): void {
+    if (activeTab && activeWorkspaceApp) onTabState(activeTab.id, {settingsOpen: true});
+  }
+  async function closeAppSettings(): Promise<void> {
+    if (!activeTab) return;
+    onTabState(activeTab.id, {settingsOpen: false});
+    await tick();
+    const buttons = panel?.querySelectorAll<HTMLButtonElement>('[data-app-settings-button], .workspace-more-wrap > button, .hub-view-source[aria-label="Hub settings"]');
+    [...(buttons ?? [])].find(button => button.getClientRects().length > 0)?.focus();
+  }
+
   /** A task tab is named by its row in Summary and takes its status from it, so
    * the tab and the row can never disagree. */
   $: activeTask = summaryData.tasks.find((task) => task.id === activeTab?.id);
@@ -412,8 +434,8 @@
     hub: 'workspace.hub',
     subagents: 'workspace.subagents',
     tasks: 'workspace.tasks',
-    phone: 'workspace.phone',
-    locker: 'workspace.locker',
+    mobile: 'workspace.mobile',
+    vault: 'workspace.vault',
     media: 'workspace.media',
     terminal: 'workspace.terminal',
     ide: 'workspace.ide',
@@ -438,8 +460,9 @@
   $: taskTabStatus = (tab: WorkspaceTab): TaskStatus =>
     summaryData.tasks.find((task) => task.id === tab.id)?.status ?? 'active';
 
-  const tabIcons: Record<WorkspaceTabKind, 'plus' | 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'calendar' | 'send' | 'task' | 'tasks' | 'phone' | 'key' | 'terminal' | 'code' | 'chart' | 'banknote' | 'panel' | 'settings' | 'connections'> = {
+  const tabIcons: Record<WorkspaceTabKind, 'plus' | 'image' | 'globe' | 'chat' | 'summary' | 'drive' | 'calendar' | 'send' | 'task' | 'tasks' | 'mobile' | 'key' | 'terminal' | 'code' | 'chart' | 'banknote' | 'panel' | 'settings' | 'connections' | 'bot'> = {
     new: 'plus',
+    bot: 'bot',
     media: 'image',
     browser: 'globe',
     summary: 'summary',
@@ -449,8 +472,9 @@
     subagent: 'task',
     subagents: 'send',
     tasks: 'tasks',
-    phone: 'phone',
-    locker: 'key',
+    'bot-schedule': 'calendar',
+    mobile: 'mobile',
+    vault: 'key',
     terminal: 'terminal',
     ide: 'code',
     finance: 'banknote', usage: 'chart',
@@ -654,7 +678,7 @@
   }
 </script>
 
-<svelte:window onclick={dismissMenus} onkeydown={dismissMenus}/>
+<svelte:window bind:innerWidth={viewportWidth} onclick={dismissMenus} onkeydown={dismissMenus}/>
 
 <!-- The handle is a sibling of the drawer rather than a child of it: the
      drawer clips its own overflow, and an embedded page is a native view laid
@@ -682,8 +706,10 @@
   class:open
   class:expanded
   class:standalone
+  class:full-width={expanded || dockedWidth >= viewportWidth}
   class:resizing
   class:motion
+  class:no-tabs={tabs.length === 0}
   class="workspace-drawer"
   aria-label={$t('titlebar.workspace')}
   aria-hidden={!open}
@@ -754,15 +780,19 @@
 
   <div
     class="workspace-content"
+    class:no-tabs={tabs.length === 0}
+    class:app-settings-open={appSettingsOpen}
     class:empty={!activeTab || activeTab.kind === 'new'}
     class:browser={activeTab?.kind === 'browser' || activeTab?.kind === 'view'}
     class:settings={activeTab?.kind === 'settings' || activeTab?.kind === 'connections'}
     class:ide={activeTab?.kind === 'ide'}
     class:workspace-usage={activeTab?.kind === 'usage'}
+    class:bot={activeTab?.kind === 'bot'}
+    class:bounded-page={['settings', 'connections', 'usage', 'finance', 'vault', 'tasks', 'bot-schedule'].includes(activeTab?.kind ?? '')}
   >
     {#each tabs.filter((tab) => tab.kind === 'ide') as tab (`${conversationId}:${tab.id}`)}
       <div class="workspace-persistent-view" hidden={activeTab?.id !== tab.id}>
-        <IDEview />
+        <IDEview onOpenSettings={openAppSettings}/>
       </div>
     {/each}
     {#if !activeTab || activeTab.kind === 'new'}
@@ -776,11 +806,11 @@
         {onOpenUrl}
         usableFavicon={(favicon) => usableFavicon(favicon, faviconsSettled + themeRevision)}
       />
-    {:else if activeTab.kind === 'media'}{#key `${activeTab.id}:${activeTab.url ?? ''}`}<MediaView title={activeTab.title} src={activeTab.url ?? ''} onOpen={(next) => onTabState(activeTab.id, next)}/>{/key}
+    {:else if activeTab.kind === 'media'}{#key `${activeTab.id}:${activeTab.url ?? ''}`}<MediaView onOpenSettings={openAppSettings} title={activeTab.title} src={activeTab.url ?? ''} onOpen={(next) => onTabState(activeTab.id, next)}/>{/key}
     <!-- Keyed by tab: switching between two browser tabs must destroy the old
          BrowserView (which hides its native page) and mount the new one, not
          retarget one instance and leave the old page painted on screen. -->
-    {:else if activeTab.kind === 'browser' || activeTab.kind === 'view'}{#key activeTab.id}<BrowserView tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || browserHidden} onState={(patch) => onTabState(activeTab.id, patch)}/>{/key}
+    {:else if activeTab.kind === 'browser' || activeTab.kind === 'view'}{#key activeTab.id}<BrowserView onOpenSettings={openAppSettings} settingsName={activeWorkspaceApp?.name ?? 'Browser'} tabId={activeTab.id} title={activeTab.title} url={activeTab.url} obscured={browserObscured || browserHidden || appSettingsOpen} onState={(patch) => onTabState(activeTab.id, patch)}/>{/key}
     {:else if activeTab.kind === 'subagent'}<SubagentView
       title={activeTab.title}
       taskId={activeTab.id}
@@ -792,7 +822,7 @@
     {:else if activeTab.kind === 'subagents'}<SubagentsView subagents={summaryData.tasks} onOpenSubagent={onOpenTask}/>
     {:else if activeTab.kind === 'hub'}
       {#if HubView}
-        <HubView
+        <HubView settingsRequested={Boolean(activeTab.settingsOpen)} onSettingsOpened={() => onTabState(activeTab.id, {settingsOpen: false})}
           {onOpenMedia}
           {onOpenFilePath}
           drawerMotionProgress={motionProgress}
@@ -801,14 +831,14 @@
       {:else}
         <div class="workspace-view-loading" role="status">Loading Hub…</div>
       {/if}
-    {:else if activeTab.kind === 'calendar'}<CalendarView/>
-    {:else if activeTab.kind === 'phone'}<PhoneView/>
+    {:else if activeTab.kind === 'calendar'}<CalendarView onOpenSettings={openAppSettings}/>
+    {:else if activeTab.kind === 'mobile'}<MobileView onOpenSettings={openAppSettings}/>
     {:else if activeTab.kind === 'terminal'}{#key activeTab.id}<TerminalView sessionId={activeTab.id}/>{/key}
     {:else if activeTab.kind === 'ide'}<!-- kept mounted above -->
-    {:else if activeTab.kind === 'locker'}<LockerView/>
-    {:else if activeTab.kind === 'finance'}<FinanceView/>
-    {:else if activeTab.kind === 'usage'}<UsageView/>
-    {:else if activeTab.kind === 'drive'}<DriveView
+    {:else if activeTab.kind === 'vault'}<VaultView onOpenSettings={openAppSettings}/>
+    {:else if activeTab.kind === 'finance'}<FinanceView onOpenSettings={openAppSettings}/>
+    {:else if activeTab.kind === 'usage'}<UsageView onOpenSettings={openAppSettings}/>
+    {:else if activeTab.kind === 'drive'}<DriveView onOpenSettings={openAppSettings}
       title={activeTab.title}
       root={driveRoot}
       sources={driveSources}
@@ -829,7 +859,15 @@
       onDownload={driveActions?.download ?? null}
       onDelete={driveActions?.remove ?? null}
     />
-    {:else if activeTab.kind === 'tasks'}<TasksView items={taskItems} error={tasksError} onDismissError={onDismissTasksError} onCreateCard={onCreateTaskCard} onUpdateCard={onUpdateTaskCard} onDeleteCard={onDeleteTaskCard} onMarkRead={onMarkTasksRead} onRecycleCard={onRecycleTaskCard} schedules={scheduleItems} scheduleError={scheduleError} onDismissScheduleError={onDismissScheduleError} onOpenScheduleRun={onOpenScheduleRun} onMarkScheduleRead={onMarkScheduleRead} onToggleSchedule={onToggleSchedule} onSaveSchedule={onSaveSchedule} onDeleteSchedule={onDeleteSchedule} onRunSchedule={onRunSchedule}/>
+    {:else if activeTab.kind === 'bot-schedule'}
+      {#key activeTab.id}
+        <ScheduleView title={activeTab.title} items={scheduleItems.filter(item => item.botId === activeTab.id.slice('bot-schedule:'.length))}
+          error={scheduleError} onDismissError={onDismissScheduleError} onOpenItem={onOpenScheduleRun}
+          onMarkRead={onMarkScheduleRead} onToggleItem={onToggleSchedule}
+          onSave={(input, id) => onSaveSchedule(input, id, activeTab.id.slice('bot-schedule:'.length))}
+          onDeleteItem={onDeleteSchedule} onRunItem={onRunSchedule}/>
+      {/key}
+    {:else if activeTab.kind === 'tasks'}<TasksView onOpenSettings={openAppSettings} items={taskItems} error={tasksError} onDismissError={onDismissTasksError} onCreateCard={onCreateTaskCard} onUpdateCard={onUpdateTaskCard} onDeleteCard={onDeleteTaskCard} onMarkRead={onMarkTasksRead} onRecycleCard={onRecycleTaskCard} schedules={scheduleItems.filter(item => item.botId === scheduleBotId)} scheduleError={scheduleError} onDismissScheduleError={onDismissScheduleError} onOpenScheduleRun={onOpenScheduleRun} onMarkScheduleRead={onMarkScheduleRead} onToggleSchedule={onToggleSchedule} onSaveSchedule={onSaveSchedule} onDeleteSchedule={onDeleteSchedule} onRunSchedule={onRunSchedule}/>
     {:else if activeTab.kind === 'settings' || activeTab.kind === 'connections'}
       {#if SettingsView}
         {#key activeTab.kind}
@@ -847,7 +885,14 @@
       {:else}
         <div class="workspace-view-loading" role="status">{activeTab.kind === 'connections' ? 'Loading Connections…' : 'Loading Settings…'}</div>
       {/if}
+    {:else if activeTab.kind === 'bot'}
+      {#if botPage}{#key activeTab.id}{@render botPage(activeTab)}{/key}{:else}<div class="workspace-view-loading" role="status">Loading bot…</div>{/if}
     {:else}<SummaryView section={activeTab.section ?? 'outputs'} data={summaryData} {onOpenTask}/>
+    {/if}
+    {#if appSettingsOpen && activeWorkspaceApp}
+      {#key activeTab?.id}
+        <AppSettingsPane app={activeWorkspaceApp} onBack={closeAppSettings} {onAppsChange} {onGeneralChange}/>
+      {/key}
     {/if}
   </div>
 </aside>

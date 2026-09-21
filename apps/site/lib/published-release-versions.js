@@ -7,4 +7,5 @@ export const publishedReleaseVersions = Object.freeze([
   '0.2.3',
   '0.2.4',
   '0.3.0',
+  '0.3.1',
 ]);

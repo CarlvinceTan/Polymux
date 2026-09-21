@@ -22,6 +22,7 @@
     | {kind: 'all'}
     | {kind: 'broadcasts'}
     | {kind: 'contacts'}
+    | {kind: 'settings'}
     | {kind: 'platform'; platform: string; account?: string; space?: string}
     | {kind: 'mail'; account: string; folder: string};
 
@@ -353,6 +354,9 @@
 </script>
 
 <script lang="ts">
+  export let settingsRequested = false;
+  export let onSettingsOpened: () => void = () => {};
+  $: if (settingsRequested) { selectSettings(); onSettingsOpened(); }
   import MessageInput from '../../shared/components/MessageInput.svelte';
   let messageInput: MessageInput;
   import {onMount, tick, type ComponentProps} from 'svelte';
@@ -385,6 +389,7 @@
   import {displayTime} from '../../shared/displayTime';
   import {scrollFade} from '../../shared/scrollFade';
   import Icon from '../../shared/components/Icon.svelte';
+  import HubSettings from '../settings/HubSettings.svelte';
   import SearchField from '../../shared/components/SearchField.svelte';
   import Menu from '../../shared/components/Menu.svelte';
   import PlatformLogo, {type Platform} from '../../shared/components/PlatformLogo.svelte';
@@ -2518,6 +2523,20 @@
     openEnvelope = null;
     contactSearch = '';
     void refreshChats();
+  }
+
+  function selectSettings(): void {
+    if (newChatOpen) closeNewChatPicker();
+    if (broadcastCreateOpen) closeBroadcastPicker();
+    leaveMailComposer();
+    source = {kind: 'settings'};
+    activeChat = null;
+    activeBroadcast = null;
+    broadcastMessages = [];
+    chatMessages = [];
+    openMail = null;
+    openEnvelope = null;
+    contactSearch = '';
   }
 
   function selectBroadcasts(): void {
@@ -5352,6 +5371,7 @@
   <div
     class="hub-view-grid"
     class:reading={hubReading}
+    class:settings-open={source?.kind === 'settings'}
     class:rail-compact={railIconOnly}
     class:rail-resizing={railResizeStart !== null}
     style={`--hub-rail-width: ${railWidth}px; --hub-motion-list-width: ${motionListWidth}px`}
@@ -5513,6 +5533,12 @@
         <Icon name="contacts" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH} />
         <span>{$t('hub.contacts')}</span>
       </button>
+      <button type="button" class="hub-view-source" class:active={source?.kind === 'settings'}
+        aria-label={$t('hub.settings')} aria-current={source?.kind === 'settings' ? 'page' : undefined}
+        data-tooltip-label={$t('hub.settingsLabel')} onclick={selectSettings}>
+        <Icon name="settings" size={15} strokeWidth={MAIN_UI_ICON_STROKE_WIDTH}/>
+        <span>{$t('hub.settingsLabel')}</span>
+      </button>
     </div>
   </nav>
 
@@ -5532,6 +5558,12 @@
     onkeydown={resizeRailWithKeyboard}
   ></button>
 
+  {#if source?.kind === 'settings'}
+    <section class="hub-view-settings" aria-label={$t('hub.settings')}>
+      <h2>{$t('hub.settings')}</h2>
+      <HubSettings {api} embedded/>
+    </section>
+  {:else}
   <section class="hub-view-list" aria-label={$t('hub.messages')}>
     {#if broadcastCreateOpen}
       <div class="hub-view-list-head hub-view-new-chat-head">
@@ -7591,6 +7623,7 @@
       </div>
     {/if}
   </section>
+  {/if}
 </div>
 </div>
 

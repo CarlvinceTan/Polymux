@@ -475,3 +475,17 @@ test("polled draft growth estimates speed without counting repeated snapshots", 
   transcript.draft({ turn: 1, text: "x".repeat(380), timestamp: 10900 });
   assert.equal(transcript.rate, before);
 });
+
+test('bot setup cues stay hidden while user messages and bot replies remain visible', async () => {
+  const messages = [
+    {id: 'setup', role: 'user', content: 'Internal setup', metadata: {setupCue: true}, createdAt: '2026-09-16T00:00:00Z'},
+    {id: 'user', role: 'user', content: 'My instructions', metadata: null, createdAt: '2026-09-16T00:00:01Z'},
+    {id: 'reply', role: 'assistant', content: 'Ready', metadata: null, createdAt: '2026-09-16T00:00:02Z'},
+  ];
+  const session = new ChatSession({async call<T>(method: string) {
+    return (method === 'conversations.messages' ? messages : method === 'runs.configuration'
+      ? {model: null, reasoning: 'medium', contextWindow: 0, skills: [], mcps: []} : []) as T;
+  }}, () => {});
+  await session.open({id: 'chat', title: 'Bot'});
+  assert.deepEqual(session.transcript.rows.map(row => row.text), ['My instructions', 'Ready']);
+});

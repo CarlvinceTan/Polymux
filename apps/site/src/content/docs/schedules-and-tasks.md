@@ -4,7 +4,7 @@ slug: schedules-and-tasks
 description: Run recurring requests and follow work delegated to focused subagents.
 section: Using Polymux
 sectionOrder: 2
-order: 5
+order: 7
 published: true
 ---
 

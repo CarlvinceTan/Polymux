@@ -23,11 +23,13 @@ test("built CLI preserves command arguments and empty JSON results", {timeout: 2
     const rpc = JSON.parse(body) as {method: string; args: unknown[]};
     requests.push(rpc);
     const results: Record<string, unknown> = {
-      "team.list": [{id: "bot", name: "Maya", conversationId: "conversation"}],
+      "team.list": [{id: "bot", name: "Maya", conversationId: "conversation", deviceAccess: {server: "ask"}}],
+      "team.create": {id: "bot", name: "Maya"},
+      "team.update": {id: "bot", name: "Maya"},
       "runs.start": {runId: "run"},
       "runs.events": [{sequence: 1, type: "run.completed"}],
       "conversations.messages": [],
-      "locker.save": {id: "existing-entry"},
+      "vault.save": {id: "existing-entry"},
       "goals.get": null,
     };
     response.writeHead(200, {"content-type": "application/json"});
@@ -46,7 +48,7 @@ test("built CLI preserves command arguments and empty JSON results", {timeout: 2
     const environment: NodeJS.ProcessEnv = {
       ...process.env,
       POLYMUX_HOME: home,
-      POLYMUX_LOCKER_ITEM_PASSWORD: undefined,
+      POLYMUX_VAULT_ITEM_PASSWORD: undefined,
     };
 
     for (const [args, asGoal] of [
@@ -69,15 +71,34 @@ test("built CLI preserves command arguments and empty JSON results", {timeout: 2
 
     requests.length = 0;
     const saved = await run(process.execPath, [
-      bundle, "locker", "save", "--id", "existing-entry", "--title", "Updated",
+      bundle, "vault", "save", "--id", "existing-entry", "--title", "Updated",
     ], environment);
     assert.equal(saved.code, 0, saved.stderr);
-    const save = requests.find((request) => request.method === "locker.save");
+    const save = requests.find((request) => request.method === "vault.save");
     assert.equal((save?.args[0] as {id?: string})?.id, "existing-entry");
 
     const goal = await run(process.execPath, [bundle, "goals", "get", "--json", "conversation"], environment);
     assert.equal(goal.code, 0, goal.stderr);
     assert.equal(goal.stdout, "null\n");
+
+    requests.length = 0;
+    const created = await run(process.execPath, [bundle, 'team', 'create', 'Maya', '--role', 'Helper', '--profile', 'default'], environment);
+    assert.equal(created.code, 0, created.stderr);
+    const create = requests.find((request) => request.method === 'team.create')?.args[0] as {laptopAccess: string; deviceAccess: unknown};
+    assert.equal(create.laptopAccess, 'allow');
+    assert.deepEqual(create.deviceAccess, {});
+
+    requests.length = 0;
+    const updated = await run(process.execPath, [bundle, 'team', 'update', 'Maya', '--device-access', 'desktop=off'], environment);
+    assert.equal(updated.code, 0, updated.stderr);
+    const update = requests.find((request) => request.method === 'team.update')?.args[1] as {deviceAccess: unknown};
+    assert.deepEqual(update.deviceAccess, {server: 'ask', desktop: 'off'});
+
+    requests.length = 0;
+    const obsolete = await run(process.execPath, [bundle, 'team', 'create', 'Maya', '--role', 'Helper', '--profile', 'default', '--laptop', 'off'], environment);
+    assert.equal(obsolete.code, 1);
+    assert.match(obsolete.stderr, /instead of --laptop/);
+    assert.equal(requests.length, 0);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -164,16 +185,16 @@ test("built CLI serves, pairs a Desktop, and accepts authenticated RPC", {timeou
   }
 });
 
-test("built CLI serves the Locker vault and Hub mail state", {timeout: 30_000}, async () => {
-  const home = await mkdtemp(path.join(tmpdir(), "polymux-cli-locker-"));
+test("built CLI serves the Vault vault and Hub mail state", {timeout: 30_000}, async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "polymux-cli-vault-"));
   const port = await availablePort();
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     POLYMUX_HOME: home,
     POLYMUX_HOST_LISTEN: "127.0.0.1",
     POLYMUX_HOST_PORT: String(port),
-    POLYMUX_LOCKER_PASSWORD: "correct horse battery staple",
-    POLYMUX_LOCKER_ITEM_PASSWORD: undefined,
+    POLYMUX_VAULT_PASSWORD: "correct horse battery staple",
+    POLYMUX_VAULT_ITEM_PASSWORD: undefined,
     POLYMUX_EMAIL_PASSWORD: undefined,
   };
   const host = spawn(process.execPath, [bundle, "host", "serve"], {
@@ -196,53 +217,53 @@ test("built CLI serves the Locker vault and Hub mail state", {timeout: 30_000}, 
       () => `Host did not become ready.\nstdout:\n${output}`,
     );
 
-    const created = JSON.parse(await cli(["locker", "create"])) as {exists: boolean; unlocked: boolean};
+    const created = JSON.parse(await cli(["vault", "create"])) as {exists: boolean; unlocked: boolean};
     assert.equal(created.exists, true);
     assert.equal(created.unlocked, true);
     const saved = JSON.parse(await cli([
-      "locker", "save", "--title", "Integration login",
+      "vault", "save", "--title", "Integration login",
       "--username", "integration-user", "--password-value-stdin",
     ], " integration-secret \n")) as {id: string};
     assert.ok(saved.id);
-    const list = JSON.parse(await cli(["locker", "list"])) as {items: Array<{id: string}>};
+    const list = JSON.parse(await cli(["vault", "list"])) as {items: Array<{id: string}>};
     assert.ok(list.items.some((item) => item.id === saved.id));
     const updated = JSON.parse(await cli([
-      "locker", "save", "--id", saved.id, "--title", "Updated login",
+      "vault", "save", "--id", saved.id, "--title", "Updated login",
     ])) as {id: string; title: string};
     assert.equal(updated.id, saved.id);
     assert.equal(updated.title, "Updated login");
-    const updatedList = JSON.parse(await cli(["locker", "list"])) as {items: Array<{id: string}>};
+    const updatedList = JSON.parse(await cli(["vault", "list"])) as {items: Array<{id: string}>};
     assert.equal(updatedList.items.length, list.items.length);
-    assert.equal(await cli(["locker", "copy", saved.id, "password"]), " integration-secret \n");
+    assert.equal(await cli(["vault", "copy", saved.id, "password"]), " integration-secret \n");
     assert.equal(
-      (JSON.parse(await cli(["locker", "lock"])) as {unlocked: boolean}).unlocked,
+      (JSON.parse(await cli(["vault", "lock"])) as {unlocked: boolean}).unlocked,
       false,
     );
     assert.equal(
-      (JSON.parse(await cli(["locker", "unlock"])) as {unlocked: boolean}).unlocked,
+      (JSON.parse(await cli(["vault", "unlock"])) as {unlocked: boolean}).unlocked,
       true,
     );
     const nextPassword = " replacement master password ";
     assert.equal(
-      (JSON.parse(await cli(["locker", "change-password", "--new-stdin"], `${nextPassword}\n`)) as {unlocked: boolean}).unlocked,
+      (JSON.parse(await cli(["vault", "change-password", "--new-stdin"], `${nextPassword}\n`)) as {unlocked: boolean}).unlocked,
       true,
     );
-    await cli(["locker", "lock"]);
-    const oldPassword = await run(process.execPath, [bundle, "locker", "unlock"], environment);
+    await cli(["vault", "lock"]);
+    const oldPassword = await run(process.execPath, [bundle, "vault", "unlock"], environment);
     assert.notEqual(oldPassword.code, 0, "The old master password still unlocked the vault after replacement");
     assert.equal(
-      (JSON.parse(await cli(["locker", "status"])) as {unlocked: boolean}).unlocked,
+      (JSON.parse(await cli(["vault", "status"])) as {unlocked: boolean}).unlocked,
       false,
     );
     assert.equal(
-      (JSON.parse(await cli(["locker", "unlock", "--password-stdin"], `${nextPassword}\n`)) as {unlocked: boolean}).unlocked,
+      (JSON.parse(await cli(["vault", "unlock", "--password-stdin"], `${nextPassword}\n`)) as {unlocked: boolean}).unlocked,
       true,
     );
-    assert.equal(await cli(["locker", "copy", saved.id, "password"]), " integration-secret \n");
-    const exported = await cli(["locker", "export"]);
+    assert.equal(await cli(["vault", "copy", saved.id, "password"]), " integration-secret \n");
+    const exported = await cli(["vault", "export"]);
     assert.ok(JSON.parse(exported).bytes);
-    await cli(["locker", "remove", saved.id]);
-    await cli(["locker", "empty-trash"]);
+    await cli(["vault", "remove", saved.id]);
+    await cli(["vault", "empty-trash"]);
 
     assert.equal(await cli(["hub", "email-accounts"]), "[]\n");
     const accounts = JSON.parse(await cli([
@@ -283,8 +304,9 @@ test("public installer verifies the archive and invokes Host installation", {tim
       "",
     ].join("\n"));
 
+    await writeFile(path.join(payload, 'usage-worker.js'), '// packaged usage worker\n');
     const archive = path.join(release, "polymux-cli.tar.gz");
-    const packed = spawnSync("tar", ["-czf", archive, "-C", payload, "polymux.mjs"], {
+    const packed = spawnSync("tar", ["-czf", archive, "-C", payload, "polymux.mjs", "usage-worker.js"], {
       encoding: "utf8",
     });
     assert.equal(packed.status, 0, packed.stderr);
@@ -337,6 +359,7 @@ test("public installer verifies the archive and invokes Host installation", {tim
     const installed = await run("sh", [installer, "host"], environment);
     assert.equal(installed.code, 0, installed.stderr);
     assert.match(installed.stdout, /Installed Polymux CLI/);
+    assert.equal(await readFile(path.join(prefix, 'share/polymux-cli/usage-worker.js'), 'utf8'), '// packaged usage worker\n');
     assert.match(await readFile(marker, "utf8"), /^host install\n$/);
 
     const launcher = path.join(prefix, "bin/polymux");
@@ -419,3 +442,24 @@ async function waitUntil(check: () => boolean, failure: () => string): Promise<v
   }
   throw new Error(failure());
 }
+
+test('packaged global usage worker scans only an empty fixture home', {timeout: 15000}, async () => {
+  const {Worker} = await import('node:worker_threads');
+  const directory = await mkdtemp(path.join(tmpdir(), 'polymux-cli-usage-worker-'));
+  const worker = new Worker(path.join(root, 'apps/cli/dist/usage-worker.js'), {
+    env: {PATH: process.env.PATH ?? '', HOME: directory, USERPROFILE: directory,
+      XDG_CONFIG_HOME: path.join(directory, '.config'), XDG_DATA_HOME: path.join(directory, '.local/share'),
+      XDG_STATE_HOME: path.join(directory, '.local/state'), XDG_CACHE_HOME: path.join(directory, '.cache'),
+      APPDATA: path.join(directory, 'AppData/Roaming'), LOCALAPPDATA: path.join(directory, 'AppData/Local')},
+    workerData: {cacheDirectory: path.join(directory, 'usage-cache'), excludedRoots: []},
+    stdout: true, stderr: true,
+  });
+  worker.stdout.resume(); worker.stderr.resume();
+  try {
+    const result = await new Promise<any>((resolve, reject) => {worker.once('message', resolve); worker.once('error', reject);});
+    assert.equal(result.error, undefined);
+    assert.equal(result.discovery.status, 'ready');
+    assert.ok(result.discovery.supportedAgents > 0);
+    assert.deepEqual(result.source.runs, []);
+  } finally {await worker.terminate(); await rm(directory, {recursive: true, force: true});}
+});

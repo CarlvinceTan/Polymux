@@ -17,3 +17,6 @@
 @media(min-width:641px){.blog-footer{grid-template-columns:1fr auto auto auto}.blog-footer>a:hover{color:var(--ink)}}
 @media(min-width:1051px){/* Sit the nav labels on the wordmark baseline rather than its optical centre. */
 .blog-header nav{position:relative;top:6px}}
+
+/* Match the desktop app's code typography. */
+.post-body code,.post-body pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
