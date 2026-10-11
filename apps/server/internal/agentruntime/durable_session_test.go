@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/skills"
 	"github.com/MichaelKinsy/PiG/durable/storage"
 )
 
@@ -46,6 +47,45 @@ func openDurable(t *testing.T, provider *httptest.Server) *DurableRuntime {
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
 	return runtime
+}
+
+func TestDurableHelpInstructions(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		intro, automatic bool
+	}{
+		{name: "regular"},
+		{name: "intro", intro: true},
+		{name: "automatic", automatic: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime := openDurable(t, &httptest.Server{URL: "http://localhost"})
+			definition := Definition{Agent: contract.Agent{ID: "assistant", Name: "Assistant"}, Intro: tc.intro, Automatic: tc.automatic}
+			session, err := runtime.Open(t.Context(), definition, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = session.Close() })
+			state, err := session.(*durableSession).conversation.Agent(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Instructions == nil {
+				t.Fatal("conversation has no instructions")
+			}
+			wantHelp := !tc.intro && !tc.automatic
+			if got := strings.Contains(*state.Instructions, skills.IssueRepo); got != wantHelp {
+				t.Errorf("instructions contain issue repository = %v, want %v", got, wantHelp)
+			}
+			want := definition.SystemPrompt()
+			if wantHelp {
+				want += helpPrompt()
+			}
+			if *state.Instructions != want {
+				t.Error("conversation instructions do not match the configured prompt")
+			}
+		})
+	}
 }
 
 func TestDurableSessionRunsAndResumesByPath(t *testing.T) {

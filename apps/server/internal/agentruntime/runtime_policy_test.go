@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/skills"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/testenv"
 )
 
@@ -20,6 +21,7 @@ func TestRestrictedPolicy(t *testing.T) {
 		intro, automatic bool
 		tools            []string
 	}{
+		{name: "regular", tools: []string{"bash", "read"}},
 		{name: "intro", intro: true, tools: []string{"bash", "read"}},
 		{name: "automatic-internal", automatic: true},
 		{name: "automatic-configured", automatic: true, tools: []string{"bash", "read"}},
@@ -72,6 +74,13 @@ func TestRestrictedPolicy(t *testing.T) {
 				t.Fatal("turn exposed wrong configured tools", len(tools), want)
 			}
 			message := string(body["messages"])
+			wantHelp := !test.intro && !test.automatic
+			if strings.Contains(message, "Bundled Polymux help skill") != wantHelp {
+				t.Fatal("bundled help must appear only on non-intro, non-automatic turns")
+			}
+			if wantHelp && (!strings.Contains(message, skills.IssueRepo) || !strings.Contains(message, "explicit confirmation in chat")) {
+				t.Fatal("bundled help omitted repository or confirmation requirement")
+			}
 			for _, part := range []string{"Coach", "Guide", "Configured policy", "Polymux policy", "Current UTC time", "Conversation"} {
 				if !strings.Contains(message, part) {
 					t.Fatalf("prompt omitted %s", part)
