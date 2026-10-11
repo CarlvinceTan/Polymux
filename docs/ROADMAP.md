@@ -1,6 +1,6 @@
 # Polymux launch roadmap (11 Oct 2026)
 
-Launch bar (Carlvince): (1) reliable everyday use at Grok Bot parity, (2) dead-simple setup via server-free linking v3, (3) an updated, distinctive site. Setup is just installing the app on each device and pairing; one device is the server. Marketing stays prep-only until M1–M7 are done. Base: main @ dd052ff (v0.4.0). Specs: PARITY, SHADOW, CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC, CONNECTIVITY_SPEC v3 (+§10), SITE_PLAN.
+Launch bar (Carlvince): (1) reliable everyday use at Grok Bot parity, (2) dead-simple setup via server-free linking v3, (3) an updated, distinctive site. Setup is just installing the app on each device and pairing; one device is the server. Marketing stays prep-only until M1–M7 (incl. M6b) are done. Base: main @ dd052ff (v0.4.0). Specs: PARITY, SHADOW, CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC, CONNECTIVITY_SPEC v3 (+§10), SITE_PLAN.
 
 | # | Milestone | Goal | Scope | Done when (checkable) |
 |---|---|---|---|---|
@@ -12,7 +12,8 @@ Launch bar (Carlvince): (1) reliable everyday use at Grok Bot parity, (2) dead-s
 | M5b | Any-device server | Install everywhere, pick the server | Server bundled in the app; Settings > Devices; auto-pick; offline outbox + read-only cache; hand-off with drain/epoch/rollback; snapshot restore (spec §11). iOS is client-only | Hand-off test: 10/10 Mac→Mac switches with no lost messages and checksums equal; forced failure rolls back 10/10; offline outbox delivers exactly once; restore from a client snapshot passes a smoke turn |
 | M5c | Auto-updates | Every install stays current at zero cost | Sparkle 2 + EdDSA appcast on GitHub Releases + notarization (macOS); App Store/TestFlight (iOS); stores or GitHub Releases checks elsewhere; proto N/N-1 exchange, server-first, graceful refusal; migrations required (spec §12) | A 0.4.x→0.4.y Sparkle update installs signature-verified from GitHub Releases; an N-1 client connects and an N-2 client gets the update prompt (tests); every schema change has a passing migration test |
 | M6 | Chat UI, sidebar, avatars | Native app feels finished | CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC against DESIGN.md | Spec checklist 100% ticked with screenshots in both themes and every state; Carlvince signs off on the review card |
+| M6b | Providers & Models | Users bring any AI provider; every feature picks a model automatically | CHAT_UI_SPEC §15: provider registry + Keychain secrets, per-capability pickers (Main text required; image, video, STT, TTS, live, embeddings optional) with Auto + resolved-model display, hide/prompt when unsupported, error fallback, migration from model.json/geminiKey/env | P1–P7 in CHAT_UI_SPEC §15.8 pass; grep test finds no keys outside the keychain; a v0.4.0 data dir migrates with unchanged behaviour |
 | M7 | Site | Updated, distinctive, not "AI slop" | SITE_PLAN §0 feed bug first, then 0.4 content, downloads, docs, new screenshots | Feed test pins macOS 0.3.x; all links/download routes return 200; Lighthouse ≥90; Carlvince's site review passes with no "generic" flags |
 | M8 | Launch | Go public | Release 0.4.x DMG + iOS build; marketing prep turns live | M1–M7 done; release checklist green |
 
-Order: M1 → M2/M4 in parallel → M3 → M5/M5b/M5c/M6 → M7 → M8. Phase 1 keys and pairing are role-neutral, so M5b needs no re-pairing. Opt-in integrations never block the server-free default.
+Order: M1 → M2/M4 in parallel → M3 → M5/M5b/M5c/M6/M6b → M7 → M8. Phase 1 keys and pairing are role-neutral, so M5b needs no re-pairing. Opt-in integrations never block the server-free default.
