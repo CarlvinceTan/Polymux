@@ -38,4 +38,50 @@ class SafetyTests(unittest.TestCase):
     def test_bridge_rejects_unsupported_provider(self):
         with self.assertRaisesRegex(ValueError,'unsupported_provider'):model_bridge.infer({'model':'untrusted','messages':[]})
 
+class RetryTests(unittest.TestCase):
+    def test_backoff_then_ordered_failover(self):
+        seen=[]
+        def run(request):
+            seen.append(request['model'])
+            if request['model']!='local/codex':raise ValueError('provider_unavailable')
+            return ('ok',[])
+        with patch.object(model_bridge,'infer_once',side_effect=run), patch.object(model_bridge,'audit_event') as log, patch.object(model_bridge.time,'sleep') as sleep:
+            request={'model':'local/opencode','messages':[]}
+            self.assertEqual(model_bridge.infer(request),('ok',[]))
+            self.assertEqual(seen,['local/opencode']*3+['local/cursor-agent']*3+['local/codex'])
+            self.assertEqual([c.args[0] for c in sleep.call_args_list],[1,2,1,2])
+            self.assertEqual(request['_answered_provider'],'codex')
+            self.assertEqual(log.call_args.args[0]['provider'],'codex')
+
+    def test_transient_recovers_without_failover(self):
+        with patch.object(model_bridge,'infer_once',side_effect=[ValueError('provider_timeout'),('ok',[])]) as run, patch.object(model_bridge,'audit_event'), patch.object(model_bridge.time,'sleep'):
+            self.assertEqual(model_bridge.infer({'model':'local/opencode'}),('ok',[]))
+            self.assertEqual(run.call_count,2)
+
+    def test_safety_failure_is_not_retried(self):
+        for reason in ['credential_input','credential_output','native_tool_rejected','request_size']:
+            with patch.object(model_bridge,'infer_once',side_effect=ValueError(reason)) as run, patch.object(model_bridge,'audit_event'), patch.object(model_bridge.time,'sleep') as sleep:
+                with self.assertRaisesRegex(ValueError,reason):model_bridge.infer({'model':'local/opencode'})
+                self.assertEqual(run.call_count,1);sleep.assert_not_called()
+
+    def test_exhaustion_is_bounded(self):
+        with patch.object(model_bridge,'infer_once',side_effect=ValueError('provider_error')) as run, patch.object(model_bridge,'audit_event'), patch.object(model_bridge.time,'sleep'):
+            with self.assertRaisesRegex(ValueError,'provider_unavailable'):model_bridge.infer({'model':'local/opencode'})
+            self.assertEqual(run.call_count,9)
+
+    def test_missing_cli_can_fail_over(self):
+        with patch.object(model_bridge,'infer_once',side_effect=[FileNotFoundError('missing')]*3+[('ok',[])]) as run, patch.object(model_bridge,'audit_event'), patch.object(model_bridge.time,'sleep'):
+            request={'model':'local/opencode'}
+            self.assertEqual(model_bridge.infer(request),('ok',[]))
+            self.assertEqual(request['_answered_provider'],'cursor-agent')
+
+    def test_context_keeps_system_and_current_tool_chain(self):
+        messages=[{'role':'system','content':'policy'}]+[{'role':'user','content':'old'*20000},{'role':'assistant','content':'old'*20000}]*5
+        current=[{'role':'user','content':'current memory and question'},{'role':'assistant','tool_calls':[{'id':'call'}]},{'role':'tool','tool_call_id':'call','content':'result'}]
+        with patch.object(model_bridge,'audit_event'):
+            result=model_bridge.bounded_request({'messages':messages+current})
+        self.assertEqual(result['messages'][0],messages[0])
+        self.assertEqual(result['messages'][-3:],current)
+        self.assertLess(len(json.dumps(result).encode()),100000)
+
 if __name__=='__main__':unittest.main()

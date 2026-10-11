@@ -98,3 +98,26 @@ func TestHistoryTool(t *testing.T) {
 		t.Fatal("peer retrieved private history")
 	}
 }
+
+func TestMemoryRankBeforeBudget(t *testing.T) {
+	api, _ := startTest(t, &testFactory{})
+	run := contract.Run{AgentID: "assistant", ConversationID: "assistant"}
+	if _, err := api.memory.Save(t.Context(), "assistant", "assistant", memory.Document{Name: "old", Text: "Weekday university brief at 8:20am SGT"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 12 {
+		if _, err := api.memory.Save(t.Context(), "assistant", "assistant", memory.Document{Name: string(rune('a' + i)), Text: strings.Repeat("unrelated ", 400)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := "What time is the weekday university brief?"
+	m, err := api.memoryContext(t.Context(), run, contract.Message{Parts: []contract.Part{{Kind: "text", Text: &query}}})
+	if err != nil || !strings.Contains(store.Text(m), "8:20am") {
+		t.Fatal("old relevant fact lost to recent unrelated memory", err)
+	}
+	run.ConversationID = "group"
+	m, err = api.memoryContext(t.Context(), run, contract.Message{})
+	if err != nil || strings.Contains(store.Text(m), "8:20am") {
+		t.Fatal("ranking leaked private memory", err)
+	}
+}
