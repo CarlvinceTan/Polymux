@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Scoped MCP tools. Notion credentials are fetched from vault in memory."""
 import json
-import os
 import re
 import subprocess
 import sys
@@ -9,9 +8,8 @@ import math
 import urllib.request
 import urllib.parse
 from collections import Counter
+from cli_env import environment
 
-BIN = "/Users/carlvincetan/code/agents/bin"
-HUB = "/Users/carlvincetan/code/agents/hub/target/release/hub"
 SECRET = re.compile(r"-----BEGIN .*PRIVATE KEY|\b(?:sk-|ghp_|github_pat_|xox[baprs]-|ntn_|secret_)[A-Za-z0-9_-]{12,}|\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?i:password|api[_-]?key|access[_-]?token)\s*[=:]\s*\S+")
 
 def clean(value):
@@ -25,9 +23,10 @@ def clean(value):
     return re.sub(r'[A-Za-z0-9_+/=-]{24,}',entropy,value)
 
 def command(argv):
-    env = dict(os.environ)
-    env["PATH"] = BIN + ":/Users/carlvincetan/.cargo/bin:/Users/carlvincetan/.local/bin:/opt/homebrew/bin:/usr/bin:/bin"
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=40, env=env)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=40, env=environment())
+    except (OSError, subprocess.TimeoutExpired):
+        return {"available": False, "message": "Connector unavailable; no raw error or credential disclosed."}
     if result.returncode:
         return {"available": False, "exit_status": result.returncode, "message": "Connector unavailable; no raw error or credential disclosed."}
     return {"available": True, "result": clean(result.stdout[:40000])}
@@ -41,10 +40,13 @@ def notion(method, path, body=None):
         allowed = {'POST'}
     if method not in allowed:
         raise ValueError('Notion operation denied')
-    credential = subprocess.run(['/Users/carlvincetan/.local/bin/vault', 'get', 'Notion - Polymux integration token', '--field', 'password'], capture_output=True, text=True, timeout=20)
-    if credential.returncode or not credential.stdout.strip():
+    try:
+        credential = subprocess.run(['vault', 'get', 'Notion - Polymux integration token', '--field', 'password'], capture_output=True, text=True, timeout=20, env=environment())
+        if credential.returncode or not credential.stdout.strip():
+            return {'available': False, 'message': 'Notion credential unavailable.'}
+        token = json.loads(credential.stdout)['password']
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
         return {'available': False, 'message': 'Notion credential unavailable.'}
-    token = json.loads(credential.stdout)['password']
     if not isinstance(token, str) or not token:
         return {'available': False, 'message': 'Notion credential unavailable.'}
     request = urllib.request.Request('https://api.notion.com'+path, data=json.dumps(body).encode() if body is not None else None, method=method,
@@ -72,7 +74,7 @@ def invoke(name, a):
     if name not in TOOLS: raise ValueError("unknown tool")
     for v in a.values():
         if isinstance(v,str) and (len(v)>512 or v.startswith('-') or '\x00' in v): raise ValueError("invalid argument")
-    mail=["/opt/homebrew/bin/himalaya"]
+    mail=["himalaya"]
     if a.get('account'): mail += ['--account',a['account']]
     if name=='mail_accounts': return command(mail+['account','list','--json'])
     if name=='mail_list': return command(mail+['envelope','list','--json','--page-size',str(max(1,min(20,int(a.get('limit',5)))))])
@@ -88,11 +90,11 @@ def invoke(name, a):
         return notion('GET','/v1/pages/'+a['id'])
     if name=='github_repo':
         if not re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',a['repo']): raise ValueError('invalid repository')
-        return command([BIN+'/gh','repo','view',a['repo'],'--json','name,url,description,defaultBranchRef'])
-    if name=='matrix_rooms': return command([HUB,'rooms'])
-    if name=='matrix_messages': return command([HUB,'messages',a['room']])
+        return command(['gh','repo','view',a['repo'],'--json','name,url,description,defaultBranchRef'])
+    if name=='matrix_rooms': return command(['hub','rooms'])
+    if name=='matrix_messages': return command(['hub','messages',a['room']])
     if name=='vault_status':
-        result=command(['/Users/carlvincetan/.local/bin/vault','status'])
+        result=command(['vault','status'])
         return {'available':result['available'],'credential_access':'not exposed to agents'}
 
 def main():

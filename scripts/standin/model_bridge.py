@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""OpenAI-compatible inference through locally authenticated CLIs."""
+"""OpenAI-compatible inference through locally authenticated CLIs.
+
+STANDIN_WORK selects the model workspace. Its parent holds providers.json,
+prompt-audit.enabled and prompt-audit/; set it to reuse an existing installation.
+Custom CLI installations must be on the launcher's PATH.
+"""
 import json
 import os
 from pathlib import Path
@@ -10,8 +15,9 @@ import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from cli_env import environment
 
-WORK=Path('/Users/carlvincetan/polymux/standin/model-workspace')
+WORK=Path(os.environ.get('STANDIN_WORK',str(Path.home()/'.local/share/polymux/standin/model-workspace')))
 LOCK=threading.Lock()
 LAST={}
 # Deny-all agent config: also passed inline per call so native tools stay denied even without the file.
@@ -60,7 +66,7 @@ def infer(request):
             except (ValueError,subprocess.TimeoutExpired,OSError) as exc:
                 reason=str(exc) if isinstance(exc,ValueError) and not isinstance(exc,json.JSONDecodeError) else ('provider_timeout' if isinstance(exc,subprocess.TimeoutExpired) else ('provider_unavailable' if isinstance(exc,OSError) else 'invalid_provider_response'))
                 if reason not in RETRYABLE:
-                    audit_event({'request':ident,'event':'rejected','provider':provider,'reason':reason if reason in {'credential_input','credential_output','request_size','unsafe_provider_config','native_tool_rejected','invalid_tool','provider_expired'} else type(exc).__name__})
+                    audit_event({'request':ident,'event':'rejected','provider':provider,'reason':reason if reason in {'credential_input','credential_output','request_size','unsafe_provider_config','native_tool_rejected','invalid_tool'} else type(exc).__name__})
                     raise
                 audit_event({'request':ident,'event':'failure','provider':provider,'attempt':attempt+1,'reason':reason})
                 last=exc
@@ -84,7 +90,7 @@ def prepare():
 
 def opencode(prompt, env):
     def api(path, data=None):
-        argv=['/Users/carlvincetan/.local/bin/opencode','api','POST' if data is not None else 'GET',path]
+        argv=['opencode','api','POST' if data is not None else 'GET',path]
         if data is not None:argv+=['--data',json.dumps(data)]
         result=provider_run(argv,env,30)
         return json.loads(result.stdout)['data']
@@ -125,21 +131,19 @@ def infer_once(request):
         with os.fdopen(fd,'w') as f:json.dump({'model':provider,'prompt':SECRET.sub('[REDACTED]',prompt),'bytes':len(prompt.encode()),'credential_match':bool(SECRET.search(prompt))},f,ensure_ascii=False)
     if SECRET.search(prompt):raise ValueError('credential_input')
     if len(prompt.encode())>120000:raise ValueError('request_size')
-    env=dict(os.environ);env['PATH']='/Users/carlvincetan/code/agents/bin:/Users/carlvincetan/.cargo/bin:/Users/carlvincetan/.local/bin:/opt/homebrew/bin:'+env.get('PATH','/usr/bin:/bin')
+    env=environment()
     env['OPENCODE_CONFIG_CONTENT']=CONFIG
-    env['HOME']='/Users/carlvincetan'
     credentials=WORK.parent/'providers.json'
     if credentials.exists():
         if credentials.stat().st_mode & 0o077:raise ValueError('unsafe_provider_config')
         private=json.loads(credentials.read_text())
         if private.get('CURSOR_API_KEY'):env['CURSOR_API_KEY']=private['CURSOR_API_KEY']
     if provider=='cursor-agent':
-        argv=['/Users/carlvincetan/.local/bin/cursor-agent','-p','--trust','--mode','ask','--output-format','json',prompt]
+        argv=['cursor-agent','-p','--trust','--mode','ask','--output-format','json',prompt]
     elif provider=='opencode':
         argv=None
     elif provider=='codex':
-        if datetime.now(timezone.utc).date().isoformat()>'2026-10-30':raise ValueError('provider_expired')
-        argv=['/opt/homebrew/bin/codex','exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only','--json','-c','features.shell_tool=false','-c','features.apply_patch_freeform=false',prompt]
+        argv=['codex','exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only','--json','-c','features.shell_tool=false','-c','features.apply_patch_freeform=false',prompt]
     else:raise ValueError('unsupported_provider')
     with LOCK:
         if provider=='opencode':
@@ -199,7 +203,7 @@ class Handler(BaseHTTPRequestHandler):
             if not 0<size<=2*1024*1024:raise ValueError('request_size')
             request=json.loads(self.rfile.read(size));content,calls=infer(request)
         except Exception as e:
-            reason=str(e) if isinstance(e,ValueError) and str(e) in ['credential_input','credential_output','provider_unavailable','provider_error','unsupported_provider','native_tool_rejected','invalid_provider_response','invalid_tool','request_size','provider_timeout','provider_expired','unsafe_provider_config'] else type(e).__name__
+            reason=str(e) if isinstance(e,ValueError) and str(e) in ['credential_input','credential_output','provider_unavailable','provider_error','unsupported_provider','native_tool_rejected','invalid_provider_response','invalid_tool','request_size','provider_timeout','unsafe_provider_config'] else type(e).__name__
             self.sendjson(502,{'error':{'message':'Local model failed: '+reason,'type':'local_provider_error'}});return
         ident='chatcmpl-'+uuid.uuid4().hex;created=int(time.time());model='local/'+request.get('_answered_provider',request.get('model','opencode').removeprefix('local/'));finish='tool_calls' if calls else 'stop'
         usage={'prompt_tokens':0,'completion_tokens':0,'total_tokens':0}
