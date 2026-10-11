@@ -67,3 +67,36 @@ __pycache__/
 
 # Local Supabase CLI link/cache state
 /supabase/.temp/
+
+# ---- Luce tree (Go server, Swift app) ----
+# macOS
+.DS_Store
+
+# Go build output
+/server
+/apps/*/server
+__debug_bin*
+*.test
+*.out
+coverage.out
+
+# PiG project-scoped state
+/.pig/
+
+# Swift / Xcode
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# Local environment
+.env
+.env.*
+/.vendor/
+
+# Electron-era local folders left in old checkouts
+/apps/extension/vault/
+/apps/mobile/
+/docs/reviews/
+/resources/mobile/

@@ -1,0 +1,124 @@
+package agentruntime
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/MichaelKinsy/PiG/durable/storage"
+)
+
+// recordingProvider answers every turn and records the request bodies it saw.
+func recordingProvider(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	bodies := []string{}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		encoded, _ := json.Marshal(body["messages"])
+		mu.Lock()
+		bodies = append(bodies, string(encoded))
+		mu.Unlock()
+		sse(w, "Noted.", nil)
+	}))
+	t.Cleanup(provider.Close)
+	return provider, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), bodies...)
+	}
+}
+
+func turn(text string) contract.Message {
+	return contract.Message{ID: "m-" + text, ThreadID: "assistant", Role: "user", Parts: []contract.Part{{Kind: "text", Text: &text}}}
+}
+
+func openDurable(t *testing.T, provider *httptest.Server) *DurableRuntime {
+	t.Helper()
+	runtime, err := NewDurable(t.Context(), t.TempDir(), provider.URL+"/v1", "test-model", "test-key", Client{}, storage.NewMemoryStorage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	return runtime
+}
+
+func TestDurableSessionRunsAndResumesByPath(t *testing.T) {
+	provider, requests := recordingProvider(t)
+	runtime := openDurable(t, provider)
+	definition := Definition{Agent: contract.Agent{ID: "assistant", Name: "Assistant"}}
+	session, err := runtime.Open(t.Context(), definition, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path()
+	if !strings.HasPrefix(path, "durable:") {
+		t.Fatalf("unexpected path %q", path)
+	}
+	result, err := session.Send(t.Context(), turn("remember ALPHA"), nil)
+	if err != nil || result.Text != "Noted." {
+		t.Fatalf("turn %+v %v", result, err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A second session on the same path resumes the same conversation, so the earlier
+	// turn is still in the model's context.
+	resumed, err := runtime.Open(t.Context(), definition, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Path() != path {
+		t.Fatalf("resumed path %q want %q", resumed.Path(), path)
+	}
+	if _, err := resumed.Send(t.Context(), turn("what should you remember"), nil); err != nil {
+		t.Fatal(err)
+	}
+	seen := requests()
+	if len(seen) != 2 {
+		t.Fatalf("requests %d", len(seen))
+	}
+	if strings.Contains(seen[0], "what should you remember") {
+		t.Fatal("first request already carried the later turn")
+	}
+	if !strings.Contains(seen[1], "ALPHA") {
+		t.Fatalf("resumed conversation lost its context: %s", seen[1])
+	}
+}
+
+func TestEphemeralDurableSessionStartsFresh(t *testing.T) {
+	provider, requests := recordingProvider(t)
+	runtime := openDurable(t, provider)
+	definition := Definition{Agent: contract.Agent{ID: "assistant", Name: "Assistant"}}
+	session, err := runtime.Open(t.Context(), definition, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := session.Path()
+	if _, err := session.Send(t.Context(), turn("remember ALPHA"), nil); err != nil {
+		t.Fatal(err)
+	}
+	// An ephemeral turn is handed a path but must not resume it: a voice turn or an
+	// automatic review cannot inherit another turn's context.
+	ephemeral := definition
+	ephemeral.Ephemeral = true
+	fresh, err := runtime.Open(t.Context(), ephemeral, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Path() == path {
+		t.Fatal("ephemeral turn resumed an existing conversation")
+	}
+	if _, err := fresh.Send(t.Context(), turn("anything"), nil); err != nil {
+		t.Fatal(err)
+	}
+	seen := requests()
+	if len(seen) != 2 || strings.Contains(seen[1], "ALPHA") {
+		t.Fatalf("ephemeral turn inherited context: %v", seen)
+	}
+}
