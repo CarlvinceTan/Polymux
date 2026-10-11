@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/server"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
@@ -546,37 +548,129 @@ func TestT3MidTurnUserMessage(t *testing.T) {
 }
 
 func TestC5ApprovalGate(t *testing.T) {
-	// Polymux has no approval gate metadata today; this scenario must FAIL, not skip.
-	// If a future gate parks the run (waiting_input), still record FAIL (no approval UX).
 	ran := &atomic.Int32{}
 	h := Start(t, Options{
 		ID:     "C5",
 		Extras: map[string][]agent.AgentTool{agentID: {&consequentialTool{ran: ran}}},
 		Steps: []Step{
 			Fixed(nil, ToolReply("c5-call", "consequential_delete", map[string]any{"target": "everything"})),
-			Fixed(nil, TextReply("deleted without approval")),
+			Fixed(nil, ToolReply("c5-retry", "consequential_delete", map[string]any{"target": "everything"})),
+			Fixed(nil, TextReply("deleted after approval")),
 		},
 	})
 	if code := h.Send(agentID, "c5-user", "delete everything"); code != 202 && code != 200 {
 		fail(t, "C5", fmt.Sprintf("send status %d", code))
 		return
 	}
-	run := h.WaitStatus(RunID("c5-user", agentID), deadline,
-		"completed", "failed", "cancelled", "interrupted", "waiting_input", "waiting_peer")
-	_ = h.Emulator.DoneAllowExtra()
-	if ran.Load() >= 1 {
-		fail(t, "C5", "no approval mechanism (consequential tool executed without approval)")
+	run := h.WaitStatus(RunID("c5-user", agentID), deadline, "waiting_input", "completed", "failed", "cancelled", "interrupted")
+	if run.Status != "waiting_input" {
+		fail(t, "C5", "expected waiting_input, got "+run.Status)
 		return
 	}
-	if run.Status == "waiting_input" || run.Status == "waiting_peer" {
-		fail(t, "C5", "no approval mechanism (tool parked without approval UI)")
+	if ran.Load() != 0 {
+		fail(t, "C5", "tool executed before approval")
 		return
 	}
-	if ran.Load() == 0 && run.Status != "completed" {
-		fail(t, "C5", "no approval mechanism (tool blocked without approval UI)")
+	pending, err := h.Store.PendingApprovals(context.Background(), run.ID)
+	if err != nil || len(pending) != 1 {
+		fail(t, "C5", fmt.Sprintf("pending approvals: %v %v", pending, err))
 		return
 	}
-	fail(t, "C5", "no approval mechanism")
+	events, err := h.Store.Events(context.Background(), agentID, 0, 500)
+	if err != nil {
+		fail(t, "C5", err.Error())
+		return
+	}
+	requested := false
+	for _, e := range events {
+		if e.Type == "approval_requested" && e.Approval != nil && e.Approval.ID == pending[0].ID {
+			requested = true
+			break
+		}
+	}
+	if !requested {
+		fail(t, "C5", "missing approval_requested event")
+		return
+	}
+	resp, err := approvalPost(h.HTTP.URL+"/approvals/"+pending[0].ID+"/approve")
+	if err != nil {
+		fail(t, "C5", err.Error())
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		fail(t, "C5", fmt.Sprintf("approve status %d", resp.StatusCode))
+		return
+	}
+	run = h.WaitRunID(run.ID, deadline)
+	if err := h.Emulator.Done(); err != nil {
+		fail(t, "C5", err.Error())
+		return
+	}
+	if ran.Load() != 1 {
+		fail(t, "C5", fmt.Sprintf("tool ran %d times, want 1", ran.Load()))
+		return
+	}
+	if run.Status != "completed" {
+		fail(t, "C5", "run status "+run.Status)
+		return
+	}
+
+	denyRan := &atomic.Int32{}
+	h2 := Start(t, Options{
+		ID:     "C5",
+		Extras: map[string][]agent.AgentTool{agentID: {&consequentialTool{ran: denyRan}}},
+		Steps: []Step{
+			Fixed(nil, ToolReply("c5-deny", "consequential_delete", map[string]any{"target": "secrets"})),
+			Fixed(nil, ToolReply("c5-deny2", "consequential_delete", map[string]any{"target": "secrets"})),
+			Fixed(func(req *ChatRequest) error {
+				for _, m := range req.Messages {
+					if m.Role == "tool" && strings.Contains(strings.ToLower(contentText(m.Content)), "denied") {
+						return nil
+					}
+				}
+				return fmt.Errorf("expected denial in tool results")
+			}, TextReply("acknowledged denial")),
+		},
+	})
+	if code := h2.Send(agentID, "c5-deny-user", "delete secrets"); code != 202 && code != 200 {
+		fail(t, "C5", fmt.Sprintf("deny send status %d", code))
+		return
+	}
+	denyRun := h2.WaitStatus(RunID("c5-deny-user", agentID), deadline, "waiting_input", "completed", "failed")
+	if denyRun.Status != "waiting_input" {
+		fail(t, "C5", "deny path expected waiting_input, got "+denyRun.Status)
+		return
+	}
+	denyPending, err := h2.Store.PendingApprovals(context.Background(), denyRun.ID)
+	if err != nil || len(denyPending) != 1 {
+		fail(t, "C5", fmt.Sprintf("deny pending: %v %v", denyPending, err))
+		return
+	}
+	resp, err = approvalPost(h2.HTTP.URL+"/approvals/"+denyPending[0].ID+"/deny")
+	if err != nil {
+		fail(t, "C5", err.Error())
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		fail(t, "C5", fmt.Sprintf("deny status %d", resp.StatusCode))
+		return
+	}
+	denyRun = h2.WaitRunID(denyRun.ID, deadline)
+	if err := h2.Emulator.Done(); err != nil {
+		fail(t, "C5", err.Error())
+		return
+	}
+	if denyRan.Load() != 0 {
+		fail(t, "C5", fmt.Sprintf("denied tool ran %d times", denyRan.Load()))
+		return
+	}
+	if denyRun.Status != "completed" {
+		fail(t, "C5", "deny run status "+denyRun.Status)
+		return
+	}
+	pass(t, "C5", "approval gate parks, approve executes once, deny blocks with message")
 }
 
 type consequentialTool struct{ ran *atomic.Int32 }
@@ -585,6 +679,17 @@ func (*consequentialTool) Name() string                           { return "cons
 func (*consequentialTool) Label() string                          { return "Consequential delete" }
 func (*consequentialTool) Description() string                    { return "Destructive delete requiring approval" }
 func (*consequentialTool) ExecutionMode() agent.ToolExecutionMode { return agent.ToolModeSequential }
+func (*consequentialTool) ToolClass() string                      { return string(server.ToolConsequential) }
+
+func approvalPost(url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader("{}"))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Polymux-Client", "evals")
+	return http.DefaultClient.Do(req)
+}
 func (*consequentialTool) Schema() ai.ToolSchema {
 	return ai.ToolSchema{Name: "consequential_delete", Description: "Destructive delete requiring approval", Parameters: map[string]any{
 		"type": "object", "additionalProperties": false,

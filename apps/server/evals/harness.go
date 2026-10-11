@@ -322,6 +322,7 @@ type effectTool struct{ counter *atomic.Int32 }
 func (*effectTool) Name() string                           { return "side_effect" }
 func (*effectTool) Label() string                          { return "Side effect" }
 func (*effectTool) Description() string                    { return "Counting side effect for evals" }
+func (*effectTool) ToolClass() string                      { return "reversible" }
 func (*effectTool) ExecutionMode() agent.ToolExecutionMode { return agent.ToolModeSequential }
 func (*effectTool) Schema() ai.ToolSchema {
 	return ai.ToolSchema{Name: "side_effect", Description: "Counting side effect for evals", Parameters: map[string]any{
@@ -338,6 +339,7 @@ type typedTool struct{ ran *atomic.Int32 }
 func (*typedTool) Name() string                           { return "typed_tool" }
 func (*typedTool) Label() string                          { return "Typed tool" }
 func (*typedTool) Description() string                    { return "Requires a string value" }
+func (*typedTool) ToolClass() string                      { return "reversible" }
 func (*typedTool) ExecutionMode() agent.ToolExecutionMode { return agent.ToolModeSequential }
 func (*typedTool) Schema() ai.ToolSchema {
 	return ai.ToolSchema{Name: "typed_tool", Description: "Requires a string value", Parameters: map[string]any{
@@ -357,6 +359,7 @@ type errorTool struct{ ran *atomic.Int32 }
 func (*errorTool) Name() string                           { return "error_tool" }
 func (*errorTool) Label() string                          { return "Error tool" }
 func (*errorTool) Description() string                    { return "Always errors" }
+func (*errorTool) ToolClass() string                      { return "reversible" }
 func (*errorTool) ExecutionMode() agent.ToolExecutionMode { return agent.ToolModeSequential }
 func (*errorTool) Schema() ai.ToolSchema {
 	return ai.ToolSchema{Name: "error_tool", Description: "Always errors", Parameters: map[string]any{

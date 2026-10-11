@@ -145,24 +145,33 @@ type Error struct {
 }
 
 type Event struct {
-	Seq            int64         `json:"seq"`
-	ConversationID string        `json:"conversationID"`
-	Type           string        `json:"type"`
-	MessageID      *string       `json:"messageID,omitempty"`
-	AgentID        *string       `json:"agentID,omitempty"`
-	Text           *string       `json:"text,omitempty"`
-	Message        *Message      `json:"message,omitempty"`
-	Attachment     *Attachment   `json:"attachment,omitempty"`
-	Active         *bool         `json:"active,omitempty"`
-	Error          *Error        `json:"error,omitempty"`
-	CreatedAt      string        `json:"createdAt"`
-	RunID          *string       `json:"runID,omitempty"`
-	Run            *Run          `json:"run,omitempty"`
-	Tool           *ToolActivity `json:"tool,omitempty"`
-	Delivery       *PeerDelivery `json:"delivery,omitempty"`
-	RoutineID      *string       `json:"routineID,omitempty"`
-	Summary        *string       `json:"summary,omitempty"`
-	Usage          *Usage        `json:"usage,omitempty"`
+	Seq            int64            `json:"seq"`
+	ConversationID string           `json:"conversationID"`
+	Type           string           `json:"type"`
+	MessageID      *string          `json:"messageID,omitempty"`
+	AgentID        *string          `json:"agentID,omitempty"`
+	Text           *string          `json:"text,omitempty"`
+	Message        *Message         `json:"message,omitempty"`
+	Attachment     *Attachment      `json:"attachment,omitempty"`
+	Active         *bool            `json:"active,omitempty"`
+	Error          *Error           `json:"error,omitempty"`
+	CreatedAt      string           `json:"createdAt"`
+	RunID          *string          `json:"runID,omitempty"`
+	Run            *Run             `json:"run,omitempty"`
+	Tool           *ToolActivity    `json:"tool,omitempty"`
+	Delivery       *PeerDelivery    `json:"delivery,omitempty"`
+	RoutineID      *string          `json:"routineID,omitempty"`
+	Summary        *string          `json:"summary,omitempty"`
+	Usage          *Usage           `json:"usage,omitempty"`
+	Approval       *ApprovalRequest `json:"approval,omitempty"`
+}
+
+type ApprovalRequest struct {
+	ID        string `json:"id"`
+	RunID     string `json:"runID"`
+	Tool      string `json:"tool"`
+	Args      string `json:"args"`
+	ExpiresAt string `json:"expiresAt"`
 }
 
 type Usage struct {

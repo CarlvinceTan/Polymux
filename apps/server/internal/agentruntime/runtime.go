@@ -67,6 +67,11 @@ type Session interface {
 	Close() error
 }
 
+// TurnBinder refreshes per-turn tool hooks on a reusable durable session.
+type TurnBinder interface {
+	BindTurn(before agent.BeforeToolCallHook, turn func() (context.Context, bool))
+}
+
 // Client identifies Polymux to an OpenAI-compatible provider that requires client headers.
 type Client struct {
 	// Headers are added to every provider request.

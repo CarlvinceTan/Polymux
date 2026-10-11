@@ -206,7 +206,8 @@ func finishRuns(ctx context.Context, tx *sql.Tx, job string) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status='needs_review',next_at=NULL WHERE json_extract(data,'$.jobID')=? AND status IN('running','ready')`, job); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT data FROM runs WHERE status IN('queued','running','waiting_input') AND job_id=?`, job)
+	// waiting_input survives Finish while an approval is pending (same idea as waiting_peer).
+	rows, err := tx.QueryContext(ctx, `SELECT data FROM runs WHERE status IN('queued','running') AND job_id=?`, job)
 	if err != nil {
 		return err
 	}
@@ -329,6 +330,17 @@ func (s *Store) recoverRuns(ctx context.Context) error {
 				return err
 			}
 			if durable == 1 {
+				continue
+			}
+		}
+		if run.Status == "waiting_input" {
+			var pending int
+			if err := s.DB.QueryRowContext(ctx,
+				`SELECT count(*) FROM approvals WHERE run_id=? AND status IN('pending','approved')`, run.ID,
+			).Scan(&pending); err != nil {
+				return err
+			}
+			if pending > 0 {
 				continue
 			}
 		}

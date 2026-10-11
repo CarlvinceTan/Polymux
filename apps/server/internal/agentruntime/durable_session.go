@@ -11,9 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
 	"github.com/MichaelKinsy/PiG/durable/env"
@@ -183,6 +185,8 @@ type durableSession struct {
 	// It has its own lock because Send holds mu for the whole turn.
 	emitMu sync.Mutex
 	emit   func(Delta) error
+	// park is set when BeforeTool requests Terminate; AfterTools aborts the in-flight turn.
+	park atomic.Bool
 }
 
 // turnContext restores the context this conversation's tool calls and hooks run under.
@@ -214,50 +218,77 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 	if s.definition.BeforeTool == nil {
 		return nil
 	}
-	return []durable.HookRegistration{{Task: "pi.tool", Handlers: &harness.ToolHooks{
-		BeforeTool: func(ctx context.Context, call ai.ToolCall, api harness.HookApi) (*harness.BeforeToolResult, error) {
-			restored, ok := s.turnContext(api.ConversationId(), ctx)
-			if !ok {
-				reason := ErrTurnState.Error()
-				return &harness.BeforeToolResult{Block: &reason}, nil
-			}
-			raw, err := json.Marshal(call.Arguments)
-			if err != nil {
-				return nil, err
-			}
-			decision := s.definition.BeforeTool(restored, call.ID, call.Name, raw)
-			if decision.Block {
-				reason := decision.Reason
-				if reason == "" {
-					reason = "This call is not available in this turn."
+	return []durable.HookRegistration{
+		{Task: "pi.tool", Handlers: &harness.ToolHooks{
+			BeforeTool: func(ctx context.Context, call ai.ToolCall, api harness.HookApi) (*harness.BeforeToolResult, error) {
+				restored, ok := s.turnContext(api.ConversationId(), ctx)
+				if !ok {
+					reason := ErrTurnState.Error()
+					return &harness.BeforeToolResult{Block: &reason}, nil
 				}
-				return &harness.BeforeToolResult{Block: &reason}, nil
-			}
-			s.report(Delta{Kind: "tool.start", ToolID: call.ID, Tool: call.Name})
-			if len(decision.Args) == 0 {
+				raw, err := json.Marshal(call.Arguments)
+				if err != nil {
+					return nil, err
+				}
+				decision := s.definition.BeforeTool(restored, call.ID, call.Name, raw)
+				if decision.Block {
+					reason := decision.Reason
+					if reason == "" {
+						reason = "This call is not available in this turn."
+					}
+					// Durable BeforeToolResult has no Terminate; Abort ends the turn after tools settle.
+					if decision.Terminate {
+						s.park.Store(true)
+					}
+					return &harness.BeforeToolResult{Block: &reason}, nil
+				}
+				s.report(Delta{Kind: "tool.start", ToolID: call.ID, Tool: call.Name})
+				if len(decision.Args) == 0 {
+					return nil, nil
+				}
+				arguments := durable.JsonObject{}
+				if json.Unmarshal(decision.Args, &arguments) != nil {
+					return nil, nil
+				}
+				return &harness.BeforeToolResult{Arguments: arguments}, nil
+			},
+			AfterTool: func(ctx context.Context, call ai.ToolCall, result durable.ToolExecutionResult, api harness.HookApi) (*durable.ToolExecutionResult, error) {
+				if _, ok := s.turnContext(api.ConversationId(), ctx); !ok {
+					return nil, nil
+				}
+				s.report(Delta{Kind: "tool.done", ToolID: call.ID, Tool: call.Name, Failed: result.IsError != nil && *result.IsError})
 				return nil, nil
-			}
-			arguments := durable.JsonObject{}
-			if json.Unmarshal(decision.Args, &arguments) != nil {
-				return nil, nil
-			}
-			return &harness.BeforeToolResult{Arguments: arguments}, nil
-		},
-		AfterTool: func(ctx context.Context, call ai.ToolCall, result durable.ToolExecutionResult, api harness.HookApi) (*durable.ToolExecutionResult, error) {
-			if _, ok := s.turnContext(api.ConversationId(), ctx); !ok {
-				return nil, nil
-			}
-			s.report(Delta{Kind: "tool.done", ToolID: call.ID, Tool: call.Name, Failed: result.IsError != nil && *result.IsError})
-			return nil, nil
-		},
-	}}}
+			},
+		}},
+		harness.Hook(harness.GenerationTask, &harness.GenerationHooks{
+			// Abort marks the generation so the scheduler ends it as unanswered. The error
+			// stops finishToolRound from starting a successor request in the same turn.
+			AfterTools: func(ctx context.Context, _ durable.EntryId, _ []durable.EntryId, _ harness.HookApi) error {
+				if !s.park.Load() {
+					return nil
+				}
+				_ = s.conversation.Abort(ctx, nil)
+				return errApprovalPause
+			},
+		}),
+	}
 }
+
+var errApprovalPause = errors.New("waiting for approval")
 
 func (s *durableSession) Path() string { return durablePath(s.conversation.Id()) }
 func (s *durableSession) Reusable() bool {
 	return true
 }
 func (s *durableSession) Abort(ctx context.Context) error { return s.conversation.Abort(ctx, nil) }
+
+// BindTurn refreshes per-turn hooks so a reused session does not keep a canceled prior context.
+func (s *durableSession) BindTurn(before agent.BeforeToolCallHook, turn func() (context.Context, bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.definition.BeforeTool = before
+	s.definition.TurnContext = turn
+}
 
 // Close releases nothing: the conversation is durable and belongs to the harness.
 func (s *durableSession) Close() error { return nil }
@@ -302,6 +333,9 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 	}
 	settled, err := submission.Wait(ctx)
 	if err != nil {
+		if s.park.Swap(false) {
+			return Result{}, nil
+		}
 		return Result{}, err
 	}
 	result := Result{}
@@ -312,12 +346,19 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 		}
 		result.Text, result.Usage = text, usage
 	}
+	parked := s.park.Swap(false)
 	switch settled.Status {
 	case durable.SubmissionDone:
 		return result, nil
 	case durable.SubmissionUnanswered:
+		if parked {
+			return result, nil
+		}
 		return result, errors.New("the agent did not answer")
 	default:
+		if parked {
+			return result, nil
+		}
 		return result, fmt.Errorf("turn ended as %s", settled.Status)
 	}
 }
