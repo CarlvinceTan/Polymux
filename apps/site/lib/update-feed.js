@@ -1,5 +1,9 @@
 const REPOSITORY = 'CarlvinceTan/Polymux';
 
+export function isElectronRelease(tag) {
+  return /^v0\.3\.\d+$/.test(tag);
+}
+
 function githubHeaders() {
   return {
     Accept: 'application/vnd.github+json',
@@ -19,7 +23,8 @@ export async function updateFeed(platform, response) {
   }
 
   const releases = await latest.json();
-  const release = releases.find((item) => !item.draft);
+  const release = releases.find((item) =>
+    !item.draft && !item.prerelease && isElectronRelease(item.tag_name));
   if (!release) {
     response.setHeader('Cache-Control', 'no-store');
     return response.status(503).send('No public Polymux release is available yet.');

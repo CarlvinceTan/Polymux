@@ -1,8 +1,10 @@
+# Electron 0.3.x tooling — frozen after native Polymux replaced Electron on main.
+# Retargeted to release/0.3.x only; Electron release paths no longer exist on main.
 name: Bridge integrity
 
 on:
   pull_request:
-    branches: [main]
+    branches: [release/0.3.x]
   workflow_dispatch:
 
 permissions:

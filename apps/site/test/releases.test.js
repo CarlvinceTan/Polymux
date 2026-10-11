@@ -21,7 +21,7 @@ test('serves a Squirrel.Windows manifest with absolute GitHub asset URLs', async
   ];
   context.mock.method(globalThis, 'fetch', async (url) => {
     if (String(url).includes('/releases?')) {
-      return {ok: true, json: async () => [{assets}]};
+      return {ok: true, json: async () => [{tag_name: 'v0.3.0', draft: false, prerelease: false, assets}]};
     }
     return {ok: true, text: async () => 'ABC polymux_desktop-0.3.0-full.nupkg 123\r\n'};
   });
@@ -40,7 +40,7 @@ test('serves Linux updater metadata with an absolute AppImage URL', async (conte
   ];
   context.mock.method(globalThis, 'fetch', async (url) => {
     if (String(url).includes('/releases?')) {
-      return {ok: true, json: async () => [{assets}]};
+      return {ok: true, json: async () => [{tag_name: 'v0.3.0', draft: false, prerelease: false, assets}]};
     }
     return {
       ok: true,
