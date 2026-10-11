@@ -1,10 +1,7 @@
-# Electron 0.3.x release line — frozen after native Polymux (app-v*) replaced Electron on main.
-# Triggers only on v0.3.* tags; workflow_dispatch is guarded to those tags or release/0.3.x.
+# Electron releases are cut only from the release/0.3.x branch (whose own copy of this workflow governs v0.3.* tags).
 name: Release
 
 on:
-  push:
-    tags: ["v0.3.*"]
   workflow_dispatch:
     inputs:
       release_version:
@@ -23,7 +20,7 @@ concurrency:
 
 jobs:
   verify:
-    if: startsWith(github.ref, 'refs/tags/v0.3.') || github.ref == 'refs/heads/release/0.3.x'
+    if: github.ref == 'refs/heads/release/0.3.x'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +43,7 @@ jobs:
 
   browser-compatibility:
     name: Require compatible published browser extension
-    if: startsWith(github.ref, 'refs/tags/v0.3.') || github.ref == 'refs/heads/release/0.3.x'
+    if: github.ref == 'refs/heads/release/0.3.x'
     runs-on: ubuntu-24.04
     environment: chrome-web-store
     steps:
@@ -67,7 +64,7 @@ jobs:
 
   phone-ios-runtime:
     name: Build unsigned iPhone control runtime
-    if: startsWith(github.ref, 'refs/tags/v0.3.') || github.ref == 'refs/heads/release/0.3.x'
+    if: github.ref == 'refs/heads/release/0.3.x'
     needs: verify
     runs-on: macos-14
     steps:
@@ -94,7 +91,7 @@ jobs:
           if-no-files-found: error
 
   macos:
-    if: startsWith(github.ref, 'refs/tags/v0.3.') || github.ref == 'refs/heads/release/0.3.x'
+    if: github.ref == 'refs/heads/release/0.3.x'
     needs: [verify, phone-ios-runtime]
     runs-on: macos-14
     steps:
@@ -327,7 +324,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    if: startsWith(github.ref, 'refs/tags/v0.3.') || github.ref == 'refs/heads/release/0.3.x'
+    if: github.ref == 'refs/heads/release/0.3.x'
     needs: [verify, phone-ios-runtime]
     runs-on: windows-2025
     steps:
@@ -523,7 +520,7 @@ jobs:
           if-no-files-found: error
 
   linux:
-    if: startsWith(github.ref, 'refs/tags/v0.3.') || github.ref == 'refs/heads/release/0.3.x'
+    if: github.ref == 'refs/heads/release/0.3.x'
     needs: [verify, phone-ios-runtime]
     runs-on: ubuntu-24.04
     steps:
@@ -716,7 +713,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v0.3.')
+    if: github.ref == 'refs/heads/release/0.3.x'
     needs: [browser-compatibility, macos, windows, linux]
     runs-on: ubuntu-24.04
     steps:

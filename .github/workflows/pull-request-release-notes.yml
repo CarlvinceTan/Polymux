@@ -1,10 +1,9 @@
-# Electron 0.3.x tooling — frozen after native Polymux replaced Electron on main.
-# Retargeted to release/0.3.x only; Electron release paths no longer exist on main.
+# Enforces the AGENTS.md Release Notes section on pull requests.
 name: Pull request release notes
 
 on:
   pull_request:
-    branches: [release/0.3.x]
+    branches: [main, dev, release/0.3.x]
     types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:
