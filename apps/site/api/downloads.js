@@ -52,7 +52,9 @@ export default async function handler(request, response) {
     if (tagged && !tagged.draft) release = tagged;
   } else {
     const releases = await fetchRelease('releases?per_page=10');
-    if (Array.isArray(releases)) release = releases.find((item) => !item.draft) ?? null;
+    if (Array.isArray(releases)) {
+      release = releases.find((item) => !item.draft && !/^app-v/.test(item.tag_name ?? '')) ?? null;
+    }
   }
 
   if (!release) {

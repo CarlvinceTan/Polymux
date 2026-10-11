@@ -36,15 +36,34 @@ test('maps the latest release to native installers for each platform', async (co
   assert.equal(result.body.platforms.linux.url, 'https://files/appimage');
 });
 
-test('strips an app-v release tag to a bare version for display', async (context) => {
+test('skips app-v releases when selecting the latest downloadable release', async (context) => {
   context.mock.method(globalThis, 'fetch', async () => ({
     ok: true,
-    json: async () => [{tag_name: 'app-v0.4.0', draft: false, assets: []}],
+    json: async () => [
+      {
+        tag_name: 'app-v0.4.0',
+        draft: false,
+        published_at: '2026-10-01T00:00:00Z',
+        html_url: 'https://github.com/CarlvinceTan/Polymux/releases/tag/app-v0.4.0',
+        assets: [
+          {name: 'Polymux-0.4.0-arm64.dmg', browser_download_url: 'https://files/mac-app', size: 1},
+        ],
+      },
+      {
+        tag_name: 'v0.3.4',
+        draft: false,
+        published_at: '2026-09-01T00:00:00Z',
+        html_url: 'https://github.com/CarlvinceTan/Polymux/releases/tag/v0.3.4',
+        assets: [
+          {name: 'Polymux-0.3.4-arm64.dmg', browser_download_url: 'https://files/mac', size: 1},
+        ],
+      },
+    ],
   }));
   const result = response();
   await handler({}, result);
   assert.equal(result.statusCode, 200);
-  assert.equal(result.body.version, '0.4.0');
+  assert.equal(result.body.version, '0.3.4');
 });
 
 test('strips a v release tag to a bare version for display', async (context) => {
