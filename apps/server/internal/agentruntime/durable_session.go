@@ -95,9 +95,17 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 			tools = append(tools, registration)
 		}
 	}
+	var names []string
+	for _, registration := range tools {
+		names = append(names, registration.ToolSchema.Name)
+	}
+	prompt, err := buildPrompt(d, names, len(d.MCP) > 0)
+	if err != nil {
+		return nil, err
+	}
 	cwd := filepath.Join(r.dir, d.Agent.ID)
 	change := harness.AgentChange{
-		Instructions: harness.SetTo(d.SystemPrompt()),
+		Instructions: harness.SetTo(prompt),
 		Model:        harness.SetTo(durable.ModelRef{Provider: DurableProvider, ModelId: modelID(d, r.model)}),
 		Cwd:          harness.SetTo(cwd),
 	}
