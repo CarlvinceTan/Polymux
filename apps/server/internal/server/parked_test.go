@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/testenv"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/testenv"
 )
 
 // A parked task must reappear on the next user turn, or the agent silently forgets it.

@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/device"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
 )
 
 func main() {

@@ -3,7 +3,7 @@ package store
 import (
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 func TestHistory(t *testing.T) {

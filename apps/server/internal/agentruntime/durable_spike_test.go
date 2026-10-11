@@ -17,7 +17,7 @@ import (
 	"github.com/MichaelKinsy/PiG/durable/storage"
 )
 
-// turnMarker proves a tool sees the caller's turn context, which Luce's tools rely on.
+// turnMarker proves a tool sees the caller's turn context, which Polymux's tools rely on.
 type turnMarker struct{}
 
 // sse writes one scripted assistant turn in the OpenAI streaming shape.
@@ -79,7 +79,7 @@ func TestDurableHarnessRunsATurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.WithValue(t.Context(), turnMarker{}, "luce-turn")
+	ctx := context.WithValue(t.Context(), turnMarker{}, "polymux-turn")
 	submission, err := conversation.Submit(ctx, durable.SubmissionDraft{Type: durable.SubmissionTypeInput, Content: ai.UserText("probe then answer")})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestDurableHarnessRunsATurn(t *testing.T) {
 		t.Fatal("tool did not run")
 	}
 	// Durable runs tools on its own task line, so a caller's context values do not reach
-	// them. Luce's turn state must come from the durable tool API instead of ctx.Value.
+	// them. Polymux's turn state must come from the durable tool API instead of ctx.Value.
 	if callerContextReachedTool {
 		t.Log("caller context reached the tool; the ctx-based turn state could be reused")
 	} else {

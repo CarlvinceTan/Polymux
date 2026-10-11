@@ -16,17 +16,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/host"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/host"
 )
 
 func runHost(args []string) error {
 	if len(args) == 0 || args[0] != "run" && args[0] != "install" {
-		return errors.New("usage: luce-server host run|install [-data path] [-listen IP:7337] [-control IP:7338]")
+		return errors.New("usage: polymux-server host run|install [-data path] [-listen IP:7337] [-control IP:7338]")
 	}
 	mode := args[0]
 	flags := flag.NewFlagSet("host", flag.ContinueOnError)
-	dir := flags.String("data", os.Getenv("LUCE_DATA_DIR"), "server data directory")
-	listen := flags.String("listen", os.Getenv("LUCE_LISTEN"), "backend tailnet listener")
+	dir := flags.String("data", os.Getenv("POLYMUX_DATA_DIR"), "server data directory")
+	listen := flags.String("listen", os.Getenv("POLYMUX_LISTEN"), "backend tailnet listener")
 	control := flags.String("control", "", "controller tailnet listener")
 	dev := flags.Bool("dev", false, "allow loopback for tests")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -37,7 +37,7 @@ func runHost(args []string) error {
 		return err
 	}
 	if *dir == "" {
-		*dir = filepath.Join(home, "Library", "Application Support", "Luce", "server")
+		*dir = filepath.Join(home, "Library", "Application Support", "Polymux", "server")
 	}
 	*dir, err = filepath.Abs(*dir)
 	if err != nil {

@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 func (s *Store) migrateGroups(ctx context.Context) (err error) {

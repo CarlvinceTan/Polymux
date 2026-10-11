@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/device"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 )

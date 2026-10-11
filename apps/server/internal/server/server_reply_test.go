@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 func TestReplyHTTPValidationAndReplay(t *testing.T) {

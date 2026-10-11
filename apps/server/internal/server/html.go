@@ -17,8 +17,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 	"golang.org/x/net/html"
@@ -27,13 +27,13 @@ import (
 const htmlLimit = 1 << 20
 
 // htmlPrompt is the model-facing contract for card markup.
-const htmlPrompt = `Display one self-contained interactive HTML card inside the message bubble. Luce owns the outer bubble, its rounded corners, and clipping; write edge-to-edge inner content only.
+const htmlPrompt = `Display one self-contained interactive HTML card inside the message bubble. Polymux owns the outer bubble, its rounded corners, and clipping; write edge-to-edge inner content only.
 
 Canvas
 - No outer card wrapper, body margins, outer radius, or outer drop shadow. html/body background, padding, and gradients are fine.
 - Inline CSS and JS only; images are data: URLs. External URLs, links, form submissions, popups, imports, and CDNs are blocked.
 - Put one inline <style> and one inline <script> last. LiquidGlass loads after your markup, so run setup that reads component properties inside a DOMContentLoaded listener.
-- To let the user answer you, call luceSend('Week') from a click or change handler: Luce sends that text to you as the user's next message, so make it self-contained, such as 'Focus: week'.
+- To let the user answer you, call polymuxSend('Week') from a click or change handler: Polymux sends that text to you as the user's next message, so make it self-contained, such as 'Focus: week'.
 - Keep ids unique; write text with textContent; never replace a component's innerHTML.
 
 Components (preloaded, theme-aware; not native SwiftUI views)
@@ -52,7 +52,7 @@ Layout
 Size
 - width 44-550 and height 44-400 CSS px. Omit width to size the card to its content up to 550; declare a width only when the layout needs a fixed viewport. Omit height to measure up to 400, then the card scrolls internally. Phones can narrow a requested width, so avoid fixed vh/vw and keep layouts responsive.
 
-Example: <style>#card{display:grid;gap:12px;padding:16px}</style><div id="card"><h3>Weekly focus</h3><p class="muted"><span id="out">4</span> h planned</p><lg-slider label="Hours" value="4" min="0" max="12"></lg-slider><div class="row"><lg-button>Save</lg-button></div></div><script>const s=document.querySelector('lg-slider'),o=document.getElementById('out');s.addEventListener('input',()=>{o.textContent=s.value;});document.querySelector('lg-button').addEventListener('click',()=>luceSend('Hours: '+s.value));</script>
+Example: <style>#card{display:grid;gap:12px;padding:16px}</style><div id="card"><h3>Weekly focus</h3><p class="muted"><span id="out">4</span> h planned</p><lg-slider label="Hours" value="4" min="0" max="12"></lg-slider><div class="row"><lg-button>Save</lg-button></div></div><script>const s=document.querySelector('lg-slider'),o=document.getElementById('out');s.addEventListener('input',()=>{o.textContent=s.value;});document.querySelector('lg-button').addEventListener('click',()=>polymuxSend('Hours: '+s.value));</script>
 
 The tool returns a receipt only; never repeat the HTML as message text.`
 

@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 type Config struct{ Path, KeyID, TeamID, Topic string }
@@ -92,7 +92,7 @@ func (s *Sender) Send(ctx context.Context, push store.Push) string {
 	if err != nil {
 		return "failed"
 	}
-	data, _ := json.Marshal(map[string]any{"aps": map[string]any{"alert": map[string]string{"title": push.Notice.Title, "body": "New message in Luce"}, "sound": "default", "thread-id": push.Notice.ConversationID}, "server": push.Device.Server, "conversationID": push.Notice.ConversationID, "messageID": push.Notice.MessageID})
+	data, _ := json.Marshal(map[string]any{"aps": map[string]any{"alert": map[string]string{"title": push.Notice.Title, "body": "New message in Polymux"}, "sound": "default", "thread-id": push.Notice.ConversationID}, "server": push.Device.Server, "conversationID": push.Notice.ConversationID, "messageID": push.Notice.MessageID})
 	if len(data) > 4096 {
 		return "failed"
 	}

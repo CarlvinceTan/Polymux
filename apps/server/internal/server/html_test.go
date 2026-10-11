@@ -19,10 +19,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
-	"github.com/CarlvinceTan/luce/apps/server/internal/testenv"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/testenv"
 	"github.com/MichaelKinsy/PiG/agent"
 )
 
@@ -81,7 +81,7 @@ func (*htmlSession) Path() string                { return "html.jsonl" }
 
 func TestHTMLReplay(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "luce.db")
+	path := filepath.Join(dir, "polymux.db")
 	db, err := store.Open(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)

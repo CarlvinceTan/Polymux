@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 // FocusQuestion seeds the first-run card. Producing it spends no model tokens.

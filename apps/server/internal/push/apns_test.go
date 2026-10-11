@@ -18,8 +18,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 type roundTrip func(*http.Request) (*http.Response, error)
@@ -40,7 +40,7 @@ func fixtureSender(t *testing.T) *Sender {
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: data}), 0600); err != nil {
 		t.Fatal(err)
 	}
-	sender, err := Open(Config{Path: path, KeyID: "TESTKEY123", TeamID: "TESTTEAM12", Topic: "com.carlvince.luce"})
+	sender, err := Open(Config{Path: path, KeyID: "TESTKEY123", TeamID: "TESTTEAM12", Topic: "com.flarehq.polymux.app"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,14 +10,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 func settingsAPI(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := store.Open(t.Context(), filepath.Join(dir, "luce.db"))
+	db, err := store.Open(t.Context(), filepath.Join(dir, "polymux.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

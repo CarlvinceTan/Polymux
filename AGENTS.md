@@ -1,4 +1,4 @@
-# Working on Luce
+# Working on Polymux
 
 SwiftUI app backed by a Go agent server.
 Do not edit this instruction file unless explicitly asked.
@@ -42,6 +42,6 @@ Never update it unless explicitly asked; report conflicts instead.
   most 72 characters, no AI attribution.
 - Push the branch and open one pull request for Carlvince's review.
 - Never commit to or merge into `main`; merging waits for Carlvince's OK.
-- Luce is pre-release with no external users. Do not add compatibility for
+- Polymux is pre-release with no external users. Do not add compatibility for
   obsolete formats; reset disposable state or use a bounded one-time migration
   for valuable local data.

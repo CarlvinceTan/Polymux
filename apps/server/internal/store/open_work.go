@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 type WorkItem struct {

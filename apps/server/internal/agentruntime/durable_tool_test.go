@@ -17,7 +17,7 @@ import (
 	"github.com/MichaelKinsy/PiG/durable/storage"
 )
 
-// stateTool stands in for a Luce tool: it needs the turn's context values to act.
+// stateTool stands in for a Polymux tool: it needs the turn's context values to act.
 type stateTool struct {
 	ran    atomic.Bool
 	marker atomic.Value
@@ -68,7 +68,7 @@ func durableTurn(t *testing.T, definition Definition) {
 		t.Fatal(err)
 	}
 	// Tools bind to the conversation they run in, so install once it exists.
-	if err := registry.Install(&durable.Extension{Name: "luce", Tools: Tools(definition, conversation.Id())}); err != nil {
+	if err := registry.Install(&durable.Extension{Name: "polymux", Tools: Tools(definition, conversation.Id())}); err != nil {
 		t.Fatal(err)
 	}
 	submission, err := conversation.Submit(t.Context(), durable.SubmissionDraft{Type: durable.SubmissionTypeInput, Content: ai.UserText("probe then answer")})
@@ -87,14 +87,14 @@ func TestDurableToolRestoresTurnState(t *testing.T) {
 	definition := Definition{
 		ExtraTools: []agent.AgentTool{tool},
 		TurnContext: func() (context.Context, bool) {
-			return context.WithValue(context.Background(), turnMarker{}, "luce-run"), true
+			return context.WithValue(context.Background(), turnMarker{}, "polymux-run"), true
 		},
 	}
 	durableTurn(t, definition)
 	if !tool.ran.Load() {
 		t.Fatal("tool did not run")
 	}
-	if value, _ := tool.marker.Load().(string); value != "luce-run" {
+	if value, _ := tool.marker.Load().(string); value != "polymux-run" {
 		t.Fatalf("tool did not see its turn state: %q", value)
 	}
 }

@@ -65,11 +65,11 @@ def main():
     definitions_path.write_text(json.dumps(definitions))
     definitions_path.chmod(0o600)
     environment = os.environ.copy()
-    environment.pop("LUCE_MODEL_KEY", None)
-    environment.pop("LUCE_APNS_KEY_FILE", None)
-    for name in ("LUCE_LLAMA", "LUCE_EMBED_URL", "LUCE_EMBED_MODEL", "LUCE_EXTRACTOR"):
+    environment.pop("POLYMUX_MODEL_KEY", None)
+    environment.pop("POLYMUX_APNS_KEY_FILE", None)
+    for name in ("POLYMUX_LLAMA", "POLYMUX_EMBED_URL", "POLYMUX_EMBED_MODEL", "POLYMUX_EXTRACTOR"):
         environment.pop(name, None)
-    environment.update(LUCE_AGENTS=str(definitions_path), LUCE_MODEL_URL=args.model_url, LUCE_MODEL=args.model)
+    environment.update(POLYMUX_AGENTS=str(definitions_path), POLYMUX_MODEL_URL=args.model_url, POLYMUX_MODEL=args.model)
     port = ports()
     backend = f"http://127.0.0.1:{port}"
     control = f"http://127.0.0.1:{port + 1}/host"
@@ -78,7 +78,7 @@ def main():
                                 "-listen", f"127.0.0.1:{port}"], env=environment, stdout=log, stderr=log)
 
     def task_status():
-        with sqlite3.connect(directory / "luce.db") as database:
+        with sqlite3.connect(directory / "polymux.db") as database:
             row = database.execute("SELECT status FROM tasks ORDER BY rowid DESC LIMIT 1").fetchone()
             return row[0] if row else None
 
@@ -95,7 +95,7 @@ def main():
         wait(lambda: task_status() == "completed")
         messages = request(backend + "/threads/smoke/messages")
         assert any("READY-RESUMED" in (part.get("text") or "") for message in messages for part in message.get("parts", []))
-        with sqlite3.connect(directory / "luce.db") as database:
+        with sqlite3.connect(directory / "polymux.db") as database:
             stages = database.execute("SELECT count(*) FROM runs WHERE json_extract(data,'$.trigger')='task'").fetchone()[0]
             assert stages == 1
         notices = request(backend + "/notifications?after=0")

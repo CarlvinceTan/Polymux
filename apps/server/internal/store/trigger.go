@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 	"strings"
 )
 

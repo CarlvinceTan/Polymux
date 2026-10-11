@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"context"
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/testenv"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/testenv"
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 )

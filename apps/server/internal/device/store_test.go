@@ -31,7 +31,7 @@ func issueTicket(t *testing.T, s *Store, url, agent string, caps []string) Ticke
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(text, "luce-pair:"))
+	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(text, "polymux-pair:"))
 	if err != nil {
 		t.Fatal(err)
 	}

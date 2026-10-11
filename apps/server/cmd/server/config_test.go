@@ -27,8 +27,8 @@ func TestDataLockPreventsSecondServer(t *testing.T) {
 	file.Close()
 }
 func TestModelConfigPersistsOnlyReferences(t *testing.T) {
-	t.Setenv("LUCE_MODEL", "")
-	t.Setenv("LUCE_MODEL_URL", "")
+	t.Setenv("POLYMUX_MODEL", "")
+	t.Setenv("POLYMUX_MODEL_URL", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "model.json")
 	if err := os.WriteFile(path, []byte(`{"url":"http://127.0.0.1:8080/v1","model":"local/free","keyEnv":"EXISTING_KEY"}`), 0600); err != nil {
@@ -38,7 +38,7 @@ func TestModelConfigPersistsOnlyReferences(t *testing.T) {
 	if err != nil || config.Model != "local/free" || config.KeyEnv != "EXISTING_KEY" {
 		t.Fatalf("config %+v %v", config, err)
 	}
-	t.Setenv("LUCE_MODEL", "local/override")
+	t.Setenv("POLYMUX_MODEL", "local/override")
 	config, err = loadModel(dir)
 	if err != nil || config.Model != "local/override" {
 		t.Fatal("explicit environment did not override file")
@@ -51,7 +51,7 @@ func TestModelKeyResolvesFromEnvironmentThenOwnerOnlyFile(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte("file-secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("LUCE_MODEL_KEY", "")
+	t.Setenv("POLYMUX_MODEL_KEY", "")
 	t.Setenv("EXISTING_KEY", "")
 	config := modelConfig{KeyFile: keyPath}
 	key, err := config.Key()
@@ -63,7 +63,7 @@ func TestModelKeyResolvesFromEnvironmentThenOwnerOnlyFile(t *testing.T) {
 	if key, err = config.Key(); err != nil || key != "env-secret" {
 		t.Fatalf("declared environment did not win: %q %v", key, err)
 	}
-	t.Setenv("LUCE_MODEL_KEY", "direct-secret")
+	t.Setenv("POLYMUX_MODEL_KEY", "direct-secret")
 	if key, err = config.Key(); err != nil || key != "direct-secret" {
 		t.Fatalf("direct environment did not win: %q %v", key, err)
 	}
@@ -98,7 +98,7 @@ func TestModelKeyFileRejectsUnsafeSources(t *testing.T) {
 }
 
 func TestModelConfigWithoutKeyFileHasNoKey(t *testing.T) {
-	t.Setenv("LUCE_MODEL_KEY", "")
+	t.Setenv("POLYMUX_MODEL_KEY", "")
 	t.Setenv("EXISTING_KEY", "")
 	key, err := (modelConfig{KeyEnv: "EXISTING_KEY"}).Key()
 	if err != nil || key != "" {

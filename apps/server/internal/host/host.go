@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 type Config struct {
@@ -207,7 +207,7 @@ func (c *Controller) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(c.Snapshot())
 }
 
-const Label = "com.carlvince.luce.host"
+const Label = "com.flarehq.polymux.app.host"
 
 func Unit(binary, dir, listen, control string) ([]byte, error) {
 	for _, path := range []string{binary, dir} {

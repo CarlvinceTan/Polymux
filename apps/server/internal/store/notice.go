@@ -8,7 +8,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 func (s *Store) migrateNotices(ctx context.Context) error {
@@ -76,7 +76,7 @@ func noticeTx(ctx context.Context, tx *sql.Tx, m *contract.Message, event contra
 			return nil
 		}
 	}
-	title := "Luce"
+	title := "Polymux"
 	if m.AgentID != nil {
 		var name string
 		if err := tx.QueryRowContext(ctx, `SELECT json_extract(data,'$.name') FROM agents WHERE id=?`, *m.AgentID).Scan(&name); err == nil && name != "" {

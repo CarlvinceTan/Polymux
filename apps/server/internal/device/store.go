@@ -122,7 +122,7 @@ func (s *Store) certificate(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "Luce device control"},
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "Polymux device control"},
 		NotBefore: time.Now().Add(-time.Minute), NotAfter: minTime(time.Now().Add(90*24*time.Hour), s.issuer.NotAfter),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true, DNSNames: s.issuer.DNSNames, IPAddresses: s.issuer.IPAddresses}
@@ -159,7 +159,7 @@ func (s *Store) identity(ctx context.Context, hostname string) error {
 		if e != nil {
 			return e
 		}
-		template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "Luce device identity"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().AddDate(5, 0, 0), KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true}
+		template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "Polymux device identity"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().AddDate(5, 0, 0), KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true}
 		if ip := net.ParseIP(hostname); ip != nil {
 			template.IPAddresses = []net.IP{ip}
 		} else {
@@ -239,7 +239,7 @@ func (s *Store) Issue(ctx context.Context, address, agent string, caps []string)
 	if err != nil {
 		return "", err
 	}
-	return "luce-pair:" + base64.RawURLEncoding.EncodeToString(ticket), nil
+	return "polymux-pair:" + base64.RawURLEncoding.EncodeToString(ticket), nil
 }
 
 func (s *Store) Enroll(ctx context.Context, code, name string, caps []string) (Enrollment, error) {

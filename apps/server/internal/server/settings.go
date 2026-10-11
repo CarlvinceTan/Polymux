@@ -5,13 +5,13 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/settings"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/settings"
 )
 
 func nativeRequest(w http.ResponseWriter, r *http.Request) bool {
 	if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" {
-		fail(w, 403, "native_only", "Use the Luce app to manage settings and speech.")
+		fail(w, 403, "native_only", "Use the Polymux app to manage settings and speech.")
 		return false
 	}
 	return true

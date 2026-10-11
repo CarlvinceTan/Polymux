@@ -1,4 +1,4 @@
-module github.com/CarlvinceTan/luce/apps/server
+module github.com/CarlvinceTan/polymux/apps/server
 
 go 1.27.1
 

@@ -3,7 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 	"path/filepath"
 	"testing"
 	"time"

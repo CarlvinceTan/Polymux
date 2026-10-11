@@ -40,7 +40,7 @@ type book struct {
 
 var documents = durable.DefineDocFamily(durable.DocFamilyDefinition[book, durable.JsonValue]{
 	CommonDocDefinition: durable.CommonDocDefinition[book]{
-		Kind: "luce.memory", Version: 1,
+		Kind: "polymux.memory", Version: 1,
 		// Current-only bases replace old content instead of accumulating sensitive deltas.
 		CheckpointWhen: func(book, []durable.Op, durable.CheckpointInfo) bool { return true },
 	},

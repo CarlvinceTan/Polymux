@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 type openedAgent struct {
@@ -58,7 +58,7 @@ func awaitReply(t *testing.T, api *Server, thread, user string) {
 
 func TestCreateAgentSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "luce.db")
+	path := filepath.Join(dir, "polymux.db")
 	definitions := []agentruntime.Definition{{Agent: contract.Agent{ID: "assistant", Name: "Assistant", Role: "Personal assistant", Model: "provider/default"}, Prompt: "Default instructions", Tools: []string{"read"}}}
 	config := Config{DataDir: dir, Model: "provider/default", Definitions: definitions, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	open := func() (*Server, *httptest.Server, *definitionFactory) {

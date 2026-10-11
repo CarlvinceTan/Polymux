@@ -9,7 +9,7 @@ import (
 	"github.com/MichaelKinsy/PiG/ai"
 )
 
-// Isolates the models layer: does Luce's OpenAI-compatible endpoint stream through PiG?
+// Isolates the models layer: does Polymux's OpenAI-compatible endpoint stream through PiG?
 func TestDurableModelsStream(t *testing.T) {
 	var requests int
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
 	"github.com/MichaelKinsy/PiG/durable/env"
@@ -22,7 +22,7 @@ import (
 	"github.com/MichaelKinsy/PiG/durable/tools"
 )
 
-// DurableRuntime runs Luce conversations on PiG's durable harness instead of the coding
+// DurableRuntime runs Polymux conversations on PiG's durable harness instead of the coding
 // agent. It satisfies the same factory shape, so the server swaps to it by construction.
 type DurableRuntime struct {
 	harness  harness.Harness
@@ -33,7 +33,7 @@ type DurableRuntime struct {
 }
 
 // NewDurable opens a durable harness over the given storage. Conversations, generations,
-// tools and usage are durable; Luce's own session persistence stores the conversation id.
+// tools and usage are durable; Polymux's own session persistence stores the conversation id.
 func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Client, storage durable.Storage) (*DurableRuntime, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
@@ -56,7 +56,7 @@ func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Cli
 	return &DurableRuntime{harness: opened, registry: registry, model: model, dir: dir, client: client}, nil
 }
 
-// builtinTool maps a Luce builtin name to its durable registration. Durable has no find or
+// builtinTool maps a Polymux builtin name to its durable registration. Durable has no find or
 // ls; bash covers both.
 func builtinTool(name string) *durable.ToolRegistration {
 	switch name {
@@ -76,7 +76,7 @@ func (r *DurableRuntime) Close() error {
 	return r.harness.Close(context.WithoutCancel(context.Background()))
 }
 
-// Open resumes the conversation Luce recorded, or starts one. An ephemeral definition never
+// Open resumes the conversation Polymux recorded, or starts one. An ephemeral definition never
 // resumes, so a voice turn or an automatic review cannot inherit another turn's context.
 func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (Session, error) {
 	if err := ctx.Err(); err != nil {
@@ -103,7 +103,7 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	// selects which of them this conversation offers. Each tool gets its own extension so a
 	// later turn's install cannot replace an earlier one's.
 	for _, registration := range tools {
-		extension := &durable.Extension{Name: "luce:" + registration.ToolSchema.Name, Tools: []*durable.ToolRegistration{registration}}
+		extension := &durable.Extension{Name: "polymux:" + registration.ToolSchema.Name, Tools: []*durable.ToolRegistration{registration}}
 		if err := r.registry.Install(extension); err != nil {
 			return nil, err
 		}
@@ -112,7 +112,7 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	// otherwise inherit every tool ever installed.
 	change.Tools = harness.SetTo(harness.ToolChange{Exact: true, List: tools})
 	if hooks := session.hooks(); len(hooks) > 0 {
-		extension := &durable.Extension{Name: "luce:hooks:" + strconv.FormatInt(int64(conversation.Id()), 10), Hooks: hooks}
+		extension := &durable.Extension{Name: "polymux:hooks:" + strconv.FormatInt(int64(conversation.Id()), 10), Hooks: hooks}
 		if err := r.registry.Install(extension); err != nil {
 			return nil, err
 		}
@@ -130,16 +130,16 @@ func (r *DurableRuntime) conversation(ctx context.Context, d Definition, path st
 			return conversation, nil
 		}
 	}
-	// Root is the reserved single root conversation, so each Luce conversation needs its own.
+	// Root is the reserved single root conversation, so each Polymux conversation needs its own.
 	return r.harness.CreateConversation(ctx, harness.ConversationCreateOptions{
 		Ownership: durable.ConversationOwnership{Kind: durable.ConversationOwnerless},
 	})
 }
 
-// DurableProvider is the models-runtime provider ID Luce registers its endpoint under.
-const DurableProvider = "luce"
+// DurableProvider is the models-runtime provider ID Polymux registers its endpoint under.
+const DurableProvider = "polymux"
 
-// durableModels registers Luce's OpenAI-compatible endpoint with the durable models runtime.
+// durableModels registers Polymux's OpenAI-compatible endpoint with the durable models runtime.
 func durableModels(baseURL, key, model string, client Client) *ai.Models {
 	provider := ai.NewOpenAIProvider(ai.OpenAIConfig{BaseURL: baseURL, APIKey: key, Model: model, ProviderID: DurableProvider, ExtraHeaders: client.Headers})
 	models := ai.CreateModels()
@@ -150,7 +150,7 @@ func durableModels(baseURL, key, model string, client Client) *ai.Models {
 		},
 		Stream:       passthrough(provider),
 		StreamSimple: passthrough(provider),
-		Auth: ai.ProviderAuth{APIKey: &ai.APIKeyAuth{Name: "Luce key", Resolve: func(context.Context, ai.APIKeyAuthInput) (*ai.AuthResult, error) {
+		Auth: ai.ProviderAuth{APIKey: &ai.APIKeyAuth{Name: "Polymux key", Resolve: func(context.Context, ai.APIKeyAuthInput) (*ai.AuthResult, error) {
 			return &ai.AuthResult{Auth: ai.ModelAuth{APIKey: key}, Source: DurableProvider}, nil
 		}}},
 	})
@@ -171,15 +171,15 @@ func modelID(d Definition, fallback string) string {
 	return fallback
 }
 
-// durableSession runs one Luce conversation. The conversation id round-trips through Path,
-// so Luce's existing session persistence is the identity store.
+// durableSession runs one Polymux conversation. The conversation id round-trips through Path,
+// so Polymux's existing session persistence is the identity store.
 type durableSession struct {
 	conversation harness.Conversation
 	definition   Definition
 	attachments  string
 	mu           sync.Mutex
 	// emit is the current turn's delta sink; hooks report tool activity through it, and
-	// Luce's existing delta handling records effect receipts and tool parts from that.
+	// Polymux's existing delta handling records effect receipts and tool parts from that.
 	// It has its own lock because Send holds mu for the whole turn.
 	emitMu sync.Mutex
 	emit   func(Delta) error
@@ -207,7 +207,7 @@ func (s *durableSession) report(delta Delta) {
 	}
 }
 
-// hooks bridge Luce's tool gate and effect reporting to the durable tool task. Durable
+// hooks bridge Polymux's tool gate and effect reporting to the durable tool task. Durable
 // runs tools on its own line, so the gate must be reinstalled here or an unattended turn
 // would bypass budgets, the automatic-turn tool gate and effect receipts.
 func (s *durableSession) hooks() []durable.HookRegistration {

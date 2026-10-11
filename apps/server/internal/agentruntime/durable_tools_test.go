@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 	"github.com/MichaelKinsy/PiG/agent"
 )
 
@@ -117,7 +117,7 @@ func TestHarnessExactEmptySelection(t *testing.T) {
 	}
 }
 
-// The durable tool task must still honour Luce's gate: an unattended turn's tool budget,
+// The durable tool task must still honour Polymux's gate: an unattended turn's tool budget,
 // the automatic-turn tool gate and effect receipts all live in that hook.
 func TestDurableGateBlocksAndReportsToolActivity(t *testing.T) {
 	for _, blocked := range []bool{false, true} {

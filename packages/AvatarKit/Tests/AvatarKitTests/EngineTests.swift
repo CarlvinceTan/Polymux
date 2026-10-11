@@ -141,7 +141,7 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(SEQUENCE.count, 14)
         for sample in reference.frames {
             let initial = try XCTUnwrap(StateID(rawValue: sample.initial!))
-            // thinking/alert/exclaim/sleep are Luce badge motifs; BadgeStatesTests covers them.
+            // thinking/alert/exclaim/sleep are Polymux badge motifs; BadgeStatesTests covers them.
             if [.thinking, .alert, .exclaim, .sleep].contains(initial) { continue }
             let engine = BotEngine(initial: initial,
                                    shape: sample.shape.flatMap { SHAPE_BY_ID[$0]?.radii },

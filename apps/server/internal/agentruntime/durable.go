@@ -14,7 +14,7 @@ import (
 // context; failing is safer than running without the run, scope and effect records.
 var ErrTurnState = errors.New("turn state is unavailable; review this stage before retrying")
 
-// ToolRegistration adapts a Luce tool to the durable harness. The definition's TurnContext
+// ToolRegistration adapts a Polymux tool to the durable harness. The definition's TurnContext
 // restores the context values a tool expects, because the caller's own context does not
 // reach a durable tool call.
 func ToolRegistration(d Definition, tool agent.AgentTool, conversation durable.ConversationId) *durable.ToolRegistration {

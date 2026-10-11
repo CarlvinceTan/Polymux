@@ -68,7 +68,7 @@ __pycache__/
 # Local Supabase CLI link/cache state
 /supabase/.temp/
 
-# ---- Luce tree (Go server, Swift app) ----
+# ---- Polymux tree (Go server, Swift app) ----
 # macOS
 .DS_Store
 

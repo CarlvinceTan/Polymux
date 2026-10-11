@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 func TestAttachmentRollback(t *testing.T) {

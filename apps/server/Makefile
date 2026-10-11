@@ -1,7 +1,7 @@
 .PHONY: build test run tools
 
 build:
-	go build -tags sqlite_fts5 -o /tmp/luce-server ./cmd/server
+	go build -tags sqlite_fts5 -o /tmp/polymux-server ./cmd/server
 
 tools:
 	swift build --product media-text --package-path ../..

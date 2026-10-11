@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/testenv"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/testenv"
 )
 
 func TestRestrictedPolicy(t *testing.T) {
@@ -72,7 +72,7 @@ func TestRestrictedPolicy(t *testing.T) {
 				t.Fatal("turn exposed wrong configured tools", len(tools), want)
 			}
 			message := string(body["messages"])
-			for _, part := range []string{"Coach", "Guide", "Configured policy", "Luce policy", "Current UTC time", "Conversation"} {
+			for _, part := range []string{"Coach", "Guide", "Configured policy", "Polymux policy", "Current UTC time", "Conversation"} {
 				if !strings.Contains(message, part) {
 					t.Fatalf("prompt omitted %s", part)
 				}

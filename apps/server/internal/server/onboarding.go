@@ -4,8 +4,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 // focus posts the deterministic first-run card. The client schedules the call, as Rakazo's

@@ -1,4 +1,6 @@
-# Luce — Build Plan
+# Polymux — Build Plan
+
+> Formerly Luce.
 
 An AI assistant and a team of agents: an iOS/macOS SwiftUI app backed by a Go
 server on a mac mini.
@@ -35,17 +37,17 @@ its own memory, history, and scheduled routines.
   history retrieval, open work, background reviews and fixed-interval routines.
 - **Next-stage priority:** agent behaviour, not Rakazo UI parity. Improve how
   agents establish their identity at creation, interact with peers, take turns
-  in groups, and communicate their actual activity through Luce's animations.
-- **UI boundary (D35):** preserve the current Luce shell, conversation list,
+  in groups, and communicate their actual activity through Polymux's animations.
+- **UI boundary (D35):** preserve the current Polymux shell, conversation list,
   avatars, headers, bubbles, composer, panels, and HTML presentation. Rakazo is
   a behavioural reference, not a requirement to copy its screens or every
   feature. New behaviour should use these existing surfaces.
 
 ### Device pairing (implemented slice; signed-device acceptance pending)
 
-- Fresh-device setup must start with the Luce client installation, not assume
+- Fresh-device setup must start with the Polymux client installation, not assume
   SSH, Cua Driver, a daemon, or separately installed MCP tools already exist.
-- Ship one self-contained `Luce.app`: the control helper and GUI runtime are
+- Ship one self-contained `Polymux.app`: the control helper and GUI runtime are
   signed nested components inside that bundle, not separate applications,
   globally installed CLIs, or binaries copied into the user's home directory.
   Pairing authenticates the server/device; commands/files and native GUI access
@@ -74,7 +76,7 @@ its own memory, history, and scheduled routines.
   Keychain credentials, server-side revocation, serialized calls without replay,
   direct-chat/voice tool routing, connection-time onboarding, and live local
   readiness checks. The macOS build embeds Cua Driver 0.34.1 and an explicitly
-  registered, windowless companion entry in the same Luce executable. A local
+  registered, windowless companion entry in the same Polymux executable. A local
   process lock prevents competing foreground/background controllers. See
   `CONTROL.md` for enrollment, ownership, cleanup and verification commands.
 - The existing SSH/Cua route remains an optional preconfigured route. No service
@@ -106,7 +108,7 @@ its own memory, history, and scheduled routines.
 
 Every agent has a **stable identity token** (`agentID`). The name is just a
 display label — mutable, non-unique, never a key. Custom animated avatars are
-now an intentional part of Luce's identity and activity feedback (section 4.2).
+now an intentional part of Polymux's identity and activity feedback (section 4.2).
 
 ### Decisions
 
@@ -122,7 +124,7 @@ now an intentional part of Luce's identity and activity feedback (section 4.2).
 | D8 | UI targets the newest iOS/macOS (iOS 27 / macOS 27 today) | Decided |
 | D9 | No shell `grep`; FTS5 is the lexical side | Decided |
 | D10 | Composer uses `TextField(axis:.vertical)` + `lineLimit(1...7)` | Decided |
-| D11 | Official Xcode project, checked in (`Luce.xcodeproj`) | Decided |
+| D11 | Official Xcode project, checked in (`Polymux.xcodeproj`) | Decided |
 | D12 | ChatPane content is a centered column with a max width | Decided |
 | D13 | Durable event log + cursor replay are core, not optional | Decided |
 | D14 | Persistent agents remain the target; next-stage priorities are interaction and state feedback, with the remaining sequence proposed in section 6 | Decided |
@@ -141,15 +143,15 @@ now an intentional part of Luce's identity and activity feedback (section 4.2).
 | D27 | Non-media attachments render as a file row and are downloadable (save/share, Quick Look where supported) | Decided |
 | D28 | Native-first: use SwiftUI / Apple framework components; build custom only where none exists | Decided |
 | D29 | Agent runtime is PiG embedded in-process; mirror Rakazo's upstream-Pi usage in idiomatic Go | Decided |
-| D30 | Luce owns agent definitions; a PiG `coding.Session` is scoped to `(agentID, conversationID)`, with direct and group contexts separated | Decided |
+| D30 | Polymux owns agent definitions; a PiG `coding.Session` is scoped to `(agentID, conversationID)`, with direct and group contexts separated | Decided |
 | D31 | App↔server networking uses Tailscale; no app-level token (tailnet interface binding + ACLs are the access control) | Decided |
 | D32 | Use PiG core (`coding`, `agent`, `ai`) + `mcp`; custom composition/tools; use `durable` for documents/tasks when integrated, not as a second chat loop | Decided |
 | D33 | Memory follows Rakazo's pattern: scoped versioned documents + save/recall/forget tools + capped context injection, stored in `durable` documents behind a provider interface | Decided |
 | D34 | Indexing is owned by the Go server: it spawns `llama-server` for embeddings and shells out to `media-text` for OCR and transcription; no Python sidecar | Decided |
-| D35 | Keep Luce's current UI; selectively adopt Rakazo agent behaviour, not UI or exhaustive feature parity | Decided |
+| D35 | Keep Polymux's current UI; selectively adopt Rakazo agent behaviour, not UI or exhaustive feature parity | Decided |
 | D36 | Animations must reflect actual agent activity; reuse the full existing animation vocabulary with meaningful state/event mappings | Decided |
 | D37 | Group replies: explicit mentions select responders, `@everyone` selects all, otherwise an explicit group lead responds and can hand off | Decided |
-| D38 | Keep PiG JSONL for model context and Luce SQLite for product history; retain current scoped session persistence | Decided |
+| D38 | Keep PiG JSONL for model context and Polymux SQLite for product history; retain current scoped session persistence | Decided |
 | D39 | Search vectors use 512 dimensions, matching the current implementation | Decided |
 | D40 | Permission decisions use current user requests and revisable learned preferences, asking in ordinary text when needed; no mandatory approval UI or exact confirmation command | Decided |
 | P1 | Agent creation sends one tool-free introduction that states how it read its role and asks for what it needs, then waits unless an initial task was explicitly supplied. A deterministic, token-free first-run card ("What do you want me on first?") is offered once per untouched direct chat | Decided |
@@ -163,7 +165,7 @@ now an intentional part of Luce's identity and activity feedback (section 4.2).
 
 | Layer | Path | Notes |
 | --- | --- | --- |
-| Swift app | `apps/Luce` | SwiftUI, iOS + macOS |
+| Swift app | `apps/Polymux` | SwiftUI, iOS + macOS |
 | Swift libraries | `packages/` | Shared UI, client, models, and the `media-text` extraction tool |
 | Wire contract | `contracts/` | JSON Schema source of truth; generated Swift and Go types |
 | Go server | `apps/server` | Agent loop via PiG SDK; owns search and spawns the embedding server |
@@ -175,7 +177,7 @@ now an intentional part of Luce's identity and activity feedback (section 4.2).
 - **Apple silicon only** (D25) — macOS 27 dropped Intel support; the mac mini
   server is M-series.
 - Go modules are wired by `go.work`; there is no root module. Build with
-  `go build -tags sqlite_fts5 github.com/CarlvinceTan/luce/apps/...`.
+  `go build -tags sqlite_fts5 github.com/CarlvinceTan/polymux/apps/...`.
 - Swift libraries are declared by the root `Package.swift`.
 - State: `@Observable` stores; no TCA unless you ask for it. One store per
   feature, not one god object.
@@ -199,10 +201,10 @@ not an example from an older Pi release, is the API reference.
   `coding.Runtime` and `coding.Session`. Sessions are opened lazily.
 - `Definition` persists the agent's model, prompt, builtin tool names, and MCP
   configuration and trusted Markdown skill paths. `Role` is a display label, not the system prompt. A blank
-  prompt uses Luce's plain-text assistant fallback.
+  prompt uses Polymux's plain-text assistant fallback.
 - The wrapper currently exposes `Send`, `Abort`, `Path`, and `Close`. PiG's
   steering, follow-up, compaction, and other controls are SDK possibilities,
-  not already exposed Luce features.
+  not already exposed Polymux features.
 - `SendContent` is synchronous. A synchronous `Session.Subscribe` translates
   `agent.MessageUpdateEvent` / `ai.TextDeltaEvent` and
   `agent.ToolExecutionStartEvent`; the separate `Events()` channel is drained.
@@ -211,7 +213,7 @@ not an example from an older Pi release, is the API reference.
   API-created agents receive read/write/edit/bash/find/ls after their tool-free
   introduction; seeded agents retain their configured selection. Ordinary and
   automatic turns retain configured capabilities. Every replying agent receives
-  Luce's `show_html` extra tool, except private review output uses `finish_review`.
+  Polymux's `show_html` extra tool, except private review output uses `finish_review`.
   Builtin selection is not a policy gate for MCP or extra tools.
 - MCP supports stdio and Streamable HTTP, with `server__tool` names and
   text/image/structured results. Direct-chat `manage_integrations` registers or
@@ -233,18 +235,18 @@ of Pi; PiG's higher-level packages are used only where they earn it.
 
 | Concern | Decision |
 | --- | --- |
-| Agent composition | custom: Luce agent registry (role, model, prompt, tools) |
+| Agent composition | custom: Polymux agent registry (role, model, prompt, tools) |
 | Tools / integrations | custom `agent.AgentTool` + `mcp` client |
-| Routines / tasks | Luce SQLite queue today; PiG `durable` checkpointed tasks remain later |
-| Memory documents | PiG `durable` documents, behind a Luce provider |
-| App state, event log, search | custom SQLite (`luce.db`), not `durable` |
+| Routines / tasks | Polymux SQLite queue today; PiG `durable` checkpointed tasks remain later |
+| Memory documents | PiG `durable` documents, behind a Polymux provider |
+| App state, event log, search | custom SQLite (`polymux.db`), not `durable` |
 
-Custom tools implement `agent.AgentTool`; Luce owns their policy, routing, and
+Custom tools implement `agent.AgentTool`; Polymux owns their policy, routing, and
 product effects. PiG owns model execution. Use public packages only; no shelling
 out to `pig`, importing its `internal`, or adding a terminal UI to the server.
 
 **Persistence ownership is settled for this stage (D38):** PiG JSONL is the
-model transcript; `luce.db` owns app-facing history, events, profiles, and search.
+model transcript; `polymux.db` owns app-facing history, events, profiles, and search.
 Memory uses `<dataDir>/memory/<agentID>/memory.sqlite`, with hashed conversation
 keys and lazy PiG durable sessions. There is no second authoritative chat database.
 The client never sees PiG types. Do not add a third authoritative chat transcript
@@ -253,8 +255,8 @@ or migrate to `NoSession` while adding agent behaviour.
 **Durable integration needs an explicit adapter:** PiG `durable/harness` is a
 separate conversation/task harness, not a cron plugin for `coding.Session`.
 Document persistence, revisions, deletion and restart are proven in adapter tests;
-custom checkpointed task phases remain unimplemented. Luce still owns
-cron/timezones, trigger routing, permissions, and delivery. Map Luce string IDs
+custom checkpointed task phases remain unimplemented. Polymux still owns
+cron/timezones, trigger routing, permissions, and delivery. Map Polymux string IDs
 to durable's IDs and scopes deliberately. Cross-database publication needs
 idempotent receipts/outbox reconciliation, not an assumed atomic transaction.
 
@@ -269,7 +271,7 @@ Idiomatic Go:
   package-level globals; `log/slog`; `errgroup` for cross-agent fan-out.
 - Pin the PiG version behind our own interface so a pre-stable upgrade doesn't
   ripple through the app.
-- Future checkpointed tasks can use PiG's `durable` (D32); product state stays Luce-owned.
+- Future checkpointed tasks can use PiG's `durable` (D32); product state stays Polymux-owned.
 
 PiG runs with the server's OS permissions and provides no sandbox. Tailscale
 protects ingress, not tool execution. Arbitrary bash can bypass path-level tool
@@ -281,13 +283,13 @@ Reference snapshot: [Rakazo `62ab90b`](https://github.com/elie222/rakazo/tree/62
 Its current `packages/adapters/src/pi-runtime.ts` uses Pi's lower-level `Agent`,
 while its executor owns identity, context, tools, approvals, runs, and routing.
 JSONL recording is optional there. The old `createAgentSession()` mapping is not
-an exact description of this snapshot; Luce keeps its chosen `coding.Session`
+an exact description of this snapshot; Polymux keeps its chosen `coding.Session`
 integration rather than chasing Rakazo's internal API choices.
 
 Useful patterns: a tool-free creation intro, truthful capability inventories,
 ID-addressed peer messages, bounded group handoffs, distinct ephemeral helpers
 and persistent agents, scoped memory, and durable run outcomes. Rakazo also
-supports HTML artifacts through `attach_file`; Luce's dedicated `show_html`
+supports HTML artifacts through `attach_file`; Polymux's dedicated `show_html`
 tool and inline renderer are intentional, not a parity exception to remove.
 
 Not required: Rakazo's dashboard, computer viewer, artifact browser, group UI
@@ -298,7 +300,7 @@ styling, cloud sandbox catalogue, integration marketplace, or every builtin tool
 Follow Rakazo's memory pattern, but store locally instead of in a cloud provider:
 
 - **Versioned documents**, each `{ scope, ownerID, path, content, revision,
-  updatedAt }`. Luce scopes are agent-private, user/shared, and group. These are
+  updatedAt }`. Polymux scopes are agent-private, user/shared, and group. These are
   product scopes mapped by the provider, not PiG's native scope enum.
 - **Proposed default (P3):** private agent memory stays private. Direct chats
   can use explicitly permitted user memory; groups receive group/shared memory,
@@ -397,7 +399,7 @@ messages, creation intros, and peer work. Routines remain a later-stage consumer
   full HTML source, or unbounded tool outputs. `show_html` activity can be
   reported without exposing its arguments.
 
-These payloads are defined in `contracts/luce.schema.json`. `waiting_input` is
+These payloads are defined in `contracts/polymux.schema.json`. `waiting_input` is
 represented but no new approval flow is introduced in this slice.
 
 ### Core types (current)
@@ -469,7 +471,7 @@ the chat toolbar.
 
 ### SidePane
 
-Agents and groups remain contacts in Luce's current messaging layout, without
+Agents and groups remain contacts in Polymux's current messaging layout, without
 nested conversations or Rakazo-specific navigation.
 
 - Width is user-adjustable with a comfortable default; remember the last width.
@@ -591,7 +593,7 @@ it and it stops and listens.
   agent/group, handle casual speech themselves, and consult workers with their
   configured capabilities in isolated private turns. No private speech enters
   typed chat/history unless a worker deliberately publishes through its tools.
-- **Invocation:** mic button in the composer today; wake word ("Hey Luce") is a
+- **Invocation:** mic button in the composer today; wake word ("Hey Polymux") is a
   later option. When active, present a **Siri-style voice overlay** — live
   transcript, animated waveform/orb, and a clear cancel affordance.
 - **Full-duplex evaluation:** exercise the implemented VAD, echo cancellation,
@@ -789,17 +791,17 @@ make media semantically searchable.
   are not acceptance criteria until verified against the selected artifact.
 - Runtime (D3, D34): the Go server spawns `llama-server` (llama.cpp) on a
   private loopback port with `--embeddings`, waits for `/health`, and points the
-  embedder at it. `LUCE_LLAMA` names the binary, `LUCE_EMBED_MODEL` the GGUF
-  (unset uses llama.cpp's bundled EmbeddingGemma download), and `LUCE_EMBED_URL`
+  embedder at it. `POLYMUX_LLAMA` names the binary, `POLYMUX_EMBED_MODEL` the GGUF
+  (unset uses llama.cpp's bundled EmbeddingGemma download), and `POLYMUX_EMBED_URL`
   points at an already-running OpenAI-compatible endpoint instead.
 - Extraction (D34): the `media-text` CLI does OCR through Vision and audio
   transcription through the current Speech APIs. Build it with
-  `swift build --product media-text` and point `LUCE_EXTRACTOR` at it. The
+  `swift build --product media-text` and point `POLYMUX_EXTRACTOR` at it. The
   server runs it per attachment, off the request path.
 - Either provider is optional. With no embedder search is lexical only; with
   no extractor, media is stored without searchable text. Both are local: the
   spawned model/extractor run on the mac mini (D25). A configured external
-  `LUCE_EMBED_URL` can egress; locality depends on the chosen endpoint.
+  `POLYMUX_EMBED_URL` can egress; locality depends on the chosen endpoint.
 - Accepted trade-off: media is searchable through extracted text, not through
   its pixels or audio directly.
 
@@ -839,7 +841,7 @@ subsequent user request; 6C–6F remain proposed, not part of this implementatio
 ### Stage 6A — Execution state and live animation (implemented)
 
 Verified on 9 Oct 2026: contract generation check, all Go packages with the race
-detector, 58 LuceKit tests, 15 AvatarKit tests, 14 native voice tests, and
+detector, 58 PolymuxKit tests, 15 AvatarKit tests, 14 native voice tests, and
 macOS/iOS Simulator builds. Live GUI animation timing and real-model coordination are not visually
 or end-to-end verified by these checks.
 
@@ -904,7 +906,7 @@ origin rather than additional work beyond the implementation above.
 **Creation and first turn (P1):**
 
 - Keep existing agent/profile/avatar CRUD. Build the runtime prompt from the
-  stored name/role/prompt plus Luce's behaviour policy, conversation scope,
+  stored name/role/prompt plus Polymux's behaviour policy, conversation scope,
   time context, and truthful available capabilities. Never treat the display
   role as an instruction substitute or imply unavailable tools.
 - Create the stable identity/direct conversation and persist a `created` run
@@ -935,7 +937,7 @@ origin rather than additional work beyond the implementation above.
 - Proposed `handoff_agent` tool takes a target ID and task, records a visible
   causal handoff, then ends the source's stage. Mere prose/quoting an `@name`
   must not dispatch work. Do not keep the old text-scanning trigger once the
-  structured path lands; Luce is pre-release.
+  structured path lands; Polymux is pre-release.
 - Preserve a bounded chain: proposed at most one reply per member per source
   user turn, no self-handoff/back-and-forth acknowledgements, and a chain-wide
   time/tool/token budget. Membership changes are rechecked before dispatch.
@@ -960,18 +962,18 @@ delivery replay.
 
 ### Stage 6C — Capabilities and integrations
 
-- Extend the Luce definition/configuration path for model, tool policy, MCP
+- Extend the Polymux definition/configuration path for model, tool policy, MCP
   selection, and curated skill references. Current profile PATCH edits only
   name/role/prompt. Reuse existing administration surfaces where suitable;
   a new tools dashboard is not a prerequisite.
-- Keep a Luce-owned capability catalogue. Distinguish builtin coding tools,
-  Luce tools, MCP tools, and procedural skills; include only genuinely available
+- Keep a Polymux-owned capability catalogue. Distinguish builtin coding tools,
+  Polymux tools, MCP tools, and procedural skills; include only genuinely available
   capabilities. Filter authorization at execution as well as advertisement.
 - Add scoped `search_history` / `read_history` tools over existing retrieval,
   with message citations and bounded neighbouring context. Group retrieval
   cannot search member DMs. D9 restricts product search, not a selected PiG
   coding tool's filesystem-search capability.
-- Load curated `SKILL.md` descriptions first and bodies on demand, with Luce
+- Load curated `SKILL.md` descriptions first and bodies on demand, with Polymux
   ownership/trust boundaries. Do not enable ambient project/home resources
   merely by removing `NoResources`; skill text cannot grant tool permissions.
   Only explicitly registered files are active; text cannot grant OS permissions.
@@ -992,7 +994,7 @@ or an HTML card. Unauthorized/unavailable capabilities fail clearly.
 ### Stage 6D — Memory, open work, and durable integration
 
 - First make a bounded PiG v0.4.1 integration spike: durable SQLite/document
-  revisions, Luce ID/scope mapping, a custom task calling the existing runtime,
+  revisions, Polymux ID/scope mapping, a custom task calling the existing runtime,
   restart handling, and idempotent receipt publication. No second model loop.
   If the adapter cannot satisfy D30/D32/D38, reopen that decision before building
   memory/routines around a competing harness.
@@ -1012,7 +1014,7 @@ that private fact unless its disclosure scope explicitly allows it.
 
 **Memory/integration slice (implemented 2026-10-10):**
 
-- Use PiG durable for stable documents, not a replacement model harness. Luce's
+- Use PiG durable for stable documents, not a replacement model harness. Polymux's
   adapter adds exact opaque revision checks because v0.4.1 has no public native
   document-edit CAS API. Creating requires an empty revision; edits/forget require
   the recalled current revision. Limits are 64 documents per agent/conversation,
@@ -1086,7 +1088,7 @@ Rakazo was rechecked at `2c54c2b6827cc8988cc0ad9c904748db22710eff`:
 relay substantive peer results, while `packages/adapters/src/schedule-tools.ts`
 and its scratchpad tools supply scheduled work and unfinished-work context.
 This inspection did not establish a Grok-like idle work-discovery loop there.
-Luce adds its own bounded review behaviour rather than claiming source parity.
+Polymux adds its own bounded review behaviour rather than claiming source parity.
 
 **Richer routines comparison:** Rakazo's inspected scheduling tools support
 five-field cron plus timezone-aware next fires, elapsed presets and one-shot/
@@ -1094,7 +1096,7 @@ delayed work. [Grok Bot's FAQ](https://docs.x.ai/grok-bot/faq) describes a routi
 as a workflow assigned to one Bot, running on a schedule or supported event,
 with skills describing how to perform it and cloud execution continuing while
 the app is closed. This is distinct from [Grok Tasks](https://grok.com/tasks).
-Luce now runs tool-using one-shot and recurring workflows with optional
+Polymux now runs tool-using one-shot and recurring workflows with optional
 wall-clock/DST-correct daily or weekly schedules; calendar cron expressions and
 external event triggers remain later work.
 
@@ -1159,13 +1161,13 @@ external event triggers remain later work.
   completion of the full 6D/6F checkpoint/cron design.
   Server availability is required. It does not add iOS push notifications.
 - Verified with schema/codegen checks, `go vet`, uncached shuffled Go race tests,
-  `env -u LUCE_LIVE_URL swift test`, and unsigned macOS/iOS Simulator builds.
+  `env -u POLYMUX_LIVE_URL swift test`, and unsigned macOS/iOS Simulator builds.
   Regressions cover approval, quiet/deduplicated output, peer scratchpad isolation,
   restart continuation, cancellation, coalescing, scheduler fairness, active-routine
   discovery, UTC offsets, automatic-result context and native cache/animation replay.
   Live-model initiative, real-time cadence and native visual timing remain unverified.
 
-- Use the proven durable adapter for task/checkpoint persistence. Add Luce's
+- Use the proven durable adapter for task/checkpoint persistence. Add Polymux's
   routine definition: owner/target conversation, prompt, enabled state,
   schedule/trigger details, timezone, next fire, overlap/missed-run policy,
   limits, and cancellation/retry semantics.
@@ -1204,8 +1206,8 @@ or delivery. Cancelled routines do not fire and failures stay inspectable.
   tests; routine clock/DST/missed-fire/overlap tests.
 - Schedule/quoting/bounding edge cases borrowed from Rakazo's behavioural suites
   (invalid routine inputs, quoted-reply delimiter escaping, rune-safe output
-  truncation, and an omitted empty memory block) where Luce has the same seam.
-  UI-level Playwright parity is not portable to Luce's native client.
+  truncation, and an omitted empty memory block) where Polymux has the same seam.
+  UI-level Playwright parity is not portable to Polymux's native client.
 - First-run card coverage: one post per untouched chat, withheld after a user
   turn, answer recorded with its deterministic acknowledgment, unknown and
   repeated answers refused, and a dismissed card staying quiet.
@@ -1225,7 +1227,7 @@ or delivery. Cancelled routines do not fire and failures stay inspectable.
 
 ## 7. Open decisions (need your call)
 
-Already settled: keep Luce's current UI (D35); state-linked animations (D36);
+Already settled: keep Polymux's current UI (D35); state-linked animations (D36);
 mentions + explicit group lead (D37). Source-established choices now recorded:
 scoped PiG JSONL persistence (D30/D38), 512-dimensional search (D39), and
 image/audio extraction before video content indexing.
@@ -1292,7 +1294,7 @@ Source anchors for the next implementation:
   [PiG v0.4.1](https://github.com/MichaelKinsy/PiG/tree/v0.4.1).
 - Existing execution/group/HTML: `apps/server/internal/server/server.go`,
   `group.go`, `html.go`; persistence/recovery: `apps/server/internal/store/`.
-- Wire/cache: `contracts/luce.schema.json`,
-  `packages/LuceKit/Sources/LuceKit/ChatStore.swift`, `SidebarStore.swift`.
-- Presentation: `apps/Luce/Sources/Views/ShellView.swift`, `ChatPane.swift`,
-  `apps/Luce/Sources/Avatar/`, and `packages/AvatarKit/Sources/AvatarKit/States.swift`.
+- Wire/cache: `contracts/polymux.schema.json`,
+  `packages/PolymuxKit/Sources/PolymuxKit/ChatStore.swift`, `SidebarStore.swift`.
+- Presentation: `apps/Polymux/Sources/Views/ShellView.swift`, `ChatPane.swift`,
+  `apps/Polymux/Sources/Avatar/`, and `packages/AvatarKit/Sources/AvatarKit/States.swift`.

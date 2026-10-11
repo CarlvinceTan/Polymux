@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 type profileFactory struct {
@@ -106,7 +106,7 @@ func profileReply(t *testing.T, api *Server, thread, user string) string {
 
 func TestProfileEditAppliesAfterActiveReply(t *testing.T) {
 	dir := t.TempDir()
-	s, err := store.Open(t.Context(), filepath.Join(dir, "luce.db"))
+	s, err := store.Open(t.Context(), filepath.Join(dir, "polymux.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestProfileEditAppliesAfterActiveReply(t *testing.T) {
 
 func TestEditedDefaultProfileSurvivesStartupSeeding(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "luce.db")
+	path := filepath.Join(dir, "polymux.db")
 	config := Config{DataDir: dir, Definitions: []agentruntime.Definition{{Agent: contract.Agent{ID: "assistant", Name: "Assistant", Role: "Original", Model: "provider/default"}, Prompt: "Original instructions", Tools: []string{"read", "bash"}}}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	s, err := store.Open(t.Context(), path)
 	if err != nil {

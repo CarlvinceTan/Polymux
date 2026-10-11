@@ -23,13 +23,13 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/device"
-	"github.com/CarlvinceTan/luce/apps/server/internal/memory"
-	"github.com/CarlvinceTan/luce/apps/server/internal/search"
-	"github.com/CarlvinceTan/luce/apps/server/internal/settings"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/memory"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/search"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/settings"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 type Factory interface {
@@ -784,9 +784,9 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	hits, semantic, err := s.config.Index.Search(ctx, t.ID, q)
 	if semantic {
-		w.Header().Set("X-Luce-Search", "hybrid")
+		w.Header().Set("X-Polymux-Search", "hybrid")
 	} else {
-		w.Header().Set("X-Luce-Search", "lexical")
+		w.Header().Set("X-Polymux-Search", "lexical")
 	}
 	s.respond(w, hits, err)
 }

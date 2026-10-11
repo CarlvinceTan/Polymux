@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 func avatarDesign() contract.AvatarDesign {
@@ -46,7 +46,7 @@ func avatarRequest(t *testing.T, api *Server, path string, avatar contract.Avata
 func TestMissingAvatarGetsPersistentServerDefault(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	db, err := store.Open(t.Context(), filepath.Join(dir, "luce.db"))
+	db, err := store.Open(t.Context(), filepath.Join(dir, "polymux.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestMissingAvatarGetsPersistentServerDefault(t *testing.T) {
 
 func TestAvatarPersistsWithoutReplacingProfileOrSession(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "luce.db")
+	path := filepath.Join(dir, "polymux.db")
 	config := Config{DataDir: dir, Model: "provider/default", Definitions: []agentruntime.Definition{{Agent: contract.Agent{ID: "assistant", Name: "Assistant"}, Prompt: "Default", Tools: []string{"read"}}}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	open := func() (*Server, *definitionFactory) {
 		t.Helper()

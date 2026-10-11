@@ -13,10 +13,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/memory"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/memory"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 func deleteRequest(t *testing.T, api *Server, id string, status int) {
@@ -32,7 +32,7 @@ func deleteRequest(t *testing.T, api *Server, id string, status int) {
 
 func TestDeleteAgentKeepsOthersAndSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "luce.db")
+	path := filepath.Join(dir, "polymux.db")
 	config := Config{DataDir: dir, Definitions: []agentruntime.Definition{{Agent: contract.Agent{ID: "assistant", Name: "Assistant"}, Prompt: "Original", Tools: []string{}}, {Agent: contract.Agent{ID: "other", Name: "Other"}, Prompt: "Keep other", Tools: []string{}}}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	open := func() *Server {
 		t.Helper()
@@ -142,7 +142,7 @@ func TestDeleteAgentKeepsOthersAndSurvivesRestart(t *testing.T) {
 
 func TestDeleteStopsActiveReplyAndRejectsQueuedSends(t *testing.T) {
 	dir := t.TempDir()
-	s, err := store.Open(t.Context(), filepath.Join(dir, "luce.db"))
+	s, err := store.Open(t.Context(), filepath.Join(dir, "polymux.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

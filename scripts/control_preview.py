@@ -7,8 +7,8 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = Path.home() / "Applications" / "LuceControlPreview.app"
-BUNDLE = "com.test.luce-control-preview"
+APP = Path.home() / "Applications" / "PolymuxControlPreview.app"
+BUNDLE = "com.test.polymux-control-preview"
 
 
 def owned():
@@ -16,7 +16,7 @@ def owned():
         return False
     try:
         info = plistlib.loads((APP / "Contents/Info.plist").read_bytes())
-        return info.get("CFBundleIdentifier") == BUNDLE and info.get("LuceFixtureOwned") is True
+        return info.get("CFBundleIdentifier") == BUNDLE and info.get("PolymuxFixtureOwned") is True
     except (OSError, ValueError):
         return False
 
@@ -35,22 +35,22 @@ def main():
         raise SystemExit(f"Fixture already exists. Close it and run this script with --clean first: {APP}")
     if args.clean:
         return
-    subprocess.run(["swift", "build", "--target", "LuceControl"], cwd=ROOT, check=True, timeout=120)
+    subprocess.run(["swift", "build", "--target", "PolymuxControl"], cwd=ROOT, check=True, timeout=120)
     products = Path(subprocess.check_output(["swift", "build", "--show-bin-path"], cwd=ROOT, text=True, timeout=30).strip())
     temp = Path(tempfile.gettempdir()) / "opencode"
-    with tempfile.TemporaryDirectory(prefix="luce-preview-", dir=temp if temp.is_dir() else None) as directory:
+    with tempfile.TemporaryDirectory(prefix="polymux-preview-", dir=temp if temp.is_dir() else None) as directory:
         bundle = Path(directory) / APP.name
-        executable = bundle / "Contents/MacOS/LuceControlPreview"
+        executable = bundle / "Contents/MacOS/PolymuxControlPreview"
         executable.parent.mkdir(parents=True)
-        sources = [ROOT / "apps/Luce/Sources/Control/ControlCoordinator.swift",
-                   ROOT / "apps/Luce/Sources/Control/ControlSettings.swift",
-                   ROOT / "apps/Luce/Sources/Views/InputFocus.swift",
-                   ROOT / "apps/Luce/Tests/ControlTests/SettingsPreview.swift"]
+        sources = [ROOT / "apps/Polymux/Sources/Control/ControlCoordinator.swift",
+                   ROOT / "apps/Polymux/Sources/Control/ControlSettings.swift",
+                   ROOT / "apps/Polymux/Sources/Views/InputFocus.swift",
+                   ROOT / "apps/Polymux/Tests/ControlTests/SettingsPreview.swift"]
         subprocess.run(["swiftc", "-swift-version", "6", "-parse-as-library", "-I", str(products),
-                        "-L", str(products), "-lLuceControl", *map(str, sources), "-o", str(executable)],
+                        "-L", str(products), "-lPolymuxControl", *map(str, sources), "-o", str(executable)],
                        cwd=ROOT, check=True, timeout=120)
         info = {"CFBundleIdentifier": BUNDLE, "CFBundleExecutable": executable.name,
-                "CFBundlePackageType": "APPL", "LuceFixtureOwned": True}
+                "CFBundlePackageType": "APPL", "PolymuxFixtureOwned": True}
         (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
         subprocess.run(["codesign", "--force", "--sign", "-", str(bundle)], check=True, timeout=30)
         APP.parent.mkdir(parents=True, exist_ok=True)

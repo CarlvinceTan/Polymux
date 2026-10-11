@@ -7,9 +7,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/memory"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/memory"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 func TestMemoryScope(t *testing.T) {

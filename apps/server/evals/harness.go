@@ -15,16 +15,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/server"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
-	"github.com/CarlvinceTan/luce/apps/server/internal/testenv"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/server"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/testenv"
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 )
 
-// Harness runs the real Luce server against a model emulator.
+// Harness runs the real Polymux server against a model emulator.
 type Harness struct {
 	t            *testing.T
 	id           string

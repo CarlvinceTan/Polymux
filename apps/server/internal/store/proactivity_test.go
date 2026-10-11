@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 func futureTime() time.Time { return time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second) }

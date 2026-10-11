@@ -19,14 +19,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/device"
-	"github.com/CarlvinceTan/luce/apps/server/internal/embedproc"
-	"github.com/CarlvinceTan/luce/apps/server/internal/push"
-	"github.com/CarlvinceTan/luce/apps/server/internal/search"
-	"github.com/CarlvinceTan/luce/apps/server/internal/server"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/embedproc"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/push"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/search"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/server"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
 const (
@@ -49,9 +49,9 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "device" {
 		return runDevice(os.Args[2:])
 	}
-	listen := flag.String("listen", os.Getenv("LUCE_LISTEN"), "tailnet IP:port")
-	dev := flag.Bool("dev", os.Getenv("LUCE_DEV") == "1", "allow an explicit loopback listener")
-	dir := flag.String("data", os.Getenv("LUCE_DATA_DIR"), "data directory")
+	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "tailnet IP:port")
+	dev := flag.Bool("dev", os.Getenv("POLYMUX_DEV") == "1", "allow an explicit loopback listener")
+	dir := flag.String("data", os.Getenv("POLYMUX_DATA_DIR"), "data directory")
 	deviceListen := flag.String("device-listen", "", "TLS device listener (defaults to backend port + 2)")
 	flag.Parse()
 	if *dir == "" {
@@ -59,7 +59,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		*dir = filepath.Join(home, "Library", "Application Support", "Luce", "server")
+		*dir = filepath.Join(home, "Library", "Application Support", "Polymux", "server")
 	}
 	if *listen == "" {
 		address, err := tailnet()
@@ -79,7 +79,7 @@ func run() error {
 		return err
 	}
 	defer lock.Close()
-	s, err := store.Open(ctx, filepath.Join(*dir, "luce.db"))
+	s, err := store.Open(ctx, filepath.Join(*dir, "polymux.db"))
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func run() error {
 	}
 	defer runtime.Close()
 	definitions := defaults(model)
-	if path := os.Getenv("LUCE_AGENTS"); path != "" {
+	if path := os.Getenv("POLYMUX_AGENTS"); path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -154,17 +154,17 @@ func run() error {
 	}
 	client := &http.Client{Timeout: 2 * time.Minute}
 	index := &search.Index{Store: s, Log: log}
-	if bin := os.Getenv("LUCE_EXTRACTOR"); bin != "" {
+	if bin := os.Getenv("POLYMUX_EXTRACTOR"); bin != "" {
 		index.Extractor = &search.SubprocessExtractor{Bin: bin, Timeout: extractTimeout}
 	}
-	if bin := os.Getenv("LUCE_LLAMA"); bin != "" {
-		process, err := embedproc.Start(ctx, embedproc.Config{Bin: bin, Model: os.Getenv("LUCE_EMBED_MODEL"), Log: log})
+	if bin := os.Getenv("POLYMUX_LLAMA"); bin != "" {
+		process, err := embedproc.Start(ctx, embedproc.Config{Bin: bin, Model: os.Getenv("POLYMUX_EMBED_MODEL"), Log: log})
 		if err != nil {
 			return err
 		}
 		defer process.Close()
 		index.Embedder = &search.HTTPEmbedder{URL: process.URL(), Model: embedModel, Dims: embedDims, Client: client}
-	} else if url := os.Getenv("LUCE_EMBED_URL"); url != "" {
+	} else if url := os.Getenv("POLYMUX_EMBED_URL"); url != "" {
 		index.Embedder = &search.HTTPEmbedder{URL: url, Model: embedModel, Dims: embedDims, Client: client}
 	}
 	if index.Embedder != nil {
@@ -174,8 +174,8 @@ func run() error {
 	}
 	log.Info("search providers", "semantic", index.Embedder != nil, "extractor", index.Extractor != nil)
 	var sender server.PushSender
-	if path := os.Getenv("LUCE_APNS_KEY_FILE"); path != "" {
-		sender, err = push.Open(push.Config{Path: path, KeyID: os.Getenv("LUCE_APNS_KEY_ID"), TeamID: os.Getenv("LUCE_APNS_TEAM_ID"), Topic: "com.carlvince.luce"})
+	if path := os.Getenv("POLYMUX_APNS_KEY_FILE"); path != "" {
+		sender, err = push.Open(push.Config{Path: path, KeyID: os.Getenv("POLYMUX_APNS_KEY_ID"), TeamID: os.Getenv("POLYMUX_APNS_TEAM_ID"), Topic: "com.flarehq.polymux.app"})
 		if err != nil {
 			return err
 		}
@@ -190,7 +190,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log.Info("Luce is listening", "address", listener.Addr(), "data", *dir, "model", model)
+	log.Info("Polymux is listening", "address", listener.Addr(), "data", *dir, "model", model)
 	done := make(chan error, 2)
 	go func() { done <- httpServer.Serve(listener) }()
 	go func() { done <- deviceServer.Serve(tls.NewListener(deviceSocket, pairings.TLSConfig())) }()
@@ -211,7 +211,7 @@ func run() error {
 
 func defaults(model string) []agentruntime.Definition {
 	return []agentruntime.Definition{
-		{Agent: contract.Agent{ID: "assistant", Name: "Assistant", Role: "Personal assistant", Model: model}, Prompt: "You are Luce, a helpful persistent personal assistant. Write replies as natural plain text without Markdown formatting. Be concise and candid. Tools have the user's OS permissions; use them only when needed to fulfill the user's request.", Tools: []string{"read", "write", "edit", "bash", "find", "ls"}},
+		{Agent: contract.Agent{ID: "assistant", Name: "Assistant", Role: "Personal assistant", Model: model}, Prompt: "You are Polymux, a helpful persistent personal assistant. Write replies as natural plain text without Markdown formatting. Be concise and candid. Tools have the user's OS permissions; use them only when needed to fulfill the user's request.", Tools: []string{"read", "write", "edit", "bash", "find", "ls"}},
 		{Agent: contract.Agent{ID: "research", Name: "Research", Role: "Research assistant", Model: model}, Prompt: "You are a careful research assistant. Distinguish verified facts from uncertainty and provide sources when available. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "bash", "find", "ls"}},
 		{Agent: contract.Agent{ID: "coding", Name: "Coding", Role: "Software engineer", Model: model}, Prompt: "You are a pragmatic software engineer. Make focused changes, preserve unrelated work, and verify your results. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "write", "edit", "bash", "find", "ls"}},
 	}
@@ -229,7 +229,7 @@ func tailnet() (string, error) {
 			return p.Addr().String(), nil
 		}
 	}
-	return "", fmt.Errorf("no Tailscale interface found; start Tailscale or set an explicit loopback LUCE_LISTEN and LUCE_DEV=1")
+	return "", fmt.Errorf("no Tailscale interface found; start Tailscale or set an explicit loopback POLYMUX_LISTEN and POLYMUX_DEV=1")
 }
 func validateListen(address string, dev bool) error {
 	host, _, err := net.SplitHostPort(address)

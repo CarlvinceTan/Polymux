@@ -11,8 +11,8 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// NewDurableStorage opens the durable SQLite storage for a Luce data directory. It is its own
-// database, so durable's schema and Luce's product schema stay independent.
+// NewDurableStorage opens the durable SQLite storage for a Polymux data directory. It is its own
+// database, so durable's schema and Polymux's product schema stay independent.
 func NewDurableStorage(dir string) (durable.Storage, func() error, error) {
 	db, err := sql.Open("sqlite3", "file:"+filepath.Join(dir, "durable.db")+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
@@ -26,9 +26,9 @@ func NewDurableStorage(dir string) (durable.Storage, func() error, error) {
 	return storage, db.Close, nil
 }
 
-// sqliteDatabase adapts Luce's *sql.DB to durable's SQLite facade. Durable requires unrelated
+// sqliteDatabase adapts Polymux's *sql.DB to durable's SQLite facade. Durable requires unrelated
 // operations and other transactions to queue behind a running transaction, in call order, so
-// every operation takes the lock. Luce's own database keeps its single connection separate.
+// every operation takes the lock. Polymux's own database keeps its single connection separate.
 type sqliteDatabase struct {
 	mu sync.Mutex
 	db *sql.DB

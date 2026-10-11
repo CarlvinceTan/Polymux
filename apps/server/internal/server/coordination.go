@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 )
@@ -55,7 +55,7 @@ func beforeTool(ctx context.Context, call, name string, args json.RawMessage) ag
 	}
 	state, _ := ctx.Value(turnKey{}).(*turnState)
 	if state == nil {
-		return agent.ToolCallHookResult{Block: true, Reason: "No active Luce run"}
+		return agent.ToolCallHookResult{Block: true, Reason: "No active Polymux run"}
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()

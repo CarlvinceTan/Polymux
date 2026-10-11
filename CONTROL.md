@@ -1,6 +1,6 @@
 # Native Mac control
 
-Luce pairs a Mac with one existing agent. The client opens an outbound pinned-TLS
+Polymux pairs a Mac with one existing agent. The client opens an outbound pinned-TLS
 WebSocket to the server's device listener, normally port `7339`. SSH, a global
 Cua installation, and a second application are not required. Ordinary chat and
 speech do not require pairing or control permissions.
@@ -10,22 +10,22 @@ speech do not require pairing or control permissions.
 Run `python3 scripts/fetch_cua.py` once before building macOS. It stages the pinned
 Cua Driver `0.34.1` release in `.vendor/cua`, checks the archive SHA-256, and never
 installs or starts a service. Xcode copies its executable into
-`Luce.app/Contents/Helpers`, embeds the license and LaunchAgent definition, and
+`Polymux.app/Contents/Helpers`, embeds the license and LaunchAgent definition, and
 signs the nested executable before the enclosing app. iOS builds do not embed it.
 Keep release provenance and third-party notices with distribution artifacts.
 
 On the server, with the existing data directory and agent ID:
 
 ```sh
-luce-server device pair -agent assistant
-luce-server device pair -agent coding -capabilities native,commands
-luce-server device list
-luce-server device revoke -id DEVICE_ID
+polymux-server device pair -agent assistant
+polymux-server device pair -agent coding -capabilities native,commands
+polymux-server device list
+polymux-server device revoke -id DEVICE_ID
 ```
 
 Use `-data PATH` for a nondefault data directory and `-url https://HOST:PORT` for
 a nondefault device listener. The backend accepts `-device-listen IP:PORT`; its
-default is backend port plus two. Listeners retain Luce's tailnet restriction;
+default is backend port plus two. Listeners retain Polymux's tailnet restriction;
 loopback fixtures require `-dev`. No service is installed by these commands.
 
 Paste the single-use, ten-minute code into **Settings > This Mac**. It pins the
@@ -42,7 +42,7 @@ its address or replacing an expired identity requires explicit re-pairing.
 
 ## Permissions and execution
 
-- **Observe and control apps:** Accessibility and Screen Recording. Luce owns
+- **Observe and control apps:** Accessibility and Screen Recording. Polymux owns
   the prompts. The bundled runtime checks host attribution, the actual parent
   bundle, and a temporary capture before advertising native readiness. The
   screenshot is deleted, not sent to the agent. Grant changes require relaunch.
@@ -78,7 +78,7 @@ its address or replacing an expired identity requires explicit re-pairing.
 ## Background ownership and removal
 
 **Keep control in background** explicitly registers the bundle's LaunchAgent
-through `SMAppService`. It runs the same signed Luce executable with
+through `SMAppService`. It runs the same signed Polymux executable with
 `--companion`, without chat windows. A process lock permits only one local
 controller; the foreground app and companion do not drive the Mac concurrently.
 This runs after login, not before login. When the foreground app quits, the
@@ -92,7 +92,7 @@ independently installed daemon. Turning control off closes owned connections and
 children; it does not revoke the pairing or silently change the background
 registration. **Forget this Mac** stops control, unregisters the companion,
 revokes the server pairing and removes its Keychain entry. The separate cleanup
-choice removes only `Application Support/Luce/control`, not conversations or
+choice removes only `Application Support/Polymux/control`, not conversations or
 independently installed tools. Failed server revocation retains the credential
 for review. Removing the bundle removes the executables; use Forget first for
 explicit pairing and data cleanup.
@@ -138,7 +138,7 @@ Cua service was replaced to run the synthetic tests.
 For a safe settings layout check, `python3 scripts/control_preview.py` builds an
 owned fixture in `~/Applications`, where Cua can resolve its bundle identifier.
 It does not start control or read credentials. Launch
-`com.test.luce-control-preview` through Cua MCP, verify its executable path,
+`com.test.polymux-control-preview` through Cua MCP, verify its executable path,
 then close it and use the script's `--clean` option. Registration alone does not
 make a temporary build resolvable in Cua Driver 0.32.0; the fixture path is a
 structural guard for that observed launch failure.

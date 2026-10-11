@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 )
@@ -546,7 +546,7 @@ func TestT3MidTurnUserMessage(t *testing.T) {
 }
 
 func TestC5ApprovalGate(t *testing.T) {
-	// Luce has no approval gate metadata today; this scenario must FAIL, not skip.
+	// Polymux has no approval gate metadata today; this scenario must FAIL, not skip.
 	// If a future gate parks the run (waiting_input), still record FAIL (no approval UX).
 	ran := &atomic.Int32{}
 	h := Start(t, Options{

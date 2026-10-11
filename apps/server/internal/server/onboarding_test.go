@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 func focusCall(t *testing.T, api *Server, method, path, body string) *httptest.ResponseRecorder {

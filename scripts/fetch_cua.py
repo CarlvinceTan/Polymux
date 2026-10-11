@@ -1,4 +1,4 @@
-"""Stage Luce's pinned runtime without installing or starting Cua Driver."""
+"""Stage Polymux's pinned runtime without installing or starting Cua Driver."""
 import hashlib
 import io
 from pathlib import Path

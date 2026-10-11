@@ -13,15 +13,15 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/device"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
 )
 
 func runDevice(args []string) error {
 	if len(args) == 0 || args[0] != "pair" && args[0] != "list" && args[0] != "revoke" {
-		return errors.New("usage: luce-server device pair|list|revoke [-data path] [-url https://IP:7339] [-agent ID] [-capabilities native,commands] [-id ID]")
+		return errors.New("usage: polymux-server device pair|list|revoke [-data path] [-url https://IP:7339] [-agent ID] [-capabilities native,commands] [-id ID]")
 	}
 	flags := flag.NewFlagSet("device", flag.ContinueOnError)
-	dir := flags.String("data", os.Getenv("LUCE_DATA_DIR"), "server data directory")
+	dir := flags.String("data", os.Getenv("POLYMUX_DATA_DIR"), "server data directory")
 	address := flags.String("url", "", "pinned TLS device listener")
 	agent := flags.String("agent", "", "agent authorized to use this device")
 	caps := flags.String("capabilities", "native", "native and/or commands")
@@ -34,7 +34,7 @@ func runDevice(args []string) error {
 		if err != nil {
 			return err
 		}
-		*dir = filepath.Join(home, "Library", "Application Support", "Luce", "server")
+		*dir = filepath.Join(home, "Library", "Application Support", "Polymux", "server")
 	}
 	if *address == "" {
 		ip, err := tailnet()
@@ -58,7 +58,7 @@ func runDevice(args []string) error {
 		if *agent == "" {
 			return errors.New("choose an existing agent with -agent")
 		}
-		db, err := sql.Open("sqlite3", "file:"+filepath.Join(*dir, "luce.db")+"?mode=ro")
+		db, err := sql.Open("sqlite3", "file:"+filepath.Join(*dir, "polymux.db")+"?mode=ro")
 		if err != nil {
 			return err
 		}
@@ -72,7 +72,7 @@ func runDevice(args []string) error {
 			return err
 		}
 		fmt.Println(ticket)
-		fmt.Fprintln(os.Stderr, "Expires in 10 minutes, single use. Paste into Luce Settings > This Mac. Treat it as a temporary credential.")
+		fmt.Fprintln(os.Stderr, "Expires in 10 minutes, single use. Paste into Polymux Settings > This Mac. Treat it as a temporary credential.")
 	case "list":
 		pairs, err := s.List(ctx)
 		if err != nil {

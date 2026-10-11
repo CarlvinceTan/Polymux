@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
-	"github.com/CarlvinceTan/luce/apps/server/internal/testenv"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/testenv"
 )
 
 func TestBlankPromptUsesHelpfulFallback(t *testing.T) {
@@ -52,11 +52,11 @@ func TestScopeKeepsSessionFilesSeparate(t *testing.T) {
 
 func TestRequestHeadersScopeSessionToConversation(t *testing.T) {
 	runtime := &Runtime{client: Client{
-		Headers: map[string]string{"User-Agent": "luce-server/0.1"},
+		Headers: map[string]string{"User-Agent": "polymux-server/0.1"},
 		Session: "x-opencode-session",
 	}}
 	first := runtime.requestHeaders(Definition{Agent: contract.Agent{ID: "assistant"}})
-	if first["User-Agent"] != "luce-server/0.1" {
+	if first["User-Agent"] != "polymux-server/0.1" {
 		t.Fatalf("static header lost: %v", first)
 	}
 	session, ok := first["x-opencode-session"]
@@ -76,7 +76,7 @@ func TestRequestHeadersScopeSessionToConversation(t *testing.T) {
 		}
 	}
 	runtime.client.Headers["User-Agent"] = "mutated"
-	if first["User-Agent"] != "luce-server/0.1" {
+	if first["User-Agent"] != "polymux-server/0.1" {
 		t.Fatal("returned headers alias the shared map")
 	}
 	if empty := (&Runtime{}).requestHeaders(Definition{}); empty != nil {

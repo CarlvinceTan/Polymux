@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 func (s *Store) PublishAttachment(ctx context.Context, attachment contract.Attachment, path string, event contract.Event, message *contract.Message) (contract.Event, error) {

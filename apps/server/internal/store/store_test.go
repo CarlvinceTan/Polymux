@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 func openTest(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(t.Context(), filepath.Join(t.TempDir(), "luce.db"))
+	s, err := Open(t.Context(), filepath.Join(t.TempDir(), "polymux.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func openTest(t *testing.T) *Store {
 func TestDurableReplay(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "luce.db")
+	path := filepath.Join(dir, "polymux.db")
 	s, err := Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)

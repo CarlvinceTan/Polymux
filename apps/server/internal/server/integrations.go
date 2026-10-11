@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 )

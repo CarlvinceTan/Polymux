@@ -49,7 +49,7 @@ func connectMCP(ctx context.Context, servers []MCPServer, cwd string) ([]agent.A
 			cleanup()
 			return nil, nil, fmt.Errorf("MCP server needs a URL or command")
 		}
-		client := mcp.NewClient(mcp.ClientOptions{Implementation: mcp.Implementation{Name: "Luce", Version: "0.1"}, RequestTimeoutMs: 30000})
+		client := mcp.NewClient(mcp.ClientOptions{Implementation: mcp.Implementation{Name: "Polymux", Version: "0.1"}, RequestTimeoutMs: 30000})
 		clients = append(clients, client)
 		connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		_, err := client.Connect(connectCtx, transport)

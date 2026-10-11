@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import AvatarKit
 
-// Luce keeps the body on screen for these motifs and moves the indicator to the
+// Polymux keeps the body on screen for these motifs and moves the indicator to the
 // top-right corner, so they diverge from the pinned upstream fixture.
 @Suite
 struct BadgeStatesTests {

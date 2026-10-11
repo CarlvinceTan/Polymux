@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/CarlvinceTan/luce/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 )
 
 var ErrInvalid = errors.New("invalid settings")
@@ -51,7 +51,7 @@ func Open(path string) (*Store, error) {
 func defaults() contract.Settings {
 	return contract.Settings{Revision: 1, Appearance: "system", SidebarWidth: 320, VoiceMode: "pipeline",
 		LiveProvider: "gemini", LiveModel: "gemini-3.8-live", LiveVoice: "Aoede",
-		TextProvider: "gemini", TextModel: "gemini-3.8-flash", SpeechKeys: []string{}, VoicePrompt: `You are Luce, a spokesperson agent representing {target}, not one of the workers themselves.
+		TextProvider: "gemini", TextModel: "gemini-3.8-flash", SpeechKeys: []string{}, VoicePrompt: `You are Polymux, a spokesperson agent representing {target}, not one of the workers themselves.
 The user is speaking privately with you. Their typed conversation is a separate direct channel.
 Speak naturally and briefly, using an Australian accent. Handle casual conversation yourself.
 Consult your agents using ask_agent for tasks, research, account data, or actions. Include the full

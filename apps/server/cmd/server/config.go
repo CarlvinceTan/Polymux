@@ -49,10 +49,10 @@ func loadModel(dir string) (modelConfig, error) {
 	if config.Session != "" && !validHeaderName(config.Session) {
 		return config, errors.New("model sessionHeader must be a valid header name")
 	}
-	if value := os.Getenv("LUCE_MODEL_URL"); value != "" {
+	if value := os.Getenv("POLYMUX_MODEL_URL"); value != "" {
 		config.URL = value
 	}
-	if value := os.Getenv("LUCE_MODEL"); value != "" {
+	if value := os.Getenv("POLYMUX_MODEL"); value != "" {
 		config.Model = value
 	}
 	if config.Model == "" {
@@ -82,7 +82,7 @@ func validHeaderValue(value string) bool {
 // Key resolves the model credential from the environment first, then an owner-only file.
 // The file path exists so a supervised service can carry a key without environment variables.
 func (c modelConfig) Key() (string, error) {
-	if key := os.Getenv("LUCE_MODEL_KEY"); key != "" {
+	if key := os.Getenv("POLYMUX_MODEL_KEY"); key != "" {
 		return key, nil
 	}
 	if c.KeyEnv != "" {
@@ -121,7 +121,7 @@ func lockData(dir, name string) (*os.File, error) {
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		file.Close()
-		return nil, errors.New("another Luce process owns this data directory")
+		return nil, errors.New("another Polymux process owns this data directory")
 	}
 	return file, nil
 }

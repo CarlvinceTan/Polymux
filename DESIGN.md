@@ -1,4 +1,4 @@
-# Luce UI
+# Polymux UI
 
 Follow these rules when adding or changing UI. Reuse the app's shared components
 and native controls rather than adding screen-specific interaction patterns.
@@ -61,16 +61,16 @@ search styling and focus notifications, not click-away dismissal.
 
 ## Visual cards
 
-- Cards are agent-authored HTML rendered inside Luce's bubble: inner content
+- Cards are agent-authored HTML rendered inside Polymux's bubble: inner content
   only, with no outer card wrapper, body margins, outer radius, or shadow.
 - Cards use the bundled Liquid Glass components: `lg-button`, `lg-switch`,
   `lg-slider`, `lg-segmented`, `lg-panel`. Page-level glass (`lg-navbar`,
   `lg-menubar`, `lg-menu`, `lg-dock`, `lg-lens`, toasts, `createGlass`) stays
   out of cards.
 - `apps/server/internal/server/html.go` owns the agent-facing contract and the
-  markup lint; `apps/Luce/Sources/Views/HTMLView.swift` owns the render shell
+  markup lint; `apps/Polymux/Sources/Views/HTMLView.swift` owns the render shell
   (base styles, CSP, theme tokens). When upgrading
-  `apps/Luce/Sources/Resources/LiquidGlass.js`, re-check both.
+  `apps/Polymux/Sources/Resources/LiquidGlass.js`, re-check both.
 
 ## Settings copy and layout
 
@@ -86,12 +86,12 @@ search styling and focus notifications, not click-away dismissal.
 
 ## Checks
 
-Run `python3 apps/Luce/Tests/InputTests/check_focus.py` on macOS after changing
+Run `python3 apps/Polymux/Tests/InputTests/check_focus.py` on macOS after changing
 input focus. It exercises native controls in hidden windows, including field
 padding, multiline editing, input switching, suggestions, and monitor cleanup.
 Build macOS and iOS after changing shared SwiftUI components. These checks do
 not replace a visual check of changed layouts or a real SwiftUI interaction.
 
 The copy and layout rules are instruction-only. The macOS click-away rule is
-implemented by `apps/Luce/Sources/Views/InputFocus.swift` and guarded by the
+implemented by `apps/Polymux/Sources/Views/InputFocus.swift` and guarded by the
 native focus checks above.
