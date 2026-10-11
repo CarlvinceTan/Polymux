@@ -1,0 +1,16 @@
+# Polymux launch roadmap (11 Oct 2026)
+
+Launch bar (Carlvince): (1) reliable everyday use at Grok Bot parity, (2) dead-simple setup via server-free linking v3, (3) an updated, distinctive site. Marketing stays prep-only until M1–M6 are done. Base: main @ dd052ff (v0.4.0). Specs: PARITY, SHADOW, CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC, CONNECTIVITY_SPEC v3 (+§10), SITE_PLAN.
+
+| # | Milestone | Goal | Scope | Done when (checkable) |
+|---|---|---|---|---|
+| M1 | Safe turns | No unapproved side effects, no lost turns | Merge PR #18 (approval gate, C5); finish fix/turn-resume (X2/X6/C4) from cvmac | Harness `go test -tags sqlite_fts5 ./evals/...` 100% on 3 consecutive runs including new X2/X6/C4 scenarios; #18 and turn-resume PR merged |
+| M2 | Parity | Grok Bot-level everyday reliability | Remaining PARITY.md partial/missing rows (T3, T5, B1/B2/B4/B5, M3/M4, R4, G1/G2); load test from cvmini | Every PARITY row has a harness scenario; ≥95% pass on 3 runs, 0 failures in T*/C*/X*; load kit p95 turn-start < 2 s with 0 dropped turns |
+| M3 | Shadow agreement | Real-world behaviour matches Grok Bot | SHADOW.md sandbox replay of recorded traffic | ≥90% judge agreement over ≥200 shadow tasks, 0 forbidden-path or egress violations |
+| M4 | LAN linking (connectivity phase 1) | Install, scan QR, done on the same Wi-Fi | C1 keypairs + QR/6-digit SAS pairing, C2 Tailscale made optional (kept as opt-in), C3 Bonjour, C4 Noise E2E on LAN | 20/20 fresh-install pairings on one LAN without CLI or Tailscale (median < 60 s); Noise cross-language test vectors pass in Go and Swift; Tailscale opt-in path still connects |
+| M5 | Remote linking (phase 2) + opt-ins | Away-from-home direct links, honest fallbacks | C5–C8 (Nostr signalling, DHT, pion P2P, racing dialer, "no path" screen); optional integrations: Tailscale toggle, self-hosted relay (C9); push per spec §10.1 (foreground + best-effort background refresh; real APNs only for self-builds) | netns NAT matrix: cone pairs connect ≥80%, symmetric pairs show the "no path" screen within 10 s; relay opt-in connects 100% in the matrix; no Polymux-run service in the dependency list |
+| M6 | Chat UI, sidebar, avatars | Native app feels finished | CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC against DESIGN.md | Spec checklist 100% ticked with screenshots in both themes and every state; Carlvince signs off on the review card |
+| M7 | Site | Updated, distinctive, not "AI slop" | SITE_PLAN §0 feed bug first, then 0.4 content, downloads, docs, new screenshots | Feed test pins macOS 0.3.x; all links/download routes return 200; Lighthouse ≥90; Carlvince's site review passes with no "generic" flags |
+| M8 | Launch | Go public | Release 0.4.x DMG + iOS build; marketing prep turns live | M1–M7 done; release checklist green |
+
+Order: M1 → M2/M4 in parallel → M3 → M5/M6 → M7 → M8. Opt-in integrations never block the server-free default.
