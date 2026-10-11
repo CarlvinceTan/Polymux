@@ -42,7 +42,12 @@ func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Cli
 	}
 	registry := harness.CreateRegistry()
 	opened, err := harness.OpenHarness(ctx, storage, harness.HarnessOptions{
-		Models:   durableModels(baseURL, key, model, client),
+		Models: durableModels(baseURL, key, model, client),
+		Settings: func() *harness.HarnessSettings {
+			return &harness.HarnessSettings{Compaction: &harness.CompactionPolicyPatch{
+				ReserveTokens: new(4096), KeepRecentTokens: new(4096), BackgroundTokens: new(0),
+			}}
+		},
 		Registry: registry,
 		Env: func(_ context.Context, target harness.EnvTarget) (env.ExecutionEnv, error) {
 			cwd := dir
@@ -149,6 +154,9 @@ func (r *DurableRuntime) conversation(ctx context.Context, d Definition, path st
 // DurableProvider is the models-runtime provider ID Polymux registers its endpoint under.
 const DurableProvider = "polymux"
 
+// MaxRequestBytes bounds the encoded provider body, including tools and summary requests.
+const MaxRequestBytes = 128 << 10
+
 // durableModels registers Polymux's OpenAI-compatible endpoint with the durable models runtime.
 func durableModels(baseURL, key, model string, client Client) *ai.Models {
 	provider := ai.NewOpenAIProvider(ai.OpenAIConfig{BaseURL: baseURL, APIKey: key, Model: model, ProviderID: DurableProvider, ExtraHeaders: client.Headers})
@@ -156,7 +164,7 @@ func durableModels(baseURL, key, model string, client Client) *ai.Models {
 	models.SetProvider(&ai.ModelsProvider{
 		ID: DurableProvider, Name: DurableProvider, BaseURL: baseURL,
 		GetModels: func() ([]*ai.Model, error) {
-			return []*ai.Model{{ID: model, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: baseURL}}}, nil
+			return []*ai.Model{{ID: model, Capabilities: ai.ModelCapabilities{ContextWindow: 16384}, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: baseURL}}}, nil
 		},
 		Stream:       passthrough(provider),
 		StreamSimple: passthrough(provider),
@@ -170,6 +178,26 @@ func durableModels(baseURL, key, model string, client Client) *ai.Models {
 // passthrough adapts an ai.Provider to the models runtime stream signature.
 func passthrough(provider ai.Provider) ai.ModelsStreamFunction {
 	return func(ctx context.Context, _ *ai.Model, transcript ai.TranscriptContext, opts ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
+		previous := opts.OnPayload
+		opts.OnPayload = func(payload any, model *ai.Model) (any, error) {
+			if previous != nil {
+				replaced, err := previous(payload, model)
+				if err != nil {
+					return nil, err
+				}
+				if replaced != nil {
+					payload = replaced
+				}
+			}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				return nil, err
+			}
+			if len(body) > MaxRequestBytes {
+				return nil, errors.New("model request size limit exceeded")
+			}
+			return payload, nil
+		}
 		return provider.Stream(ctx, transcript, opts)
 	}
 }
@@ -421,9 +449,18 @@ func (s *durableSession) stream(ctx context.Context, emit func(Delta) error) fun
 	var mu sync.Mutex
 	seen := ""
 	started := false
+	compactions := map[durable.EntryId]bool{}
 	watch.Start(func(_ context.Context, view harness.ConversationView, _ []durable.Op) error {
 		mu.Lock()
 		defer mu.Unlock()
+		for _, entry := range view.Entries {
+			if entry.Kind == durable.CompactionEntry.Kind && !compactions[entry.Id] {
+				compactions[entry.Id] = true
+				if started {
+					_ = emit(Delta{Kind: "context.compacted"})
+				}
+			}
+		}
 		if !started {
 			started = true
 			if err := emit(Delta{Kind: "generating"}); err != nil {

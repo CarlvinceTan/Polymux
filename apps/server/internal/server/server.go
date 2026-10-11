@@ -1190,6 +1190,12 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 					return e
 				}
 			}
+			if delta.Kind == "context.compacted" {
+				_, e := s.Store.Append(writeCtx, contract.Event{
+					Type: delta.Kind, ConversationID: m.ThreadID, RunID: &run.ID, AgentID: &a.id,
+				}, nil)
+				return e
+			}
 			if delta.Kind == "generating" {
 				if len(tools) > 0 {
 					return nil
