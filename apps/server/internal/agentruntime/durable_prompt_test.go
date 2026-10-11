@@ -146,6 +146,12 @@ func TestPromptParity(t *testing.T) {
 			if agent.Instructions == nil || *agent.Instructions != want {
 				t.Fatalf("durable instructions %v, want %q", agent.Instructions, want)
 			}
+			wantSkills := !definition.Intro && !definition.Automatic
+			for _, marker := range []string{"name: polymux", "name: report"} {
+				if strings.Contains(want, marker) != wantSkills {
+					t.Fatalf("prompt contains %s = %v, want %v", marker, strings.Contains(want, marker), wantSkills)
+				}
+			}
 		})
 	}
 }

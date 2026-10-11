@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/skills"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/testenv"
 )
 
@@ -20,6 +21,7 @@ func TestRestrictedPolicy(t *testing.T) {
 		intro, automatic bool
 		tools            []string
 	}{
+		{name: "regular", tools: []string{"bash", "read"}},
 		{name: "intro", intro: true, tools: []string{"bash", "read"}},
 		{name: "automatic-internal", automatic: true},
 		{name: "automatic-configured", automatic: true, tools: []string{"bash", "read"}},
@@ -72,6 +74,19 @@ func TestRestrictedPolicy(t *testing.T) {
 				t.Fatal("turn exposed wrong configured tools", len(tools), want)
 			}
 			message := string(body["messages"])
+			wantHelp := !test.intro && !test.automatic
+			for _, marker := range []string{"name: polymux", "name: report"} {
+				if strings.Contains(message, marker) != wantHelp {
+					t.Fatalf("prompt contains %s = %v, want %v", marker, strings.Contains(message, marker), wantHelp)
+				}
+			}
+			if wantHelp {
+				for _, marker := range []string{skills.IssueRepo, "explicit confirmation in chat", "[REDACTED]"} {
+					if !strings.Contains(message, marker) {
+						t.Fatalf("bundled report skill omitted %q", marker)
+					}
+				}
+			}
 			for _, part := range []string{"Coach", "Guide", "Configured policy", "Polymux policy", "Current UTC time", "Conversation"} {
 				if !strings.Contains(message, part) {
 					t.Fatalf("prompt omitted %s", part)
