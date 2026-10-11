@@ -923,7 +923,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if err == nil && work.Trigger != "created" && work.Trigger != "peer" {
 		user, err = s.workContext(runCtx, run, user)
 		if err == nil {
-			user, err = s.memoryContext(runCtx, run, user)
+			user, err = s.memoryContext(runCtx, run, user, store.Text(work.Message))
 		}
 	}
 	if err == nil && automatic(work.Trigger) {
@@ -1004,6 +1004,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	}
 	for _, server := range d.MCP {
 		state.prefixes = append(state.prefixes, server.Name+"__")
+		if server.ReadOnly {
+			state.readPrefixes = append(state.readPrefixes, server.Name+"__")
+		}
 	}
 	for name := range builtinClass {
 		state.known[name] = true
