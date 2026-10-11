@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -49,10 +48,11 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "device" {
 		return runDevice(os.Args[2:])
 	}
-	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "tailnet IP:port")
-	dev := flag.Bool("dev", os.Getenv("POLYMUX_DEV") == "1", "allow an explicit loopback listener")
+	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "unauthenticated backend IP:port; should stay on loopback (defaults to 127.0.0.1:7337)")
+	dev := flag.Bool("dev", os.Getenv("POLYMUX_DEV") == "1", "development mode (loopback is always allowed)")
 	dir := flag.String("data", os.Getenv("POLYMUX_DATA_DIR"), "data directory")
 	deviceListen := flag.String("device-listen", "", "TLS device listener (defaults to backend port + 2)")
+	tailscale := flag.Bool("tailscale", os.Getenv("POLYMUX_TAILSCALE") == "1", "use Tailscale listeners (requires Tailscale)")
 	flag.Parse()
 	if *dir == "" {
 		home, err := os.UserHomeDir()
@@ -61,12 +61,12 @@ func run() error {
 		}
 		*dir = filepath.Join(home, "Library", "Application Support", "Polymux", "server")
 	}
+	defaultIP, err := listenIP(*tailscale)
+	if err != nil {
+		return err
+	}
 	if *listen == "" {
-		address, err := tailnet()
-		if err != nil {
-			return err
-		}
-		*listen = net.JoinHostPort(address, "7337")
+		*listen = net.JoinHostPort(defaultIP, "7337")
 	}
 	if err := validateListen(*listen, *dev); err != nil {
 		return err
@@ -84,7 +84,7 @@ func run() error {
 		return err
 	}
 	defer s.Close()
-	hostname, port, err := net.SplitHostPort(*listen)
+	_, port, err := net.SplitHostPort(*listen)
 	if err != nil {
 		return err
 	}
@@ -93,16 +93,20 @@ func run() error {
 		if err != nil || n > 65533 {
 			return errors.New("backend port must allow two adjacent ports")
 		}
-		*deviceListen = net.JoinHostPort(hostname, strconv.Itoa(n+2))
+		address := "0.0.0.0"
+		if *tailscale {
+			address = defaultIP
+		}
+		*deviceListen = net.JoinHostPort(address, strconv.Itoa(n+2))
 	}
-	if err := validateListen(*deviceListen, *dev); err != nil {
+	if err := validateDevice(*deviceListen); err != nil {
 		return err
 	}
 	deviceHost, _, err := net.SplitHostPort(*deviceListen)
 	if err != nil {
 		return err
 	}
-	pairings, err := device.Open(ctx, *dir, deviceHost)
+	pairings, err := device.Open(ctx, *dir, identityHost(deviceHost))
 	if err != nil {
 		return err
 	}
@@ -215,36 +219,4 @@ func defaults(model string) []agentruntime.Definition {
 		{Agent: contract.Agent{ID: "research", Name: "Research", Role: "Research assistant", Model: model}, Prompt: "You are a careful research assistant. Distinguish verified facts from uncertainty and provide sources when available. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "bash", "find", "ls"}},
 		{Agent: contract.Agent{ID: "coding", Name: "Coding", Role: "Software engineer", Model: model}, Prompt: "You are a pragmatic software engineer. Make focused changes, preserve unrelated work, and verify your results. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "write", "edit", "bash", "find", "ls"}},
 	}
-}
-
-func tailnet() (string, error) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "", err
-	}
-	prefix := netip.MustParsePrefix("100.64.0.0/10")
-	for _, addr := range addrs {
-		p, err := netip.ParsePrefix(addr.String())
-		if err == nil && prefix.Contains(p.Addr()) {
-			return p.Addr().String(), nil
-		}
-	}
-	return "", fmt.Errorf("no Tailscale interface found; start Tailscale or set an explicit loopback POLYMUX_LISTEN and POLYMUX_DEV=1")
-}
-func validateListen(address string, dev bool) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return err
-	}
-	ip, err := netip.ParseAddr(host)
-	if err != nil {
-		return fmt.Errorf("listener must use an explicit tailnet IP")
-	}
-	if dev && ip.IsLoopback() {
-		return nil
-	}
-	if !netip.MustParsePrefix("100.64.0.0/10").Contains(ip) && !netip.MustParsePrefix("fd7a:115c:a1e0::/48").Contains(ip) {
-		return fmt.Errorf("listener must bind a Tailscale IP; loopback requires -dev")
-	}
-	return nil
 }

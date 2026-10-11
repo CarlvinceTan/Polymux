@@ -18,7 +18,7 @@ import (
 
 func runDevice(args []string) error {
 	if len(args) == 0 || args[0] != "pair" && args[0] != "list" && args[0] != "revoke" {
-		return errors.New("usage: polymux-server device pair|list|revoke [-data path] [-url https://IP:7339] [-agent ID] [-capabilities native,commands] [-id ID]")
+		return errors.New("usage: polymux-server device pair|list|revoke [-data path] [-url https://IP:7339] [-agent ID] [-capabilities native,commands] [-id ID] [-tailscale]")
 	}
 	flags := flag.NewFlagSet("device", flag.ContinueOnError)
 	dir := flags.String("data", os.Getenv("POLYMUX_DATA_DIR"), "server data directory")
@@ -26,6 +26,7 @@ func runDevice(args []string) error {
 	agent := flags.String("agent", "", "agent authorized to use this device")
 	caps := flags.String("capabilities", "native", "native and/or commands")
 	id := flags.String("id", "", "device to revoke")
+	tailscale := flags.Bool("tailscale", os.Getenv("POLYMUX_TAILSCALE") == "1", "use a Tailscale device URL (requires Tailscale)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -36,10 +37,17 @@ func runDevice(args []string) error {
 		}
 		*dir = filepath.Join(home, "Library", "Application Support", "Polymux", "server")
 	}
-	if *address == "" {
-		ip, err := tailnet()
+	ip := ""
+	if *tailscale {
+		var err error
+		ip, err = tailnet()
 		if err != nil {
 			return err
+		}
+	}
+	if *address == "" {
+		if ip == "" {
+			ip = lanHost()
 		}
 		*address = "https://" + net.JoinHostPort(ip, "7339")
 	}
@@ -48,7 +56,7 @@ func runDevice(args []string) error {
 		return errors.New("invalid device URL")
 	}
 	ctx := context.Background()
-	s, err := device.Open(ctx, *dir, u.Hostname())
+	s, err := device.Open(ctx, *dir, identityHost(u.Hostname()))
 	if err != nil {
 		return err
 	}
