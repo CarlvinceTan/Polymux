@@ -32,6 +32,10 @@ struct ChatPane: View {
     @State private var atBottom = true
     @State private var composerHeight: CGFloat = 70
     @State private var reply: ReplyContext?
+    @State private var reactions: [String: [String]] = [:]
+    @State private var actions: MessageActions?
+    @State private var menuSize = CGSize.zero
+    @Environment(\.colorScheme) private var scheme
     @Namespace private var scrollSpace
     @State private var dateFrames: [String: ScrollDateFrame] = [:]
     @State private var scrollHeight: CGFloat = 0
@@ -102,6 +106,7 @@ struct ChatPane: View {
                 clearDate()
                 highlight = nil
                 target = nil
+                actions = nil
             }
         }
         .onChange(of: drops.wrappedValue) { _, files in
@@ -131,6 +136,8 @@ struct ChatPane: View {
                 #endif
             }
         }
+        .coordinateSpace(name: "messagePane")
+        .overlay { actionOverlay }
         .toolbar {
             if showHeader {
             ToolbarItem(placement: .principal) {
@@ -168,11 +175,67 @@ struct ChatPane: View {
             await store.markRead()
         }
         .task(id: agent.id) { await offerFocus() }
-        .onDisappear { store.stop(); clearDate(); highlight = nil; target = nil }
+        .onDisappear { store.stop(); clearDate(); highlight = nil; target = nil; actions = nil }
         .onChange(of: scenePhase) { _, phase in
             store.isVisible = phase == .active
             if store.isVisible { Task { await store.markRead() } }
         }
+    }
+
+    private var actionOverlay: some View {
+        GeometryReader { geometry in
+            if let actions {
+                let safe = geometry.safeAreaInsets
+                let bounds = CGRect(x: safe.leading, y: safe.top,
+                                    width: max(0, geometry.size.width - safe.leading - safe.trailing),
+                                    height: max(0, geometry.size.height - safe.top - safe.bottom))
+                let size = CGSize(width: min(320, max(0, bounds.width - 16)),
+                                  height: actions.picker ? min(360, max(0, bounds.height - 16)) : menuSize.height)
+                let origin = MenuPlacement.origin(anchor: actions.anchor, size: size, bounds: bounds)
+                ZStack(alignment: .topLeading) {
+                    Color.clear.contentShape(Rectangle()).onTapGesture { self.actions = nil }
+                    Group {
+                        if actions.picker {
+                            EmojiPicker { emoji in
+                                toggle(emoji, id: actions.id)
+                                self.actions = nil
+                            }
+                        } else {
+                            MessageMenu(text: actions.text, react: { emoji in
+                                toggle(emoji, id: actions.id)
+                                self.actions = nil
+                            }, expand: { self.actions?.picker = true }, reply: {
+                                actions.reply()
+                                self.actions = nil
+                            }, copy: {
+                                actions.copy()
+                                self.actions = nil
+                            })
+                        }
+                    }
+                    .frame(width: size.width)
+                    .fixedSize(horizontal: false, vertical: !actions.picker)
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { menuSize = $0 }
+                    .frame(height: actions.picker ? size.height : nil)
+                    .background(PanelSurface.color(scheme), in: RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.secondary.opacity(0.3)) }
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+                    .offset(x: origin.x, y: origin.y)
+                    #if os(macOS)
+                    .onExitCommand { self.actions = nil }
+                    #endif
+                }
+            }
+        }
+        .allowsHitTesting(actions != nil)
+    }
+
+    private func toggle(_ emoji: String, id: String) {
+        var values = reactions[id] ?? []
+        if values.contains(emoji) { values.removeAll { $0 == emoji } }
+        else { values.append(emoji) }
+        reactions[id] = values.isEmpty ? nil : values
     }
 
     private var members: [Agent] {
@@ -327,7 +390,10 @@ struct ChatPane: View {
                                       sending: store.isSending, retry: { await store.retry(messageID: message.id) },
                                       respond: { reply = $0 }, jump: { jump(to: $0.messageID, part: $0.partIndex) },
                                       ask: { text in Task { await store.send(text: text) } },
-                                       highlight: highlight, activity: bubbleActivity(message))
+                                       highlight: highlight, activity: bubbleActivity(message),
+                                       reactions: reactions[message.id] ?? [],
+                                       react: { toggle($0, id: message.id) },
+                                       open: { actions = $0 })
                         .id(message.id)
                         .modifier(JumpGlow(active: highlight == ReplyTarget(id: message.id, part: nil)))
                         .background {
@@ -536,6 +602,9 @@ struct MessageBubble: View {
     let ask: (String) -> Void
     var highlight: ReplyTarget?
     var activity: ActivityView?
+    var reactions: [String] = []
+    var react: (String) -> Void = { _ in }
+    var open: (MessageActions) -> Void = { _ in }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 36) {
@@ -566,6 +635,12 @@ struct MessageBubble: View {
                         }
                         .padding(12)
                         .background(bubble, in: RoundedRectangle(cornerRadius: BubbleStyle.radius))
+                    }
+                }
+                if !reactions.isEmpty {
+                    ViewThatFits(in: .horizontal) {
+                        reactionRow
+                        ScrollView(.horizontal) { reactionRow }.scrollIndicators(.hidden).frame(height: 30)
                     }
                 }
                 if let reply = message.reply {
@@ -616,11 +691,23 @@ struct MessageBubble: View {
             Text(text).fixedSize(horizontal: false, vertical: true)
                 .padding(12)
                 .background(bubble, in: RoundedRectangle(cornerRadius: BubbleStyle.radius))
-                .shareMenu(item: .text(text)) { share in
-                    Button("Copy", systemImage: "doc.on.doc") { copyText(text) }
-                    if let share { share }
-                    Button("Reply", systemImage: "arrowshape.turn.up.left") { respond(to: index) }
+                .modifier(TextActions(user: message.role == "user", open: { anchor, picker in
+                    open(MessageActions(id: message.id, text: text, anchor: anchor,
+                                        reply: { respond(to: index) }, copy: { copyText(text) }, picker: picker))
+                }, reply: { respond(to: index) }, copy: { copyText(text) }))
+        }
+    }
+
+    private var reactionRow: some View {
+        HStack(spacing: 4) {
+            ForEach(reactions, id: \.self) { emoji in
+                Button { react(emoji) } label: {
+                    Text(emoji).font(.callout).padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(bubble, in: Capsule())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(emoji) reaction")
+            }
         }
     }
 
