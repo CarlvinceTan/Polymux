@@ -36,6 +36,28 @@ test('maps the latest release to native installers for each platform', async (co
   assert.equal(result.body.platforms.linux.url, 'https://files/appimage');
 });
 
+test('strips an app-v release tag to a bare version for display', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: async () => [{tag_name: 'app-v0.4.0', draft: false, assets: []}],
+  }));
+  const result = response();
+  await handler({}, result);
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.version, '0.4.0');
+});
+
+test('strips a v release tag to a bare version for display', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: async () => [{tag_name: 'v0.3.4', draft: false, assets: []}],
+  }));
+  const result = response();
+  await handler({}, result);
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.version, '0.3.4');
+});
+
 test('resolves a requested version by its release tag', async (context) => {
   const requests = [];
   context.mock.method(globalThis, 'fetch', async (url) => {

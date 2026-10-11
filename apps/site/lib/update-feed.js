@@ -14,7 +14,7 @@ function githubHeaders() {
 
 export async function updateFeed(platform, response) {
   const windows = platform === 'win32';
-  const latest = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases?per_page=10`, {
+  const latest = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`, {
     headers: githubHeaders(),
   });
   if (!latest.ok) {

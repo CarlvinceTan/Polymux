@@ -63,7 +63,7 @@ export default async function handler(request, response) {
   const releaseUrl = release.html_url ?? `https://github.com/${REPOSITORY}/releases/latest`;
   response.setHeader('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=60');
   return response.status(200).json({
-    version: release.tag_name?.replace(/^v/, '') ?? null,
+    version: release.tag_name?.replace(/^(?:app-)?v/, '') ?? null,
     publishedAt: release.published_at ?? null,
     releaseUrl,
     platforms: {
