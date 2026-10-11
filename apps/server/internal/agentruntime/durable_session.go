@@ -104,10 +104,6 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 		return nil, err
 	}
 	cwd := filepath.Join(r.dir, d.Agent.ID)
-	prompt := d.SystemPrompt()
-	if !d.Intro && !d.Automatic {
-		prompt += helpPrompt()
-	}
 	change := harness.AgentChange{
 		Instructions: harness.SetTo(prompt),
 		Model:        harness.SetTo(durable.ModelRef{Provider: DurableProvider, ModelId: modelID(d, r.model)}),

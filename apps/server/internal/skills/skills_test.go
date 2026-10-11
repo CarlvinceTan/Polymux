@@ -7,16 +7,40 @@ import (
 	"testing"
 )
 
-func TestHelp(t *testing.T) {
-	body := Help()
-	if !strings.Contains(body, IssueRepo) || strings.Contains(body, "{{REPO}}") {
-		t.Fatal("help must substitute the issue repository")
+func TestSkills(t *testing.T) {
+	guide, err := Polymux()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(body, "explicit confirmation in chat") {
-		t.Fatal("help must require confirmation before filing")
+	report, err := Report()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(body, "[REDACTED]") {
-		t.Fatal("help must include the redaction marker")
+	if !strings.Contains(guide, "name: polymux") {
+		t.Fatal("polymux skill missing its name")
+	}
+	for _, marker := range []string{"gh issue create", "{{REPO}}", IssueRepo, "explicit confirmation in chat"} {
+		if strings.Contains(guide, marker) {
+			t.Fatalf("polymux skill must point at the report skill without filing instructions, found %q", marker)
+		}
+	}
+	if !strings.Contains(report, "name: report") {
+		t.Fatal("report skill missing its name")
+	}
+	if !strings.Contains(report, IssueRepo) || strings.Contains(report, "{{REPO}}") {
+		t.Fatal("report skill must substitute the issue repository")
+	}
+	if !strings.Contains(report, "explicit confirmation in chat") {
+		t.Fatal("report skill must require confirmation before filing")
+	}
+	if !strings.Contains(report, "[REDACTED]") {
+		t.Fatal("report skill must include the redaction marker")
+	}
+	if !strings.Contains(report, "Never splice user text into the command string") || !strings.Contains(report, "gh issue create --repo "+IssueRepo) {
+		t.Fatal("report skill must keep safe issue creation")
+	}
+	if !strings.Contains(report, "https://github.com/"+IssueRepo+"/issues/new?title=") {
+		t.Fatal("report skill must keep the prefilled issue link")
 	}
 }
 
@@ -39,7 +63,8 @@ func TestFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(paths, []string{"help/SKILL.md"}) {
-		t.Fatalf("embedded files = %v, want only help/SKILL.md", paths)
+	want := []string{"polymux/SKILL.md", "report/SKILL.md"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("embedded files = %v, want %v", paths, want)
 	}
 }

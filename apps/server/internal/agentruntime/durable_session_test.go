@@ -73,16 +73,25 @@ func TestDurableHelpInstructions(t *testing.T) {
 			if state.Instructions == nil {
 				t.Fatal("conversation has no instructions")
 			}
-			wantHelp := !tc.intro && !tc.automatic
-			if got := strings.Contains(*state.Instructions, skills.IssueRepo); got != wantHelp {
-				t.Errorf("instructions contain issue repository = %v, want %v", got, wantHelp)
-			}
-			want := definition.SystemPrompt()
-			if wantHelp {
-				want += helpPrompt()
+			want, err := buildPrompt(definition, nil, false)
+			if err != nil {
+				t.Fatal(err)
 			}
 			if *state.Instructions != want {
 				t.Error("conversation instructions do not match the configured prompt")
+			}
+			wantSkills := !tc.intro && !tc.automatic
+			markers := []string{
+				"name: polymux",
+				"name: report",
+				skills.IssueRepo,
+				"explicit confirmation in chat",
+				"[REDACTED]",
+			}
+			for _, marker := range markers {
+				if got := strings.Contains(*state.Instructions, marker); got != wantSkills {
+					t.Errorf("instructions contain %q = %v, want %v", marker, got, wantSkills)
+				}
 			}
 		})
 	}

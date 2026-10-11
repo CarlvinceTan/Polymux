@@ -119,10 +119,6 @@ func (r *Runtime) requestHeaders(d Definition) map[string]string {
 
 func (r *Runtime) Close() error { r.services.Close(); return nil }
 
-func helpPrompt() string {
-	return "\nBundled Polymux help skill (use for questions about Polymux and bug reports):\n" + skills.Help()
-}
-
 func (r *Runtime) Open(ctx context.Context, d Definition, path string) (Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -258,7 +254,11 @@ func buildPrompt(d Definition, tools []string, mcpDown bool) (string, error) {
 		prompt += "\nConfigured MCP connections are unavailable this turn; no MCP tools are exposed. Use available CLI tools or manage_integrations to repair the configuration, and report the limitation without claiming a check succeeded."
 	}
 	if !d.Intro && !d.Automatic {
-		prompt += helpPrompt()
+		bundled, err := skills.Bundled()
+		if err != nil {
+			return "", err
+		}
+		prompt += "\n" + bundled
 	}
 	if !d.Intro {
 		budget := 32768

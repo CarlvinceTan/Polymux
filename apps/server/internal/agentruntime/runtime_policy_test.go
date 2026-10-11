@@ -75,11 +75,17 @@ func TestRestrictedPolicy(t *testing.T) {
 			}
 			message := string(body["messages"])
 			wantHelp := !test.intro && !test.automatic
-			if strings.Contains(message, "Bundled Polymux help skill") != wantHelp {
-				t.Fatal("bundled help must appear only on non-intro, non-automatic turns")
+			for _, marker := range []string{"name: polymux", "name: report"} {
+				if strings.Contains(message, marker) != wantHelp {
+					t.Fatalf("prompt contains %s = %v, want %v", marker, strings.Contains(message, marker), wantHelp)
+				}
 			}
-			if wantHelp && (!strings.Contains(message, skills.IssueRepo) || !strings.Contains(message, "explicit confirmation in chat")) {
-				t.Fatal("bundled help omitted repository or confirmation requirement")
+			if wantHelp {
+				for _, marker := range []string{skills.IssueRepo, "explicit confirmation in chat", "[REDACTED]"} {
+					if !strings.Contains(message, marker) {
+						t.Fatalf("bundled report skill omitted %q", marker)
+					}
+				}
 			}
 			for _, part := range []string{"Coach", "Guide", "Configured policy", "Polymux policy", "Current UTC time", "Conversation"} {
 				if !strings.Contains(message, part) {
