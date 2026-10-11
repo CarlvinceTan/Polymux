@@ -1,6 +1,6 @@
 # Polymux launch roadmap (11 Oct 2026)
 
-Launch bar (Carlvince): (1) reliable everyday use at Grok Bot parity, (2) dead-simple setup via server-free linking v3, (3) an updated, distinctive site. Marketing stays prep-only until M1–M6 are done. Base: main @ dd052ff (v0.4.0). Specs: PARITY, SHADOW, CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC, CONNECTIVITY_SPEC v3 (+§10), SITE_PLAN.
+Launch bar (Carlvince): (1) reliable everyday use at Grok Bot parity, (2) dead-simple setup via server-free linking v3, (3) an updated, distinctive site. Setup is just installing the app on each device and pairing; one device is the server. Marketing stays prep-only until M1–M7 are done. Base: main @ dd052ff (v0.4.0). Specs: PARITY, SHADOW, CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC, CONNECTIVITY_SPEC v3 (+§10), SITE_PLAN.
 
 | # | Milestone | Goal | Scope | Done when (checkable) |
 |---|---|---|---|---|
@@ -9,8 +9,9 @@ Launch bar (Carlvince): (1) reliable everyday use at Grok Bot parity, (2) dead-s
 | M3 | Shadow agreement | Real-world behaviour matches Grok Bot | SHADOW.md sandbox replay of recorded traffic | ≥90% judge agreement over ≥200 shadow tasks, 0 forbidden-path or egress violations |
 | M4 | LAN linking (connectivity phase 1) | Install, scan QR, done on the same Wi-Fi | C1 keypairs + QR/6-digit SAS pairing, C2 Tailscale made optional (kept as opt-in), C3 Bonjour, C4 Noise E2E on LAN | 20/20 fresh-install pairings on one LAN without CLI or Tailscale (median < 60 s); Noise cross-language test vectors pass in Go and Swift; Tailscale opt-in path still connects |
 | M5 | Remote linking (phase 2) + opt-ins | Away-from-home direct links, honest fallbacks | C5–C8 (Nostr signalling, DHT, pion P2P, racing dialer, "no path" screen); optional integrations: Tailscale toggle, self-hosted relay (C9); push per spec §10.1 (foreground + best-effort background refresh; real APNs only for self-builds) | netns NAT matrix: cone pairs connect ≥80%, symmetric pairs show the "no path" screen within 10 s; relay opt-in connects 100% in the matrix; no Polymux-run service in the dependency list |
+| M5b | Any-device server | Install everywhere, pick the server | Server bundled in the app; Settings > Devices; auto-pick; offline outbox + read-only cache; hand-off with drain/epoch/rollback; snapshot restore (spec §11). iOS is client-only | Hand-off test: 10/10 Mac→Mac switches with no lost messages and checksums equal; forced failure rolls back 10/10; offline outbox delivers exactly once; restore from a client snapshot passes a smoke turn |
 | M6 | Chat UI, sidebar, avatars | Native app feels finished | CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC against DESIGN.md | Spec checklist 100% ticked with screenshots in both themes and every state; Carlvince signs off on the review card |
 | M7 | Site | Updated, distinctive, not "AI slop" | SITE_PLAN §0 feed bug first, then 0.4 content, downloads, docs, new screenshots | Feed test pins macOS 0.3.x; all links/download routes return 200; Lighthouse ≥90; Carlvince's site review passes with no "generic" flags |
 | M8 | Launch | Go public | Release 0.4.x DMG + iOS build; marketing prep turns live | M1–M7 done; release checklist green |
 
-Order: M1 → M2/M4 in parallel → M3 → M5/M6 → M7 → M8. Opt-in integrations never block the server-free default.
+Order: M1 → M2/M4 in parallel → M3 → M5/M5b/M6 → M7 → M8. Phase 1 keys and pairing are role-neutral, so M5b needs no re-pairing. Opt-in integrations never block the server-free default.
