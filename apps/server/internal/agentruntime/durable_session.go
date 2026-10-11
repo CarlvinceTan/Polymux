@@ -41,7 +41,7 @@ func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Cli
 		return nil, err
 	}
 	registry := harness.CreateRegistry()
-	opened, err := harness.OpenHarness(ctx, storage, harness.HarnessOptions{
+	opened, err := harness.OpenHarness(ctx, cacheHistory(storage), harness.HarnessOptions{
 		Models:   durableModels(baseURL, key, model, client),
 		Registry: registry,
 		Env: func(_ context.Context, target harness.EnvTarget) (env.ExecutionEnv, error) {
