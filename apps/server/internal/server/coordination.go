@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,11 +44,17 @@ type turnState struct {
 	notice     *string
 	external   map[string]bool
 	prefixes   []string
+	classes    map[string]ToolClass
+	known      map[string]bool
 	waits      map[string]bool
 	checkpoint *store.Checkpoint
 	store      *store.Store
 	hookErr    error
 	task       *store.Task
+	cancel     context.CancelFunc
+	approval   *store.Approval
+	claims     map[string]string // tool-call id → claimed approval id
+	noResume   bool              // voice turns gate but do not enqueue actor resume
 }
 
 func beforeTool(ctx context.Context, call, name string, args json.RawMessage) agent.ToolCallHookResult {
@@ -97,6 +105,9 @@ func beforeTool(ctx context.Context, call, name string, args json.RawMessage) ag
 			return agent.ToolCallHookResult{Block: true, Reason: "Automatic turns cannot use external or scheduling tools"}
 		}
 	}
+	if gate := gateApproval(ctx, state, call, name, args); gate != nil {
+		return *gate
+	}
 	if state.store != nil && externalTool(state, name) {
 		if err := state.store.BeginEffect(ctx, state.run.ID, call, name, args, state.work.TaskID); err != nil {
 			state.hookErr = err
@@ -104,6 +115,90 @@ func beforeTool(ctx context.Context, call, name string, args json.RawMessage) ag
 		}
 	}
 	return agent.ToolCallHookResult{}
+}
+
+// gateApproval parks consequential tools until approved, then enforces exactly-once.
+func gateApproval(ctx context.Context, state *turnState, call, name string, args json.RawMessage) *agent.ToolCallHookResult {
+	if state.store == nil {
+		return nil
+	}
+	declared := state.classes[name]
+	class := classifyTool(name, declared, state.known[name], externalTool(state, name))
+	if class != ToolConsequential {
+		return nil
+	}
+	key, err := approvalKey(state.run.ID, name, args)
+	if err != nil {
+		state.hookErr = err
+		return &agent.ToolCallHookResult{Block: true, Terminate: true, Reason: "Could not fingerprint tool arguments"}
+	}
+	existing, err := state.store.ApprovalByKey(ctx, key)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		state.hookErr = err
+		return &agent.ToolCallHookResult{Block: true, Terminate: true, Reason: "Could not load approval"}
+	}
+	if err == nil {
+		switch existing.Status {
+		case store.ApprovalApproved:
+			claimed, ok, claimErr := state.store.ClaimApproval(ctx, key)
+			if claimErr != nil {
+				state.hookErr = claimErr
+				return &agent.ToolCallHookResult{Block: true, Terminate: true, Reason: "Could not claim approval"}
+			}
+			if ok {
+				if state.claims == nil {
+					state.claims = map[string]string{}
+				}
+				state.claims[call] = claimed.ID
+				return nil
+			}
+			existing = claimed
+			fallthrough
+		case store.ApprovalConsumed:
+			if len(existing.Result) > 0 {
+				return &agent.ToolCallHookResult{Block: true, Reason: consumedMessage(existing.ID) + ": " + string(existing.Result)}
+			}
+			return &agent.ToolCallHookResult{Block: true, Reason: claimedMessage(existing.ID)}
+		case store.ApprovalDenied, store.ApprovalExpired:
+			msg := denialMessage(name)
+			if existing.Status == store.ApprovalExpired {
+				msg = expiredMessage(name)
+			}
+			return &agent.ToolCallHookResult{Block: true, Reason: msg}
+		case store.ApprovalPending:
+			state.approval = &existing
+			return &agent.ToolCallHookResult{Block: true, Terminate: true, Reason: "Waiting for approval."}
+		}
+	}
+	jobID := state.run.JobID
+	if state.noResume {
+		jobID = ""
+	}
+	created, isNew, err := state.store.CreateApproval(ctx, store.Approval{
+		ID: "approval:" + state.run.ID + ":" + fmt.Sprintf("%x", sha256Sum(key)),
+		RunID: state.run.ID, AgentID: state.run.AgentID, ThreadID: state.run.ConversationID,
+		Tool: name, Args: args, Key: key, JobID: jobID,
+	})
+	if err != nil {
+		state.hookErr = err
+		return &agent.ToolCallHookResult{Block: true, Terminate: true, Reason: "Could not create approval"}
+	}
+	if created.Status != store.ApprovalPending {
+		return gateApproval(ctx, state, call, name, args)
+	}
+	if isNew && !state.noResume {
+		if _, err := state.store.Append(ctx, store.ApprovalRequestedEvent(created), nil); err != nil {
+			state.hookErr = err
+			return &agent.ToolCallHookResult{Block: true, Terminate: true, Reason: "Could not publish approval"}
+		}
+	}
+	state.approval = &created
+	return &agent.ToolCallHookResult{Block: true, Terminate: true, Reason: "Waiting for approval."}
+}
+
+func sha256Sum(text string) []byte {
+	sum := sha256.Sum256([]byte(text))
+	return sum[:8]
 }
 
 func externalTool(state *turnState, name string) bool {

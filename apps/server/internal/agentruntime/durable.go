@@ -14,13 +14,35 @@ import (
 // context; failing is safer than running without the run, scope and effect records.
 var ErrTurnState = errors.New("turn state is unavailable; review this stage before retrying")
 
+// toolReplay derives durable replay safety from the tool's approval class.
+// Consequential (and undeclared ExtraTools) are unsafe so crash recovery does not re-execute them.
+func toolReplay(tool agent.AgentTool) durable.ToolReplay {
+	type classed interface{ ToolClass() string }
+	if c, ok := tool.(classed); ok {
+		switch c.ToolClass() {
+		case "read", "reversible":
+			return durable.ReplaySafe
+		default:
+			return durable.ReplayUnsafe
+		}
+	}
+	switch tool.Name() {
+	case "read", "grep", "find", "ls", "recall_history", "recall_memory", "show_html",
+		"track_work", "save_memory", "forget_memory", "write", "edit",
+		"message_agent", "handoff_agent", "manage_tasks", "finish_review", "send_to_user":
+		return durable.ReplaySafe
+	default:
+		return durable.ReplayUnsafe
+	}
+}
+
 // ToolRegistration adapts a Polymux tool to the durable harness. The definition's TurnContext
 // restores the context values a tool expects, because the caller's own context does not
 // reach a durable tool call.
 func ToolRegistration(d Definition, tool agent.AgentTool, conversation durable.ConversationId) *durable.ToolRegistration {
 	return &durable.ToolRegistration{
 		ToolSchema: tool.Schema(),
-		Replay:     durable.ReplaySafe,
+		Replay:     toolReplay(tool),
 		Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
 			if d.TurnContext != nil {
 				// Only this session's conversation may use its turn state: a call from

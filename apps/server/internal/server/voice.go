@@ -155,8 +155,37 @@ func (v *voiceWork) run(ctx context.Context, task voiceTask) (agentruntime.Resul
 		d.ExtraTools = append(d.ExtraTools, &controlTool{broker: v.server.config.Devices, agent: task.target})
 	}
 	d.Prompt = d.SystemPrompt() + "\n\nYou are consulting privately with the user's spokesperson agent. Return your findings to the spokesperson, who will speak to the user. These exchanges do not appear in the user's typed chat. Use send_to_user or show_html only to deliberately send a user-facing message or artifact to that chat. Do not reproduce the private exchange there. Retain your existing identity, tool permissions, and approval requirements."
-	state := &turnState{run: contract.Run{ID: "voice-" + v.id + "-" + task.target, AgentID: task.target, ConversationID: v.thread.ID}, work: store.Work{Trigger: task.trigger}}
-	state.external = map[string]bool{"control_device": true}
+	// Persist a private run row for the approval ledger without emitting chat events.
+	jobID := "voice-job:" + v.id + ":" + task.target
+	run := store.NewRun(jobID, v.thread.ID, task.target, task.trigger)
+	run.Status = "running"
+	started := store.Now()
+	run.StartedAt = &started
+	if err := v.server.Store.PutPrivateRun(ctx, run); err != nil {
+		return empty, "", err
+	}
+	state := &turnState{
+		run: run, work: store.Work{Trigger: task.trigger}, store: v.server.Store, noResume: true,
+		classes: map[string]ToolClass{}, known: map[string]bool{}, external: map[string]bool{},
+	}
+	if v.server.config.Devices != nil && v.thread.ID == v.thread.AgentID && task.trigger == "voice" {
+		state.external["control_device"] = true
+		state.known["control_device"] = true
+	}
+	for _, name := range d.Tools {
+		state.external[name] = true
+		state.known[name] = true
+	}
+	for _, tool := range d.ExtraTools {
+		state.external[tool.Name()] = true
+		state.known[tool.Name()] = true
+		if c, ok := tool.(toolClassifier); ok {
+			state.classes[tool.Name()] = ToolClass(c.ToolClass())
+		}
+	}
+	for name := range builtinClass {
+		state.known[name] = true
+	}
 	ctx = context.WithValue(ctx, turnKey{}, state)
 	ctx = context.WithValue(ctx, htmlKey{}, &htmlScope{messageID: state.run.ID, publish: func(ctx context.Context, attachment contract.Attachment, path string) error {
 		return v.publish(ctx, task.target, attachment.ID, "", &attachment, path)
@@ -212,6 +241,25 @@ func (v *voiceWork) run(ctx context.Context, task voiceTask) (agentruntime.Resul
 	}
 	if err == nil {
 		err = ctx.Err()
+	}
+	state.mu.Lock()
+	awaiting := state.approval != nil
+	state.mu.Unlock()
+	finished := store.Now()
+	if awaiting {
+		run.Status, run.Activity, run.Summary, run.FinishedAt = "waiting_input", "", "Waiting for approval", nil
+		outcome := "approval"
+		run.Outcome = &outcome
+	} else if err != nil {
+		run.Status, run.Summary, run.FinishedAt = "failed", "Private consultation failed", &finished
+		run.Error = &contract.Error{Code: "voice_task", Message: "The private consultation failed; its outcome may be uncertain."}
+	} else {
+		run.Status, run.Summary, run.FinishedAt = "completed", "Private consultation complete", &finished
+		outcome := "reply"
+		run.Outcome = &outcome
+	}
+	if e := v.server.Store.PutPrivateRun(ctx, run); e != nil && err == nil {
+		err = e
 	}
 	return result, d.Agent.Name, err
 }
@@ -340,6 +388,7 @@ type voicePublish struct {
 
 func (*voicePublish) Name() string                           { return "send_to_user" }
 func (*voicePublish) Label() string                          { return "Send message to user" }
+func (*voicePublish) ToolClass() string                      { return string(ToolReversible) }
 func (*voicePublish) ExecutionMode() agent.ToolExecutionMode { return agent.ToolModeSequential }
 func (t *voicePublish) Schema() ai.ToolSchema {
 	return ai.ToolSchema{Name: t.Name(), Description: "Deliberately send a useful message to the user's typed conversation. Do not publish private voice transcripts or internal agent exchanges.", Parameters: map[string]any{

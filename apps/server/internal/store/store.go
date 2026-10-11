@@ -86,7 +86,10 @@ PRAGMA user_version=2;`)
 	if err := s.migrateTriggers(ctx); err != nil {
 		return err
 	}
-	return s.migrateNotices(ctx)
+	if err := s.migrateNotices(ctx); err != nil {
+		return err
+	}
+	return s.migrateApprovals(ctx)
 }
 
 func Now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
@@ -493,7 +496,10 @@ func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *co
 			if err := resolvePeers(ctx, tx, event.Run); err != nil {
 				return event, err
 			}
-			if event.Run.Status == "waiting_peer" {
+			if err := resolveApprovals(ctx, tx, event.Run); err != nil {
+				return event, err
+			}
+			if event.Run.Status == "waiting_peer" || event.Run.Status == "waiting_input" {
 				event.Type = "run.update"
 			}
 		}
@@ -819,6 +825,9 @@ func (s *Store) Finish(ctx context.Context, id string) error {
 		return err
 	}
 	if err := finishPeer(ctx, tx, id); err != nil {
+		return err
+	}
+	if err := resumeJobTx(ctx, tx, id); err != nil {
 		return err
 	}
 	return tx.Commit()

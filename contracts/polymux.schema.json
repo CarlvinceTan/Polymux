@@ -583,7 +583,8 @@
             "tool.update",
             "tool.done",
             "peer.delivery",
-            "group.handoff"
+            "group.handoff",
+            "approval_requested"
           ]
         },
         "messageID": {
@@ -631,6 +632,9 @@
         },
         "usage": {
           "$ref": "#/$defs/Usage"
+        },
+        "approval": {
+          "$ref": "#/$defs/ApprovalRequest"
         }
       },
       "required": [
@@ -638,6 +642,35 @@
         "conversationID",
         "type",
         "createdAt"
+      ]
+    },
+    "ApprovalRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "runID": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "args": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "runID",
+        "tool",
+        "args",
+        "expiresAt"
       ]
     },
     "Usage": {

@@ -27,11 +27,15 @@ func (s *Server) schedule(ctx context.Context) {
 	defer ticker.Stop()
 	var pruned time.Time
 	for {
-		if err := s.Store.ScheduleTasks(ctx, time.Now()); err != nil && ctx.Err() == nil {
+		now := time.Now()
+		if err := s.Store.ScheduleTasks(ctx, now); err != nil && ctx.Err() == nil {
 			s.config.Log.Error("schedule tasks", "error", err)
 		}
-		if err := s.Store.Schedule(ctx, time.Now()); err != nil && ctx.Err() == nil {
+		if err := s.Store.Schedule(ctx, now); err != nil && ctx.Err() == nil {
 			s.config.Log.Error("schedule work", "error", err)
+		}
+		if err := s.Store.ExpireApprovals(ctx, now.UTC()); err != nil && ctx.Err() == nil {
+			s.config.Log.Error("expire approvals", "error", err)
 		}
 		// Settled delivery rows and old feed entries are never read again; drop them hourly.
 		if time.Since(pruned) >= time.Hour {
