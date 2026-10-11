@@ -1,0 +1,32 @@
+// swift-tools-version: 6.0
+import PackageDescription
+
+let package = Package(
+    name: "Polymux",
+    platforms: [.iOS("27.0"), .macOS("27.0")],
+    products: [
+        .library(name: "PolymuxKit", targets: ["PolymuxKit"]),
+        .library(name: "AvatarKit", targets: ["AvatarKit"]),
+        .library(name: "PolymuxControl", targets: ["PolymuxControl"]),
+        .executable(name: "media-text", targets: ["MediaText"])
+    ],
+    targets: [
+        .systemLibrary(name: "CSQLite", path: "packages/CSQLite"),
+        .target(name: "PolymuxKit", dependencies: ["CSQLite"], path: "packages/PolymuxKit/Sources/PolymuxKit"),
+        .target(name: "AvatarKit", path: "packages/AvatarKit/Sources/AvatarKit", resources: [.copy("Resources/Bloub-LICENSE.txt")]),
+        .target(name: "PolymuxControl", path: "packages/PolymuxControl/Sources/PolymuxControl"),
+        .testTarget(name: "PolymuxControlTests", dependencies: ["PolymuxControl"], path: "packages/PolymuxControl/Tests/PolymuxControlTests"),
+        .target(name: "PolymuxAvatar", dependencies: ["PolymuxKit", "AvatarKit"], path: "apps/Polymux/Sources/Avatar",
+                exclude: ["AgentAvatar.swift", "AvatarEditor.swift", "AvatarStack.swift", "AvatarView.swift"],
+                sources: ["AvatarOptions.swift", "AvatarPalette.swift"]),
+        .target(name: "PolymuxVoice", dependencies: ["PolymuxKit"], path: "apps/Polymux/Sources/Voice",
+                exclude: ["SpeechOrb.swift", "VoiceOverlay.swift", "VoiceSettings.swift"],
+                sources: ["AppleVoice.swift", "VoiceStore.swift", "VoiceTypes.swift", "LiveSound.swift", "LiveStore.swift",
+                          "VoiceConfig.swift", "Spokesperson.swift", "VoiceBridge.swift"]),
+        .executableTarget(name: "MediaText", path: "packages/MediaText/Sources/MediaText"),
+        .testTarget(name: "PolymuxKitTests", dependencies: ["PolymuxKit", "PolymuxAvatar", "AvatarKit"], path: "packages/PolymuxKit/Tests/PolymuxKitTests"),
+        .testTarget(name: "PolymuxVoiceTests", dependencies: ["PolymuxVoice", "PolymuxKit"], path: "apps/Polymux/Tests/VoiceTests"),
+        .testTarget(name: "VoiceCoreTests", dependencies: ["PolymuxVoice", "PolymuxKit"], path: "apps/Polymux/Tests/VoiceCoreTests"),
+        .testTarget(name: "AvatarKitTests", dependencies: ["AvatarKit"], path: "packages/AvatarKit/Tests/AvatarKitTests", resources: [.copy("Fixtures")])
+    ]
+)
