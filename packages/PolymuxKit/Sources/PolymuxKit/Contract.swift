@@ -417,6 +417,7 @@ public struct Event: Codable, Hashable, Sendable {
     public var routineID: String?
     public var summary: String?
     public var usage: Usage?
+    public var approval: ApprovalRequest?
 
     public init(
         seq: Int64 = 0,
@@ -436,7 +437,8 @@ public struct Event: Codable, Hashable, Sendable {
         delivery: PeerDelivery? = nil,
         routineID: String? = nil,
         summary: String? = nil,
-        usage: Usage? = nil
+        usage: Usage? = nil,
+        approval: ApprovalRequest? = nil
     ) {
         self.seq = seq
         self.conversationID = conversationID
@@ -456,6 +458,29 @@ public struct Event: Codable, Hashable, Sendable {
         self.routineID = routineID
         self.summary = summary
         self.usage = usage
+        self.approval = approval
+    }
+}
+
+public struct ApprovalRequest: Codable, Hashable, Sendable {
+    public var id: String
+    public var runID: String
+    public var tool: String
+    public var args: String
+    public var expiresAt: String
+
+    public init(
+        id: String = "",
+        runID: String = "",
+        tool: String = "",
+        args: String = "",
+        expiresAt: String = ""
+    ) {
+        self.id = id
+        self.runID = runID
+        self.tool = tool
+        self.args = args
+        self.expiresAt = expiresAt
     }
 }
 

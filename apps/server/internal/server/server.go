@@ -291,6 +291,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /attachments", s.upload)
 	s.mux.HandleFunc("GET /attachments/{id}/content", s.download)
 	s.mux.HandleFunc("GET /attachments/{id}/thumbnail", s.thumbnail)
+	s.mux.HandleFunc("GET /runs/{id}/approvals", s.listApprovals)
+	s.mux.HandleFunc("POST /approvals/{id}/approve", s.approveApproval)
+	s.mux.HandleFunc("POST /approvals/{id}/deny", s.denyApproval)
 }
 
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
@@ -889,12 +892,19 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.TaskID != "" {
 		run.TaskID = &work.TaskID
 	}
-	run.Status, run.Activity, run.Summary, run.StartedAt = "running", "preparing", "Preparing reply", &now
+	// Capture before flipping to running; approval resume injects a continuation turn.
+	resuming := run.Status == "waiting_input"
+	run.Status, run.Activity, run.Summary, run.StartedAt, run.FinishedAt = "running", "preparing", "Preparing reply", &now, nil
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		run.SourceMessageID = &user.ID
 	}
-	state := &turnState{run: run, work: work, store: s.Store}
+	state := &turnState{run: run, work: work, store: s.Store, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
 	runCtx = context.WithValue(runCtx, turnKey{}, state)
+	if resuming {
+		text := "An approval decision is ready. Continue the task. If a consequential tool was approved, re-issue that exact call with the same arguments; if it was denied, do not retry or work around it."
+		user = contract.Message{ID: user.ID + ":approval", ThreadID: user.ThreadID, Role: "user", Parts: []contract.Part{{Kind: "text", Text: &text}}, CreatedAt: store.Now()}
+		run.Attempt++
+	}
 	if err := s.Store.RunEvent(writeCtx, "run.update", &run, nil); err != nil {
 		s.config.Log.Error("start run", "error", err)
 		return contract.Message{}
@@ -971,20 +981,32 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	}
 	a.mu.Unlock()
 	state.external = map[string]bool{}
+	state.classes = map[string]ToolClass{}
+	state.known = map[string]bool{}
 	if s.config.Devices != nil && a.threadID == "" && work.Trigger != "peer" {
 		state.external["control_device"] = true
+		state.known["control_device"] = true
 	}
 	if len(d.Devices) > 0 {
 		state.external["run_device"] = true
+		state.known["run_device"] = true
 	}
 	for _, name := range d.Tools {
 		state.external[name] = true
+		state.known[name] = true
 	}
 	for _, tool := range d.ExtraTools {
 		state.external[tool.Name()] = true
+		state.known[tool.Name()] = true
+		if c, ok := tool.(toolClassifier); ok {
+			state.classes[tool.Name()] = ToolClass(c.ToolClass())
+		}
 	}
 	for _, server := range d.MCP {
 		state.prefixes = append(state.prefixes, server.Name+"__")
+	}
+	for name := range builtinClass {
+		state.known[name] = true
 	}
 	if stale != nil {
 		a.sessionMu.Lock()
@@ -1078,6 +1100,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			err = errors.Join(err, sess.Close())
 			sess = nil
 		}
+	}
+	if binder, ok := sess.(agentruntime.TurnBinder); ok {
+		binder.BindTurn(beforeTool, func() (context.Context, bool) {
+			return context.WithValue(runCtx, turnKey{}, state), true
+		})
 	}
 	var result agentruntime.Result
 	var content strings.Builder
@@ -1175,12 +1202,24 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				if externalTool(state, delta.Tool) {
 					effectErr = s.Store.EndEffect(writeCtx, run.ID, delta.ToolID, delta.Failed)
 				}
+				claimID := ""
+				if state.claims != nil {
+					claimID = state.claims[delta.ToolID]
+					delete(state.claims, delta.ToolID)
+				}
 				if effectErr != nil {
 					state.hookErr = effectErr
 				}
 				state.mu.Unlock()
 				if effectErr != nil {
 					return effectErr
+				}
+				if claimID != "" {
+					status := "completed"
+					if delta.Failed {
+						status = "failed"
+					}
+					_ = s.Store.SaveApprovalResult(writeCtx, claimID, json.RawMessage(`{"status":"`+status+`"}`))
 				}
 				status := "completed"
 				if delta.Failed {
@@ -1305,6 +1344,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	hookErr := state.hookErr
 	checkpoint := state.checkpoint
 	taskTools := state.tools
+	awaiting := state.approval != nil
 	state.mu.Unlock()
 	if chain, _ := runCtx.Value(chainKey{}).(*chainState); chain != nil {
 		chain.mu.Lock()
@@ -1316,6 +1356,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	}
 	if hookErr != nil {
 		err = errors.Join(err, hookErr)
+	}
+	if awaiting {
+		err = nil
+	} else if errors.Is(err, context.Canceled) {
+		// keep cancel handling below
 	}
 	if err == nil {
 		if result.Text != "" && result.Text != content.String() {

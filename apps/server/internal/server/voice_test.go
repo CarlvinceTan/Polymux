@@ -132,7 +132,8 @@ func TestVoicePrivacyAndPermissions(t *testing.T) {
 	if d.Agent.Model != "test/model" || !slices.Equal(d.Tools, []string{"read", "bash"}) || !strings.HasPrefix(d.Prompt, "Existing permission policy") || d.BeforeTool == nil {
 		t.Fatalf("voice changed existing agent policy: %+v", d)
 	}
-	for _, table := range []string{"messages", "events", "runs", "jobs", "sessions", "group_sessions", "deliveries"} {
+	// Voice may keep a private run/job for the approval ledger; chat surfaces must stay empty.
+	for _, table := range []string{"messages", "events", "sessions", "group_sessions", "deliveries"} {
 		var count int
 		if err := api.Store.DB.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("private execution persisted in %s: %d %v", table, count, err)

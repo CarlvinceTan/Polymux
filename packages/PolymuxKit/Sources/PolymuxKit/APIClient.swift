@@ -334,6 +334,7 @@ public struct APIClient: Sendable {
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("polymux-kit", forHTTPHeaderField: "X-Polymux-Client")
         return request
     }
 
