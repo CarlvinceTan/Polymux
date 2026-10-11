@@ -64,17 +64,45 @@ func TestStopPreparation(t *testing.T) {
 	if recorder.Code != 202 {
 		t.Fatal(recorder.Code, recorder.Body.String())
 	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 	select {
 	case <-started:
-	case <-time.After(3 * time.Second):
-		t.Fatal("preparation not started")
+	case <-ctx.Done():
+		t.Fatal("preparation not started:", ctx.Err())
+	}
+	runID := store.NewRun("prepare", "a", "a", "message").ID
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var active *execution
+	// The background indexer can start extraction before this run is registered.
+	for active == nil {
+		value, ok := api.turns.Load(runID)
+		run, err := db.Run(ctx, runID)
+		if ok && err == nil && run.Status == "running" && run.Activity == "preparing" {
+			active = value.(*execution)
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatalf("run did not start preparation: %+v %v: %v", run, err, ctx.Err())
+		}
 	}
 	recorder = httptest.NewRecorder()
 	api.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/threads/a/stop", strings.NewReader(`{}`)))
 	if recorder.Code != 200 {
 		t.Fatal(recorder.Code)
 	}
-	run := awaitRun(t, db, store.NewRun("prepare", "a", "a", "message").ID, "cancelled")
+	select {
+	case <-active.done:
+	case <-ctx.Done():
+		t.Fatal("preparation did not stop:", ctx.Err())
+	}
+	run, err := db.Run(t.Context(), runID)
+	if err != nil || run.Status != "cancelled" {
+		t.Fatalf("preparation stop: %+v %v", run, err)
+	}
 	if run.Error == nil || run.Error.Code != "stopped" {
 		t.Fatalf("stop result %+v", run)
 	}

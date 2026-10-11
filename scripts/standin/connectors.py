@@ -31,14 +31,19 @@ def command(argv):
         return {"available": False, "exit_status": result.returncode, "message": "Connector unavailable; no raw error or credential disclosed."}
     return {"available": True, "result": clean(result.stdout[:40000])}
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+NOTION_ORIGIN = 'https://api.notion.com'
+NOTION_HTTP = urllib.request.build_opener(NoRedirect())
+
 def notion(method, path, body=None):
     path = urllib.parse.unquote(path).lower()
     if 'comment' in path or not re.fullmatch(r'/v1/(?:search|pages|databases|(?:pages|databases|blocks)/[a-f0-9-]{32,36}(?:/query|/children)?)', path):
         raise ValueError('Notion endpoint denied')
-    allowed = {'GET', 'PATCH'}
-    if path in ('/v1/search', '/v1/pages', '/v1/databases') or path.endswith('/query'):
-        allowed = {'POST'}
-    if method not in allowed:
+    read_post = path == '/v1/search' or re.fullmatch(r'/v1/databases/[a-f0-9-]{32,36}/query', path)
+    if method != 'GET' and not (method == 'POST' and read_post):
         raise ValueError('Notion operation denied')
     try:
         credential = subprocess.run(['vault', 'get', 'Notion - Polymux integration token', '--field', 'password'], capture_output=True, text=True, timeout=20, env=environment())
@@ -49,10 +54,10 @@ def notion(method, path, body=None):
         return {'available': False, 'message': 'Notion credential unavailable.'}
     if not isinstance(token, str) or not token:
         return {'available': False, 'message': 'Notion credential unavailable.'}
-    request = urllib.request.Request('https://api.notion.com'+path, data=json.dumps(body).encode() if body is not None else None, method=method,
+    request = urllib.request.Request(NOTION_ORIGIN+path, data=json.dumps(body).encode() if body is not None else None, method=method,
         headers={'Authorization': 'Bearer '+token, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json'})
     try:
-        with urllib.request.urlopen(request, timeout=40) as response:
+        with NOTION_HTTP.open(request, timeout=40) as response:
             result = response.read(200000).decode()
         return {'available': True, 'result': clean(result.replace(token, '[REDACTED CREDENTIAL]'))}
     except Exception:
@@ -62,7 +67,7 @@ TOOLS = {
  "mail_accounts": ("List configured email accounts.", {}, []),
  "mail_list": ("Read recent mail envelopes, no flag changes or sends.", {"account":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20}}, []),
  "mail_read": ("Read one mail without marking it seen, credentials redacted.", {"account":{"type":"string"},"id":{"type":"string"}}, ["id"]),
- "notion_api": ("Notion read, update, insert only. Comments are always denied.", {"method":{"type":"string","enum":["GET","POST","PATCH"]},"path":{"type":"string"},"body":{"type":"object"}}, ["method","path"]),
+ "notion_api": ("Read Notion only: GET, or POST to database query and search. All writes and comments are denied.", {"method":{"type":"string","enum":["GET","POST"]},"path":{"type":"string"},"body":{"type":"object"}}, ["method","path"]),
  "notion_search": ("Search accessible Notion pages. No writes.", {"query":{"type":"string"}}, []),
  "notion_read": ("Read a Notion page; use notion_api for block children.", {"id":{"type":"string"}}, ["id"]),
  "github_repo": ("Read GitHub repository metadata.", {"repo":{"type":"string"}}, ["repo"]),

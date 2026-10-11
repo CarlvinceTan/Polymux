@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/skills"
+	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/durable/storage"
 )
 
@@ -169,5 +171,59 @@ func TestEphemeralDurableSessionStartsFresh(t *testing.T) {
 	seen := requests()
 	if len(seen) != 2 || strings.Contains(seen[1], "ALPHA") {
 		t.Fatalf("ephemeral turn inherited context: %v", seen)
+	}
+}
+
+func TestDurableExtensionsUnregisterOnClose(t *testing.T) {
+	runtime := openDurable(t, &httptest.Server{URL: "http://localhost"})
+	baseline := len(runtime.registry.Snapshot().Installed())
+	definition := Definition{
+		Agent:      contract.Agent{ID: "assistant", Name: "Assistant"},
+		Tools:      []string{"read"},
+		ExtraTools: []agent.AgentTool{&stateTool{}},
+		BeforeTool: func(context.Context, string, string, json.RawMessage) agent.ToolCallHookResult {
+			return agent.ToolCallHookResult{}
+		},
+	}
+	for range 3 {
+		first, err := runtime.Open(t.Context(), definition, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := runtime.Open(t.Context(), definition, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count := len(runtime.registry.Snapshot().Installed()); count != baseline+6 {
+			t.Fatalf("registered extensions %d, want %d", count, baseline+6)
+		}
+		if err := first.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if count := len(runtime.registry.Snapshot().Installed()); count != baseline+3 {
+			t.Fatalf("closing one session left %d extensions, want %d", count, baseline+3)
+		}
+		if err := first.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := second.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if count := len(runtime.registry.Snapshot().Installed()); count != baseline {
+			t.Fatalf("closing sessions left %d extensions, want baseline %d", count, baseline)
+		}
+		resumed, err := runtime.Open(t.Context(), definition, first.Path())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count := len(runtime.registry.Snapshot().Installed()); count != baseline+3 {
+			t.Fatalf("resumed session registered %d extensions, want %d", count, baseline+3)
+		}
+		if err := resumed.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if count := len(runtime.registry.Snapshot().Installed()); count != baseline {
+			t.Fatal("resumed extensions leaked")
+		}
 	}
 }

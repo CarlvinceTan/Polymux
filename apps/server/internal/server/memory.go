@@ -31,12 +31,12 @@ func scopedTurn(ctx context.Context, s *store.Store) (*turnState, error) {
 	return state, nil
 }
 
-func (s *Server) memoryContext(ctx context.Context, run contract.Run, m contract.Message) (contract.Message, error) {
+func (s *Server) memoryContext(ctx context.Context, run contract.Run, m contract.Message, query string) (contract.Message, error) {
 	documents, err := s.memory.List(ctx, run.AgentID, run.ConversationID)
 	if err != nil {
 		return m, err
 	}
-	documents = rankMemory(documents, store.Text(m))
+	documents = rankMemory(documents, query)
 	selected := []memory.Document{}
 	size := 2
 	for _, document := range documents {

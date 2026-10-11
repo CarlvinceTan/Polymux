@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
+from contextlib import ExitStack, redirect_stdout, redirect_stderr
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 from unittest.mock import patch
 
@@ -17,30 +20,127 @@ class SafetyTests(unittest.TestCase):
         with self.assertRaises(ValueError):connectors.invoke('matrix_send',{})
 
     def test_notion_comments_denied(self):
-        with patch.object(connectors.subprocess, 'run') as vault, patch.object(connectors.urllib.request, 'urlopen') as network:
+        with patch.object(connectors.subprocess, 'run') as vault, patch.object(connectors.NOTION_HTTP, 'open') as network:
             for path in ['/v1/comments', '/v1/comments/abc', '/v1/%63omments', '/v1/pages/../comments']:
                 for method in ['GET', 'POST', 'PATCH', 'DELETE']:
                     with self.assertRaises(ValueError): connectors.notion(method, path, {})
             with self.assertRaises(ValueError): connectors.invoke('notion_comment', {})
-            vault.assert_not_called(); network.assert_not_called()
+            self.assertTrue(vault.call_count == 0, 'Rejected operation accessed vault'); network.assert_not_called()
+
+    def reject_writes(self, resource):
+        paths = ['/v1/'+resource, '/v1/'+resource+'/'+'a'*32]
+        if resource == 'blocks': paths.append(paths[-1]+'/children')
+        with patch.object(connectors.subprocess, 'run') as vault, patch.object(connectors.NOTION_HTTP, 'open') as network:
+            for path in paths:
+                for method in ['POST', 'PATCH', 'DELETE']:
+                    with self.subTest(path=path, method=method):
+                        with self.assertRaises(ValueError):
+                            connectors.invoke('notion_api', {'method':method, 'path':path, 'body':{}})
+            self.assertTrue(vault.call_count == 0, 'Rejected operation accessed vault')
+            network.assert_not_called()
+
+    def test_notion_rejects_page_write(self):
+        self.reject_writes('pages')
+
+    def test_notion_rejects_database_write(self):
+        self.reject_writes('databases')
+
+    def test_notion_rejects_block_write(self):
+        self.reject_writes('blocks')
+
+    def test_redirect_keeps_token_private_local_server(self):
+        token = 'local-test-credential'
+        received = []
+        authorized = []
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_GET(self):
+                if self.server.redirect:
+                    authorized.append(self.headers.get('Authorization') == 'Bearer '+token)
+                    self.send_response(self.server.status)
+                    self.send_header('Location', self.server.redirect)
+                else:
+                    received.append(self.headers.get('Authorization'))
+                    self.send_response(200)
+                self.end_headers()
+            do_POST = do_GET
+        with ExitStack() as stack:
+            servers = []
+            for _ in range(2):
+                server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+                servers.append(server)
+                server.redirect = None
+                stack.callback(server.server_close)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                stack.callback(thread.join)
+                stack.callback(server.shutdown)
+            origin, destination = servers
+            origin.redirect = 'http://127.0.0.1:'+str(destination.server_port)+'/target'
+            directory = stack.enter_context(tempfile.TemporaryDirectory())
+            vault = Path(directory)/'vault'
+            vault.write_text("#!/bin/sh\nprintf '%s\\n' '"+json.dumps({'password':token})+"'\n")
+            vault.chmod(0o700)
+            original = connectors.NOTION_ORIGIN
+            connectors.NOTION_ORIGIN = 'http://127.0.0.1:'+str(origin.server_port)
+            stack.callback(setattr, connectors, 'NOTION_ORIGIN', original)
+            output = io.StringIO()
+            previous_env = {name:os.environ.get(name) for name in ['PATH', 'no_proxy']}
+            def restore_env():
+                for name, value in previous_env.items():
+                    if value is None: os.environ.pop(name, None)
+                    else: os.environ[name] = value
+            stack.callback(restore_env)
+            os.environ['PATH'] = directory
+            os.environ['no_proxy'] = '127.0.0.1'
+            with redirect_stdout(output), redirect_stderr(output):
+                for status in [301, 302, 303, 307, 308]:
+                    origin.status = status
+                    for method, path in [('GET', '/v1/pages/'+'a'*32), ('POST', '/v1/search')]:
+                        result = connectors.notion(method, path, {} if method == 'POST' else None)
+                        self.assertFalse(result['available'])
+                        self.assertTrue(token not in json.dumps(result))
+            self.assertTrue(token not in output.getvalue())
+            self.assertEqual(len(authorized), 10)
+            self.assertTrue(all(authorized))
+            self.assertTrue(not received, 'Redirect destination received a request')
 
     def test_notion_credential_is_private(self):
         from subprocess import CompletedProcess
         from unittest.mock import MagicMock
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b'{"text":"private-test-value"}'
-        with patch.object(connectors.subprocess, 'run', return_value=CompletedProcess([], 0, '{"password":"private-test-value"}', '')) as vault, patch.object(connectors.urllib.request, 'urlopen', return_value=response) as network:
+        with patch.object(connectors.subprocess, 'run', return_value=CompletedProcess([], 0, '{"password":"private-test-value"}', '')) as vault, patch.object(connectors.NOTION_HTTP, 'open', return_value=response) as network:
             result = connectors.notion('GET', '/v1/pages/'+'a'*32)
             self.assertTrue(result['available'])
-            self.assertNotIn('private-test-value', json.dumps(result))
-            self.assertEqual(network.call_args.args[0].get_header('Authorization'), 'Bearer private-test-value')
+            self.assertTrue('private-test-value' not in json.dumps(result))
+            self.assertTrue(network.call_args.args[0].get_header('Authorization') == 'Bearer private-test-value')
             self.assertEqual(vault.call_args.args[0][1:3], ['get', 'Notion - Polymux integration token'])
+
+    def test_notion_allows_only_read_operations(self):
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"results":[]}'
+        credential = subprocess.CompletedProcess([], 0, '{"password":"test-value"}', '')
+        with patch.object(connectors.subprocess, 'run', return_value=credential) as vault, patch.object(connectors.NOTION_HTTP, 'open', return_value=response) as network:
+            for method, path in [('GET', '/v1/pages/'+'a'*32), ('GET', '/v1/databases/'+'a'*32), ('GET', '/v1/blocks/'+'a'*32+'/children'), ('POST', '/v1/databases/'+'a'*32+'/query'), ('POST', '/v1/search')]:
+                with self.subTest(method=method, path=path):
+                    self.assertTrue(connectors.notion(method, path, {})['available'])
+            self.assertEqual(vault.call_count, 5)
+            self.assertEqual(network.call_count, 5)
+            for resource in ['pages', 'blocks']:
+                with self.assertRaises(ValueError):
+                    connectors.notion('POST', '/v1/'+resource+'/'+'a'*32+'/query', {})
+            self.assertEqual(vault.call_count, 5)
+            self.assertEqual(network.call_count, 5)
+        methods = connectors.TOOLS['notion_api'][1]['method']['enum']
+        self.assertEqual(methods, ['GET', 'POST'])
 
     def test_notion_denies_delete_and_external_paths(self):
         with patch.object(connectors.subprocess, 'run') as vault:
             for method, path in [('DELETE','/v1/pages/'+'a'*32), ('POST','https://example.com'), ('GET','/v1/users'), ('POST','/v1/blocks/'+'a'*32+'/children')]:
                 with self.assertRaises(ValueError): connectors.notion(method, path)
-            vault.assert_not_called()
+            self.assertTrue(vault.call_count == 0, 'Rejected operation accessed vault')
 
     def test_argument_cannot_inject_cli_option(self):
         with self.assertRaises(ValueError):connectors.invoke('mail_read',{'id':'--seen'})
@@ -89,7 +189,7 @@ class EnvironmentTests(unittest.TestCase):
     def test_missing_connector_is_unavailable(self):
         with patch.object(connectors.subprocess,'run',side_effect=FileNotFoundError('private diagnostic')):
             self.assertFalse(connectors.command(['hub','rooms'])['available'])
-            with patch.object(connectors.urllib.request,'urlopen') as network:
+            with patch.object(connectors.NOTION_HTTP,'open') as network:
                 result=connectors.notion('GET','/v1/pages/'+'a'*32)
                 self.assertEqual(result,{'available':False,'message':'Notion credential unavailable.'})
                 network.assert_not_called()

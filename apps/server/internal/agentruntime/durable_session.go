@@ -140,13 +140,12 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	// A tool must compose from an installed extension to be resolvable, and the change below
 	// selects which of them this conversation offers. Each tool gets its own extension so a
 	// later turn's install cannot replace an earlier one's.
-	extensions := []*durable.Extension{}
 	for _, registration := range tools {
 		extension := &durable.Extension{Name: "polymux:" + strconv.FormatInt(int64(conversation.Id()), 10) + ":" + registration.ToolSchema.Name, Tools: []*durable.ToolRegistration{registration}}
 		if err := r.registry.Install(extension); err != nil {
 			return nil, err
 		}
-		extensions = append(extensions, extension)
+		session.extensions = append(session.extensions, extension)
 	}
 	// An explicit selection, even an empty one: a conversation without a filter would
 	// otherwise inherit every tool ever installed.
@@ -156,9 +155,9 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 		if err := r.registry.Install(extension); err != nil {
 			return nil, err
 		}
-		extensions = append(extensions, extension)
+		session.extensions = append(session.extensions, extension)
 	}
-	change.Extensions = harness.SetTo(harness.ExtensionChange{Exact: true, List: extensions})
+	change.Extensions = harness.SetTo(harness.ExtensionChange{Exact: true, List: session.extensions})
 	if err := conversation.Configure(ctx, change); err != nil {
 		return nil, err
 	}
@@ -228,12 +227,13 @@ type durableSession struct {
 	emitMu sync.Mutex
 	emit   func(Delta) error
 	// park is set when BeforeTool requests Terminate; AfterTools aborts the in-flight turn.
-	park      atomic.Bool
-	clients   []*mcp.Client
-	runtime   *DurableRuntime
-	degraded  bool
-	closeOnce sync.Once
-	closeErr  error
+	park       atomic.Bool
+	clients    []*mcp.Client
+	extensions []*durable.Extension
+	runtime    *DurableRuntime
+	degraded   bool
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // turnContext restores the context this conversation's tool calls and hooks run under.
@@ -337,11 +337,18 @@ func (s *durableSession) BindTurn(before agent.BeforeToolCallHook, turn func() (
 	s.definition.TurnContext = turn
 }
 
-// The conversation persists; only its live connector clients are released.
+// The conversation persists; its live clients and registrations are released.
 func (s *durableSession) Close() error {
 	s.closeOnce.Do(func() {
 		s.closeErr = closeMCP(s.clients)
 		if s.runtime != nil {
+			for _, extension := range s.extensions {
+				// A reopened conversation may have replaced this registration.
+				if s.runtime.registry.Snapshot().Extension(extension.Name) == extension {
+					s.runtime.registry.Uninstall(extension)
+				}
+			}
+			s.extensions = nil
 			s.runtime.sessions.Delete(s)
 		}
 	})
