@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"flag"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -154,5 +157,84 @@ func TestTailscaleCommands(t *testing.T) {
 				t.Fatal("expected startup to stop at blocked data directory")
 			}
 		})
+	}
+}
+
+func TestInstanceName(t *testing.T) {
+	tests := []struct {
+		name     string
+		hostname string
+		want     string
+	}{
+		{name: "local hostname", hostname: "cvmini.local", want: "cvmini"},
+		{name: "bare hostname", hostname: "cvmini", want: "cvmini"},
+		{name: "qualified hostname", hostname: "cvmini.example.local", want: "cvmini"},
+		{name: "empty hostname", hostname: "", want: "Polymux"},
+		{name: "empty label", hostname: ".local", want: "Polymux"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := instanceName(tt.hostname); got != tt.want {
+				t.Errorf("instanceName(%q) = %q, want %q", tt.hostname, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAdvertisedIPs(t *testing.T) {
+	addrs := []string{"192.168.1.5", "fd00::1", "100.64.0.5", "fd7a:115c:a1e0::1", "fe80::1%en0", "fe80::2", "invalid"}
+	for _, tt := range []struct {
+		name      string
+		bind      string
+		addrs     []string
+		tailscale bool
+		want      []string
+	}{
+		{name: "tailscale excluded", bind: "0.0.0.0", addrs: addrs, want: []string{"192.168.1.5", "fd00::1"}},
+		{name: "tailscale included", bind: "::", addrs: addrs, tailscale: true, want: []string{"192.168.1.5", "fd00::1", "100.64.0.5", "fd7a:115c:a1e0::1"}},
+		{name: "specific bind only", bind: "192.168.1.8", addrs: addrs, want: []string{"192.168.1.8"}},
+		{name: "specific IPv6", bind: "fd00::2", addrs: addrs, want: []string{"fd00::2"}},
+		{name: "specific tailscale excluded", bind: "100.64.0.5", addrs: addrs},
+		{name: "specific tailscale included", bind: "100.64.0.5", addrs: addrs, tailscale: true, want: []string{"100.64.0.5"}},
+		{name: "specific link local excluded", bind: "fe80::1", addrs: addrs, tailscale: true},
+		{name: "all filtered", bind: "0.0.0.0", addrs: []string{"100.64.0.5", "fd7a:115c:a1e0::1", "fe80::1%en0"}},
+		{name: "empty", bind: "0.0.0.0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := advertisedIPs(net.ParseIP(tt.bind), tt.addrs, tt.tailscale); !slices.Equal(got, tt.want) {
+				t.Errorf("advertisedIPs = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldAdvertise(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		bind   string
+		noMDNS bool
+		want   bool
+	}{
+		{name: "disabled", bind: "0.0.0.0", noMDNS: true},
+		{name: "IPv4 loopback", bind: "127.0.0.1"},
+		{name: "IPv6 loopback", bind: "::1"},
+		{name: "unspecified", bind: "0.0.0.0", want: true},
+		{name: "specific", bind: "192.168.1.5", want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldAdvertise(net.ParseIP(tt.bind), tt.noMDNS); got != tt.want {
+				t.Errorf("shouldAdvertise = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBonjourTXT(t *testing.T) {
+	key := []byte("test public key")
+	txt := bonjourTXT(key)
+	fingerprint := sha256.Sum256(key)
+	want := base64.RawURLEncoding.EncodeToString(fingerprint[:])[:16]
+	if len(txt) != 2 || txt["v"] != "1" || len(txt["k"]) != 16 || txt["k"] != want {
+		t.Fatalf("TXT = %v, want only v=1 and k=%s", txt, want)
 	}
 }

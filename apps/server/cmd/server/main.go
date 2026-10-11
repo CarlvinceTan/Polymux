@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,6 +25,7 @@ import (
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/embedproc"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/link"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/push"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/search"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/server"
@@ -52,6 +56,7 @@ func run() error {
 	dev := flag.Bool("dev", os.Getenv("POLYMUX_DEV") == "1", "development mode (loopback is always allowed)")
 	dir := flag.String("data", os.Getenv("POLYMUX_DATA_DIR"), "data directory")
 	deviceListen := flag.String("device-listen", "", "TLS device listener (defaults to backend port + 2)")
+	noMDNS := flag.Bool("no-mdns", os.Getenv("POLYMUX_NO_MDNS") == "1", "disable Bonjour LAN advertisement")
 	tailscale := flag.Bool("tailscale", os.Getenv("POLYMUX_TAILSCALE") == "1", "use Tailscale listeners (requires Tailscale)")
 	flag.Parse()
 	if *dir == "" {
@@ -198,6 +203,19 @@ func run() error {
 	done := make(chan error, 2)
 	go func() { done <- httpServer.Serve(listener) }()
 	go func() { done <- deviceServer.Serve(tls.NewListener(deviceSocket, pairings.TLSConfig())) }()
+	if address := deviceSocket.Addr().(*net.TCPAddr); shouldAdvertise(address.IP, *noMDNS) {
+		ips := advertisedIPs(address.IP, lanAddrs(), *tailscale)
+		if len(ips) == 0 {
+			log.Info("Bonjour advertisement skipped: no eligible IP addresses")
+		} else {
+			stop, err := advertise(ctx, *dir, address.Port, ips)
+			if err != nil {
+				log.Warn("Bonjour advertisement unavailable", "error", err)
+			} else {
+				defer stop()
+			}
+		}
+	}
 	select {
 	case err := <-done:
 		if !errors.Is(err, http.ErrServerClosed) {
@@ -211,6 +229,57 @@ func run() error {
 		}
 	}
 	return nil
+}
+
+func advertise(ctx context.Context, dir string, port int, ips []string) (func(), error) {
+	instance, err := os.Hostname()
+	if err != nil {
+		return nil, fmt.Errorf("bonjour hostname: %w", err)
+	}
+	identity, err := link.LoadIdentity(dir)
+	if err != nil {
+		return nil, fmt.Errorf("bonjour identity: %w", err)
+	}
+	return link.Advertise(ctx, instanceName(instance), port, ips, bonjourTXT(identity.PublicKey))
+}
+
+func shouldAdvertise(bind net.IP, noMDNS bool) bool {
+	return !noMDNS && !bind.IsLoopback()
+}
+
+func advertisedIPs(bind net.IP, addrs []string, tailscale bool) []string {
+	if len(bind) != 0 && !bind.IsUnspecified() {
+		addrs = []string{bind.String()}
+	}
+	var ips []string
+	for _, address := range addrs {
+		ip, err := netip.ParseAddr(address)
+		if err != nil {
+			continue
+		}
+		ip = ip.Unmap()
+		if ip.Is6() && ip.IsLinkLocalUnicast() || !tailscale && addressRank(ip) == 6 {
+			continue
+		}
+		ips = append(ips, ip.WithZone("").String())
+	}
+	return ips
+}
+
+func bonjourTXT(key []byte) map[string]string {
+	fingerprint := sha256.Sum256(key)
+	return map[string]string{
+		"v": "1",
+		"k": base64.RawURLEncoding.EncodeToString(fingerprint[:])[:16],
+	}
+}
+
+func instanceName(hostname string) string {
+	name, _, _ := strings.Cut(strings.TrimSuffix(hostname, ".local"), ".")
+	if name == "" {
+		return "Polymux"
+	}
+	return name
 }
 
 func defaults(model string) []agentruntime.Definition {
