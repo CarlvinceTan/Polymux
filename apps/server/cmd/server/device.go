@@ -12,8 +12,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/link"
 )
 
 func runDevice(args []string) error {
@@ -75,12 +77,30 @@ func runDevice(args []string) error {
 		if err := db.QueryRowContext(ctx, `SELECT id FROM agents WHERE id=?`, *agent).Scan(&found); err != nil {
 			return errors.New("agent not found; start the server and create it first")
 		}
+		identity, err := link.LoadIdentity(*dir)
+		if err != nil {
+			return err
+		}
+		port := u.Port()
+		if port == "" {
+			port = "7339"
+		}
+		var lan []string
+		for _, ip := range lanAddrs() {
+			lan = append(lan, net.JoinHostPort(ip, port))
+		}
+		offer, err := link.NewOffer(identity, lan, time.Now())
+		if err != nil {
+			return err
+		}
 		ticket, err := s.Issue(ctx, *address, *agent, strings.Split(*caps, ","))
 		if err != nil {
 			return err
 		}
 		fmt.Println(ticket)
 		fmt.Fprintln(os.Stderr, "Expires in 10 minutes, single use. Paste into Polymux Settings > This Mac. Treat it as a temporary credential.")
+		fmt.Fprintln(os.Stderr, "Link offer (preview; the app does not redeem it yet):", offer.URI())
+		fmt.Fprintln(os.Stderr, "Link offer (preview; the app does not redeem it yet):", offer.Code)
 	case "list":
 		pairs, err := s.List(ctx)
 		if err != nil {
