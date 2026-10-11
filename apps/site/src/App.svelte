@@ -229,5 +229,6 @@
   <a href="/docs/">Docs</a>
   <a href="/releases/">Releases</a>
   <a href="/privacy-policy/">Privacy</a>
+  <a href="/privacy">Google data</a>
   <a href={githubUrl}>GitHub</a>
 </footer>
