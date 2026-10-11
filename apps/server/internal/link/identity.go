@@ -7,11 +7,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
+	"github.com/flynn/noise"
 )
 
 type Identity struct {
 	PublicKey  ed25519.PublicKey
 	PrivateKey ed25519.PrivateKey
+	Noise      noise.DHKey
 }
 
 func LoadIdentity(dir string) (Identity, error) {
@@ -36,7 +39,11 @@ func LoadIdentity(dir string) (Identity, error) {
 		return Identity{}, err
 	}
 	key := ed25519.PrivateKey(data)
-	return Identity{PublicKey: key.Public().(ed25519.PublicKey), PrivateKey: key}, nil
+	static, err := loadNoise(dir)
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{PublicKey: key.Public().(ed25519.PublicKey), PrivateKey: key, Noise: static}, nil
 }
 
 func createIdentity(path string) error {
@@ -78,9 +85,12 @@ func createIdentity(path string) error {
 }
 
 func ResetIdentity(dir string) error {
-	err := os.Remove(filepath.Join(dir, "devices", "identity.ed25519"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	var result error
+	for _, name := range []string{"identity.ed25519", "noise.x25519"} {
+		err := os.Remove(filepath.Join(dir, "devices", name))
+		if !errors.Is(err, os.ErrNotExist) {
+			result = errors.Join(result, err)
+		}
 	}
-	return err
+	return result
 }
