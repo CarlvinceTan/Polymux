@@ -14,6 +14,32 @@ class SafetyTests(unittest.TestCase):
         with self.assertRaises(ValueError):connectors.invoke('mail_send',{})
         with self.assertRaises(ValueError):connectors.invoke('matrix_send',{})
 
+    def test_notion_comments_denied(self):
+        with patch.object(connectors.subprocess, 'run') as vault, patch.object(connectors.urllib.request, 'urlopen') as network:
+            for path in ['/v1/comments', '/v1/comments/abc', '/v1/%63omments', '/v1/pages/../comments']:
+                for method in ['GET', 'POST', 'PATCH', 'DELETE']:
+                    with self.assertRaises(ValueError): connectors.notion(method, path, {})
+            with self.assertRaises(ValueError): connectors.invoke('notion_comment', {})
+            vault.assert_not_called(); network.assert_not_called()
+
+    def test_notion_credential_is_private(self):
+        from subprocess import CompletedProcess
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"text":"private-test-value"}'
+        with patch.object(connectors.subprocess, 'run', return_value=CompletedProcess([], 0, '{"password":"private-test-value"}', '')) as vault, patch.object(connectors.urllib.request, 'urlopen', return_value=response) as network:
+            result = connectors.notion('GET', '/v1/pages/'+'a'*32)
+            self.assertTrue(result['available'])
+            self.assertNotIn('private-test-value', json.dumps(result))
+            self.assertEqual(network.call_args.args[0].get_header('Authorization'), 'Bearer private-test-value')
+            self.assertEqual(vault.call_args.args[0][1:3], ['get', 'Notion - Polymux integration token'])
+
+    def test_notion_denies_delete_and_external_paths(self):
+        with patch.object(connectors.subprocess, 'run') as vault:
+            for method, path in [('DELETE','/v1/pages/'+'a'*32), ('POST','https://example.com'), ('GET','/v1/users'), ('POST','/v1/blocks/'+'a'*32+'/children')]:
+                with self.assertRaises(ValueError): connectors.notion(method, path)
+            vault.assert_not_called()
+
     def test_argument_cannot_inject_cli_option(self):
         with self.assertRaises(ValueError):connectors.invoke('mail_read',{'id':'--seen'})
 

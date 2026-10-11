@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Read-only MCP tools. Credentials stay in the owning CLI or Keychain."""
+"""Scoped MCP tools. Notion credentials are fetched from vault in memory."""
 import json
 import os
 import re
 import subprocess
 import sys
 import math
+import urllib.request
+import urllib.parse
 from collections import Counter
 
 BIN = "/Users/carlvincetan/code/agents/bin"
@@ -30,12 +32,37 @@ def command(argv):
         return {"available": False, "exit_status": result.returncode, "message": "Connector unavailable; no raw error or credential disclosed."}
     return {"available": True, "result": clean(result.stdout[:40000])}
 
+def notion(method, path, body=None):
+    path = urllib.parse.unquote(path).lower()
+    if 'comment' in path or not re.fullmatch(r'/v1/(?:search|pages|databases|(?:pages|databases|blocks)/[a-f0-9-]{32,36}(?:/query|/children)?)', path):
+        raise ValueError('Notion endpoint denied')
+    allowed = {'GET', 'PATCH'}
+    if path in ('/v1/search', '/v1/pages', '/v1/databases') or path.endswith('/query'):
+        allowed = {'POST'}
+    if method not in allowed:
+        raise ValueError('Notion operation denied')
+    credential = subprocess.run(['/Users/carlvincetan/.local/bin/vault', 'get', 'Notion - Polymux integration token', '--field', 'password'], capture_output=True, text=True, timeout=20)
+    if credential.returncode or not credential.stdout.strip():
+        return {'available': False, 'message': 'Notion credential unavailable.'}
+    token = json.loads(credential.stdout)['password']
+    if not isinstance(token, str) or not token:
+        return {'available': False, 'message': 'Notion credential unavailable.'}
+    request = urllib.request.Request('https://api.notion.com'+path, data=json.dumps(body).encode() if body is not None else None, method=method,
+        headers={'Authorization': 'Bearer '+token, 'Notion-Version': '2022-06-28', 'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(request, timeout=40) as response:
+            result = response.read(200000).decode()
+        return {'available': True, 'result': clean(result.replace(token, '[REDACTED CREDENTIAL]'))}
+    except Exception:
+        return {'available': False, 'message': 'Notion request failed; private diagnostics withheld.'}
+
 TOOLS = {
  "mail_accounts": ("List configured email accounts.", {}, []),
  "mail_list": ("Read recent mail envelopes, no flag changes or sends.", {"account":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20}}, []),
  "mail_read": ("Read one mail without marking it seen, credentials redacted.", {"account":{"type":"string"},"id":{"type":"string"}}, ["id"]),
+ "notion_api": ("Notion read, update, insert only. Comments are always denied.", {"method":{"type":"string","enum":["GET","POST","PATCH"]},"path":{"type":"string"},"body":{"type":"object"}}, ["method","path"]),
  "notion_search": ("Search accessible Notion pages. No writes.", {"query":{"type":"string"}}, []),
- "notion_read": ("Read a Notion page. Personal page is hands-off.", {"id":{"type":"string"}}, ["id"]),
+ "notion_read": ("Read a Notion page; use notion_api for block children.", {"id":{"type":"string"}}, ["id"]),
  "github_repo": ("Read GitHub repository metadata.", {"repo":{"type":"string"}}, ["repo"]),
  "matrix_rooms": ("Read joined Matrix rooms; no sends or marking read.", {}, []),
  "matrix_messages": ("Read recent Matrix messages; no sends.", {"room":{"type":"string"}}, ["room"]),
@@ -54,10 +81,11 @@ def invoke(name, a):
         if re.search(r'one.time (?:password|code)|verification code|password reset|login (?:code|link)|sign.in link|magic link',result.get('result',''),re.I):
             result['result']='Authentication message withheld; use your email app to read it privately.'
         return result
-    if name=='notion_search': return command([BIN+'/ntn','api','v1/search','-d',json.dumps({'query':a.get('query',''),'page_size':10})])
+    if name=='notion_api': return notion(a['method'],a['path'],a.get('body'))
+    if name=='notion_search': return notion('POST','/v1/search',{'query':a.get('query',''),'page_size':10})
     if name=='notion_read':
         if not re.fullmatch('[a-fA-F0-9-]{32,36}',a['id']): raise ValueError('invalid page ID')
-        return command([BIN+'/ntn','pages','get',a['id']])
+        return notion('GET','/v1/pages/'+a['id'])
     if name=='github_repo':
         if not re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',a['repo']): raise ValueError('invalid repository')
         return command([BIN+'/gh','repo','view',a['repo'],'--json','name,url,description,defaultBranchRef'])
@@ -80,7 +108,7 @@ def main():
             else: raise ValueError('unsupported method')
             out={'jsonrpc':'2.0','id':ident,'result':result}
         except Exception:
-            out={'jsonrpc':'2.0','id':locals().get('ident'),'error':{'code':-32603,'message':'Read-only connector failed; no private diagnostic disclosed.'}}
+            out={'jsonrpc':'2.0','id':locals().get('ident'),'error':{'code':-32603,'message':'Scoped connector failed; no private diagnostic disclosed.'}}
         print(json.dumps(out),flush=True)
 
 if __name__=='__main__': main()
