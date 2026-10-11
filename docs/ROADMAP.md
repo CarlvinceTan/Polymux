@@ -1,6 +1,6 @@
 # Polymux launch roadmap (11 Oct 2026)
 
-Launch bar (Carlvince): (1) reliable everyday use at Grok Bot parity, (2) dead-simple setup via server-free linking v3, (3) an updated, distinctive site. Setup is just installing the app on each device and pairing; one device is the server. Marketing stays prep-only until M1–M7 (incl. M6b) are done. Base: main @ dd052ff (v0.4.0). Specs: PARITY, SHADOW, CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC, CONNECTIVITY_SPEC v3 (+§10), SITE_PLAN.
+Launch bar (Carlvince): (1) reliable everyday use at Grok Bot parity, (2) dead-simple setup via server-free linking v3, (3) an updated, distinctive site. Setup is just installing the app on each device and pairing; one device is the server. Marketing stays prep-only until M1–M7 (incl. M6b) are done. Base: main @ dd052ff (v0.4.0). Specs: PARITY, SHADOW, CHAT_UI_SPEC, SIDEBAR_SPEC, AVATAR_SPEC, CONNECTIVITY_SPEC v3 (+§10 optional integrations and iOS push, §11 any-device server, §12 auto-updates; docs/CONNECTIVITY_SPEC.md), SITE_PLAN.
 
 | # | Milestone | Goal | Scope | Done when (checkable) |
 |---|---|---|---|---|
