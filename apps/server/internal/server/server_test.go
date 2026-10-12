@@ -48,6 +48,129 @@ func (*testSession) Abort(context.Context) error { return nil }
 func (*testSession) Close() error                { return nil }
 func (*testSession) Path() string                { return "test.jsonl" }
 
+type timeoutFactory struct{ aborted chan struct{} }
+
+func (f *timeoutFactory) Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error) {
+	return &timeoutSession{testSession: &testSession{factory: &testFactory{block: true}}, aborted: f.aborted}, nil
+}
+
+type timeoutSession struct {
+	*testSession
+	aborted chan struct{}
+}
+
+func (s *timeoutSession) Abort(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	close(s.aborted)
+	return nil
+}
+
+func TestTimeoutNotice(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(t.Context(), filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	factory := &timeoutFactory{aborted: make(chan struct{})}
+	api, err := New(t.Context(), db, Config{
+		DataDir: dir, Factory: factory, BackgroundTimeout: 20 * time.Millisecond,
+		Definitions: []agentruntime.Definition{
+			{Agent: contract.Agent{ID: "a", Name: "A"}},
+			{Agent: contract.Agent{ID: "b", Name: "B"}},
+		},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { api.Close() })
+	parent := store.NewRun("request", "a", "a", "message")
+	parent.Status, parent.SourceMessageID = "running", pointer("request")
+	if err := db.RunEvent(t.Context(), "run.start", &parent, nil); err != nil {
+		t.Fatal(err)
+	}
+	task := "Ask for background help"
+	source := store.Work{Trigger: "message", Message: contract.Message{
+		ID: "request", ThreadID: "a", Role: "user", CreatedAt: store.Now(),
+		Parts: []contract.Part{{Kind: "text", Text: &task}},
+	}}
+	encoded, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(t.Context(), `INSERT INTO jobs(id,thread_id,request,state,input) VALUES(?,?,?,'done',?)`, "request", "a", "{}", string(encoded)); err != nil {
+		t.Fatal(err)
+	}
+	text := "Hold child"
+	work := store.Work{Trigger: "peer", DeliveryID: "delivery", ParentRunID: &parent.ID,
+		Message: contract.Message{ID: "delivery", ThreadID: "b", Role: "user", Parts: []contract.Part{{Kind: "text", Text: &text}}, CreatedAt: store.Now()},
+	}
+	delivery := contract.PeerDelivery{ID: "delivery", SourceAgentID: "a", TargetAgentID: "b", ConversationID: "a", ParentRunID: parent.ID, Intent: "request", Status: "queued", CreatedAt: store.Now()}
+	if _, err := db.Deliver(t.Context(), delivery, work, true); err != nil {
+		t.Fatal(err)
+	}
+	parent.Status = "completed"
+	if err := db.RunEvent(t.Context(), "run.done", &parent, nil); err != nil {
+		t.Fatal(err)
+	}
+	childID := store.NewRun("delivery", "b", "b", "peer").ID
+	until := time.Now().Add(2 * time.Second)
+	for time.Now().Before(until) {
+		parent, err = db.Run(t.Context(), parent.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if store.Terminal(parent.Status) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	child, err := db.Run(t.Context(), childID)
+	if err != nil || child.Status != "failed" || child.Error == nil || child.Error.Code != "timeout" || !strings.Contains(strings.ToLower(child.Error.Message), "timed out") || child.FinishedAt == nil {
+		t.Fatalf("child timeout: %+v %v", child, err)
+	}
+	if parent.Status != "failed" || parent.Error == nil || parent.Error.Code != "peer_failed" {
+		t.Fatalf("parent left waiting: %+v", parent)
+	}
+	select {
+	case <-factory.aborted:
+	default:
+		t.Fatal("timed-out child was not aborted")
+	}
+	if err := db.Receipt(t.Context(), "delivery", child, contract.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	var raw string
+	if err := db.DB.QueryRowContext(t.Context(), `SELECT data FROM deliveries WHERE id=?`, "delivery").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(raw), &delivery); err != nil || delivery.Status != "failed" {
+		t.Fatalf("delivery status: %s %v", raw, err)
+	}
+	messages, err := db.Messages(t.Context(), "a", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range messages {
+		body := store.Text(message)
+		if strings.HasPrefix(message.ID, "receipt:") || strings.Contains(body, "appears stuck") || strings.Contains(body, child.Error.Message) {
+			t.Fatalf("stuck notice: %+v", message)
+		}
+	}
+	follow, err := db.Work(t.Context(), "followup:"+parent.ID)
+	body := store.Text(follow.Message)
+	if err != nil || follow.Trigger != "follow_up" || !strings.Contains(body, child.Error.Message) || !strings.Contains(body, `"status":"failed"`) {
+		t.Fatalf("follow-up not armed: %+v %v", follow, err)
+	}
+	var jobs int
+	if err := db.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM jobs WHERE id=?`, "followup:"+parent.ID).Scan(&jobs); err != nil || jobs != 1 {
+		t.Fatalf("followup job: %d %v", jobs, err)
+	}
+}
+
 func startTest(t *testing.T, f Factory) (*Server, *httptest.Server) {
 	t.Helper()
 	dir := t.TempDir()

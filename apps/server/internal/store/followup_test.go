@@ -178,3 +178,129 @@ func TestPeerWaitSurvivesRestart(t *testing.T) {
 		t.Fatal("durable peer completion did not wake source after restart", err)
 	}
 }
+
+func TestTimeoutFollowupContext(t *testing.T) {
+	s := runStore(t)
+	request := contract.SendRequest{ID: "source", Text: "Watch the background task", AttachmentIDs: []string{}}
+	if _, _, err := s.Send(t.Context(), "a", request, []contract.Part{{Kind: "text", Text: &request.Text}}, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Job(t.Context(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	parent, _ := s.Run(t.Context(), NewRun("source", "a", "a", "message").ID)
+	parent.Status = "running"
+	if err := s.RunEvent(t.Context(), "run.update", &parent, nil); err != nil {
+		t.Fatal(err)
+	}
+	id := "peer-timeout"
+	text := "Hold this"
+	work := Work{Trigger: "peer", DeliveryID: id, ParentRunID: &parent.ID, Message: contract.Message{
+		ID: id, ThreadID: "b", Role: "user", CreatedAt: Now(), Parts: []contract.Part{{Kind: "text", Text: &text}},
+	}}
+	delivery := contract.PeerDelivery{ID: id, SourceAgentID: "a", TargetAgentID: "b", ConversationID: "a",
+		ParentRunID: parent.ID, Intent: "request", Status: "queued", CreatedAt: Now()}
+	if _, err := s.Deliver(t.Context(), delivery, work, true); err != nil {
+		t.Fatal(err)
+	}
+	parent.Status = "completed"
+	if err := s.RunEvent(t.Context(), "run.done", &parent, nil); err != nil {
+		t.Fatal(err)
+	}
+	child, _ := s.Run(t.Context(), NewRun(id, "b", "b", "peer").ID)
+	note := "The background task timed out and was stopped."
+	child.Status = "failed"
+	child.Error = &contract.Error{Code: "timeout", Message: note}
+	if err := s.RunEvent(t.Context(), "run.done", &child, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Receipt(t.Context(), id, child, contract.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Receipt(t.Context(), id, child, contract.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	var receipts int
+	if err := s.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM messages WHERE id=?`, "receipt:"+id).Scan(&receipts); err != nil || receipts != 0 {
+		t.Fatal("timeout posted a receipt", receipts, err)
+	}
+	follow, err := s.Work(t.Context(), "followup:"+parent.ID)
+	body := Text(follow.Message)
+	if err != nil || follow.Trigger != "follow_up" || !strings.Contains(body, note) || !strings.Contains(body, `"status":"failed"`) {
+		t.Fatal("missing timeout continuation context", follow.Trigger, body, err)
+	}
+	for _, message := range mustMessages(t, s, "a") {
+		if strings.HasPrefix(message.ID, "receipt:") || strings.Contains(Text(message), note) {
+			t.Fatal("timeout note landed in the 1:1 thread", message)
+		}
+	}
+}
+
+func TestGroupTimeoutChat(t *testing.T) {
+	s := runStore(t)
+	group, err := s.CreateThread(t.Context(), "group", contract.CreateThreadRequest{AgentIDs: []string{"a", "b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := contract.SendRequest{ID: "source", Text: "Ask B in the group", AttachmentIDs: []string{}}
+	if _, _, err := s.Send(t.Context(), group.ID, request, []contract.Part{{Kind: "text", Text: &request.Text}}, "a"); err != nil {
+		t.Fatal(err)
+	}
+	parent, _ := s.Run(t.Context(), NewRun("source", group.ID, "a", "message").ID)
+	parent.Status = "running"
+	if err := s.RunEvent(t.Context(), "run.update", &parent, nil); err != nil {
+		t.Fatal(err)
+	}
+	id := "peer-timeout"
+	text := "Hold this"
+	work := Work{Trigger: "peer", DeliveryID: id, ParentRunID: &parent.ID, Message: contract.Message{
+		ID: id, ThreadID: "b", Role: "user", CreatedAt: Now(), Parts: []contract.Part{{Kind: "text", Text: &text}},
+	}}
+	delivery := contract.PeerDelivery{ID: id, SourceAgentID: "a", TargetAgentID: "b", ConversationID: group.ID,
+		ParentRunID: parent.ID, Intent: "request", Status: "queued", CreatedAt: Now()}
+	if _, err := s.Deliver(t.Context(), delivery, work, true); err != nil {
+		t.Fatal(err)
+	}
+	parent.Status = "completed"
+	if err := s.RunEvent(t.Context(), "run.done", &parent, nil); err != nil {
+		t.Fatal(err)
+	}
+	child, _ := s.Run(t.Context(), NewRun(id, "b", "b", "peer").ID)
+	note := "The background task timed out and was stopped."
+	child.Status = "failed"
+	child.Error = &contract.Error{Code: "timeout", Message: note}
+	if err := s.RunEvent(t.Context(), "run.done", &child, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Receipt(t.Context(), id, child, contract.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	parent, _ = s.Run(t.Context(), parent.ID)
+	if parent.Status != "failed" {
+		t.Fatal("parent left waiting", parent.Status)
+	}
+	if _, err := s.Work(t.Context(), "followup:"+parent.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("group timeout started a 1:1 follow-up", err)
+	}
+	saw := false
+	for _, message := range mustMessages(t, s, group.ID) {
+		if strings.HasPrefix(message.ID, "receipt:") || (message.AgentID != nil && *message.AgentID == "b") {
+			t.Fatal("target receipt in the group", message)
+		}
+		if message.Role == "assistant" && message.Status == "done" && message.AgentID != nil && *message.AgentID == "a" && Text(message) == note {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatal("source agent did not explain the timeout in the group")
+	}
+}
+
+func mustMessages(t *testing.T, s *Store, thread string) []contract.Message {
+	t.Helper()
+	messages, err := s.Messages(t.Context(), thread, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return messages
+}

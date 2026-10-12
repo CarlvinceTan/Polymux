@@ -538,7 +538,9 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 	}
 	run = stored
 	delivery.Status, delivery.RunID = run.Status, &run.ID
-	if delivery.Intent != "handoff" {
+	// 1:1 timeouts stay off the thread; the parent follow-up explains them.
+	timedOut := run.Error != nil && run.Error.Code == "timeout"
+	if delivery.Intent != "handoff" && !timedOut {
 		text := Text(result)
 		if run.Status != "completed" {
 			text = "Peer work " + run.Status + ". Review before retrying."
@@ -577,6 +579,12 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 		if err := json.Unmarshal([]byte(data), &parent); err != nil {
 			return err
 		}
+		// Groups have no parent follow-up, so the source agent says the timeout in chat.
+		if timedOut && parent.ConversationID != parent.AgentID {
+			if err := timeoutChat(ctx, tx, delivery, parent, run); err != nil {
+				return err
+			}
+		}
 		if parent.Status == "waiting_peer" {
 			parent.Status, parent.Summary = "completed", "Peer results received"
 			now := Now()
@@ -597,6 +605,22 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 		return err
 	}
 	return nil
+}
+
+func timeoutChat(ctx context.Context, tx *sql.Tx, delivery contract.PeerDelivery, parent, child contract.Run) error {
+	text := "The background task timed out and was stopped."
+	if child.Error != nil && child.Error.Message != "" {
+		text = child.Error.Message
+	}
+	text = boundedText(text, 8192)
+	agent := delivery.SourceAgentID
+	m := contract.Message{
+		ID: "timeout:" + delivery.ID, ThreadID: delivery.ConversationID, Role: "assistant", AgentID: &agent,
+		CreatedAt: Now(), Status: "done", ReplyToID: parent.SourceMessageID,
+		Parts: []contract.Part{{Kind: "text", Text: &text}},
+	}
+	_, err := appendTx(ctx, tx, contract.Event{ConversationID: m.ThreadID, Type: "message.start", MessageID: &m.ID, AgentID: m.AgentID}, &m)
+	return err
 }
 
 func finishPeer(ctx context.Context, tx *sql.Tx, job string) error {
