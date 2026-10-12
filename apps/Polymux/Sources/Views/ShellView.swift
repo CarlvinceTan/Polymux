@@ -375,7 +375,7 @@ struct ShellView: View {
             }
         )
         #if os(macOS)
-        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 12))
         .overlay {
             if thread.isGroup {
                 RowMenu(profile: { grouping = thread }, title: "Edit chat")
@@ -469,7 +469,7 @@ struct AgentRow: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(agent.name), \(agent.role), \(preview)")
-        .accessibilityValue("\(thread?.unreadCount ?? 0) unread messages, \(ActivityStore.present(runs: thread?.runs ?? [], conversationID: thread?.id ?? agent.id, agentID: agent.id, connected: connected).label)")
+        .accessibilityValue(UnreadAccess.value(count: thread?.unreadCount ?? 0, activity: ActivityStore.present(runs: thread?.runs ?? [], conversationID: thread?.id ?? agent.id, agentID: agent.id, connected: connected).label))
     }
 
     private var rowGap: CGFloat {
@@ -522,7 +522,7 @@ struct GroupRow: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(thread.title), \(members.map(\.name).joined(separator: ", ")), \(preview)")
-        .accessibilityValue("\(thread.unreadCount) unread messages")
+        .accessibilityValue(UnreadAccess.value(count: thread.unreadCount))
     }
 
     private var gap: CGFloat {
@@ -561,47 +561,70 @@ private struct RowDetails: View {
         #endif
     }
 
+    private var unread: Bool { (thread?.unreadCount ?? 0) > 0 }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Text(name)
-                    #if os(iOS)
-                    .font(.headline)
-                    #else
-                    .font(.body.weight(.medium))
-                    #endif
-                    .foregroundStyle(foreground).lineLimit(1)
-                Spacer(minLength: 4)
-                if active {
-                    Circle().fill(.green).frame(width: 6, height: 6).accessibilityLabel("Active")
-                }
-                if let date = thread?.lastMessage?.date {
-                    Text(date, format: ProgressiveTime())
-                        .font(.caption2).foregroundStyle(secondary).lineLimit(1).fixedSize()
-                }
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 5) {
+                titleRow
+                previewRow
             }
-            if !preview.isEmpty || (thread?.unreadCount ?? 0) > 0 {
-                HStack(spacing: 6) {
-                    Text(preview)
-                        #if os(iOS)
-                        .font(.subheadline)
-                        #else
-                        .font(.caption)
-                        #endif
-                        .lineLimit(1).foregroundStyle(secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if let count = thread?.unreadCount, count > 0 {
-                        Text(count > 9 ? "9+" : "\(count)")
-                            .font(.caption2.weight(.semibold))
-                            .monospacedDigit()
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .foregroundStyle(Color("OnAccent")).background(Color("AccentColor"), in: Capsule())
-                            .fixedSize()
-                            .accessibilityHidden(true)
-                    }
-                }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            #if os(macOS)
+            if unread { UnreadDot(points: 7) }
+            #endif
+        }
+    }
+
+    private var titleRow: some View {
+        HStack(spacing: 6) {
+            Text(name)
+                #if os(iOS)
+                .font(.headline)
+                #else
+                .font(.body.weight(.medium))
+                #endif
+                .foregroundStyle(foreground)
+                .lineLimit(1)
+                .layoutPriority(0)
+            #if os(iOS)
+            Spacer(minLength: 4)
+            if active {
+                Circle().fill(.green).frame(width: 6, height: 6).accessibilityLabel("Active")
+            }
+            if let date = thread?.lastMessage?.date {
+                Text(date, format: ProgressiveTime())
+                    .font(.caption2).foregroundStyle(secondary).lineLimit(1)
+                    .fixedSize()
+                    .layoutPriority(1)
+            }
+            #else
+            if active {
+                Spacer(minLength: 4)
+                Circle().fill(.green).frame(width: 6, height: 6).accessibilityLabel("Active")
+            }
+            #endif
+        }
+    }
+
+    @ViewBuilder private var previewRow: some View {
+        #if os(iOS)
+        if !preview.isEmpty || unread {
+            HStack(spacing: 6) {
+                Text(preview)
+                    .font(.subheadline)
+                    .lineLimit(1).foregroundStyle(secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if unread { UnreadDot(points: 8) }
             }
         }
+        #else
+        if !preview.isEmpty {
+            Text(preview)
+                .font(.caption)
+                .lineLimit(1).foregroundStyle(secondary)
+        }
+        #endif
     }
 }
 
