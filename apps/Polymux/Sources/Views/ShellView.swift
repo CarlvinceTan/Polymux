@@ -1,6 +1,9 @@
 import SwiftUI
 import PolymuxKit
 import AvatarKit
+#if os(iOS)
+import UIKit
+#endif
 
 struct ShellView: View {
     let session: AppSession
@@ -24,6 +27,9 @@ struct ShellView: View {
     @State private var deleting: String?
     @State private var deleteError: String?
     @State private var dropped: [URL] = []
+    #if os(iOS)
+    @State private var headerSpan: CGFloat = ChatsHeader.depth
+    #endif
     @Environment(\.colorScheme) private var colorScheme
     #if os(macOS)
     @State private var sidebar = SidebarState()
@@ -59,6 +65,9 @@ struct ShellView: View {
             }
             #else
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background { sidebarSurface.ignoresSafeArea() }
+            .accessibilityIdentifier("chats.list")
             #endif
             .scrollIndicators(.hidden)
             #if os(macOS)
@@ -71,9 +80,27 @@ struct ShellView: View {
             .background { SearchFocus(sidebar: true).frame(width: 0, height: 0) }
             #else
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
             .simultaneousGesture(TapGesture().onEnded { searchFocused = false }, isEnabled: searching)
             .scrollDismissesKeyboard(.interactively)
             .contentMargins(.bottom, searching ? 0 : 96, for: .scrollContent)
+            .overlay(alignment: .top) {
+                HeaderFade(color: sidebarSurface, span: headerSpan)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: headerSpan)
+                    .background {
+                        HeaderMeasure { span in
+                            if abs(headerSpan - span) > 0.5 { headerSpan = span }
+                        }
+                    }
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("chats.header.fade")
+                    .accessibilityLabel("Chats header fade")
+                    .accessibilityValue("background-hidden,no-divider")
+                    .accessibilityRespondsToUserInteraction(false)
+            }
             .overlay(alignment: .bottom) {
                 if !searching {
                     VStack {
@@ -261,8 +288,15 @@ struct ShellView: View {
             Button("OK") { deleteError = nil }
         } message: { Text(deleteError ?? "") }
         .task {
+            #if os(iOS)
+            if headerPreview { loadPreview() }
+            #endif
             while !Task.isCancelled {
+                #if os(iOS)
+                if !headerPreview { await session.sidebar.refresh() }
+                #else
                 await session.sidebar.refresh()
+                #endif
                 if session.sidebar.isConnected {
                     session.avatars.sync(agents: session.sidebar.agents)
                     await session.avatars.flush(client: session.client)
@@ -303,6 +337,41 @@ struct ShellView: View {
         AppBackground.color(colorScheme)
         #endif
     }
+
+    #if os(iOS)
+    private var headerPreview: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ChatsHeaderPreview")
+    }
+
+    /// Stable rows so the header fade can be scrolled under in the UI test.
+    private func loadPreview() {
+        let names = ["Avery", "Blake", "Cameron", "Drew", "Ellis", "Finley", "Gray", "Harper",
+                     "Indigo", "Jordan", "Kai", "Logan", "Morgan", "Nova"]
+        for (index, name) in names.enumerated() {
+            let id = "preview-\(index)"
+            let agent = Agent(id: id, name: name, role: "Preview", active: index == 0)
+            let message = Message(
+                id: "preview-message-\(index)",
+                threadID: id,
+                role: "agent",
+                parts: [Part(kind: "text", text: "Row \(index + 1) under the header")],
+                createdAt: WireDate.string(Date().addingTimeInterval(Double(-index * 120))),
+                status: "done",
+                seq: Int64(index + 1)
+            )
+            let thread = Thread(
+                id: id,
+                agentID: id,
+                lastSeq: Int64(index + 1),
+                lastMessage: message,
+                title: name,
+                agentIDs: [id]
+            )
+            session.sidebar.accept(agent)
+            session.sidebar.accept(thread)
+        }
+    }
+    #endif
 
     private var duplicateAgentNames: Set<String> {
         var seen: [String: Int] = [:]
@@ -630,3 +699,102 @@ private enum AgentOrder: String, CaseIterable, Identifiable {
     case recent = "Most recent", name = "Name"
     var id: String { rawValue }
 }
+
+#if os(iOS)
+private enum ChatsHeader {
+    /// How far the fade runs past the bottom of the navigation bar.
+    static let depth: CGFloat = 28
+}
+
+/// Opaque through the bar, then the list colour fades to clear.
+private struct HeaderFade: View {
+    let color: Color
+    let span: CGFloat
+
+    var body: some View {
+        LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
+    }
+
+    private var stops: [Gradient.Stop] {
+        let header = max(span - ChatsHeader.depth, 0)
+        let stop = span > 0 ? header / span : 0
+        return [
+            .init(color: color, location: 0),
+            .init(color: color, location: stop),
+            .init(color: color.opacity(0), location: 1),
+        ]
+    }
+}
+
+/// Distance from this view's top to 28pt below the navigation bar.
+private struct HeaderMeasure: UIViewRepresentable {
+    var onSpan: (CGFloat) -> Void
+
+    func makeUIView(context: Context) -> HeaderProbe {
+        let view = HeaderProbe()
+        view.isUserInteractionEnabled = false
+        view.isAccessibilityElement = false
+        view.accessibilityElementsHidden = true
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ view: HeaderProbe, context: Context) {
+        view.onSpan = onSpan
+        view.measure()
+    }
+}
+
+private final class HeaderProbe: UIView {
+    var onSpan: (CGFloat) -> Void = { _ in }
+    private var pending = false
+    private var last: CGFloat = -1
+
+    override func layoutSubviews() { super.layoutSubviews(); measure() }
+    override func didMoveToWindow() { super.didMoveToWindow(); measure() }
+    override func safeAreaInsetsDidChange() { super.safeAreaInsetsDidChange(); measure() }
+
+    func measure() {
+        guard !pending else { return }
+        pending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pending = false
+            guard let span = self.measuredSpan(), abs(span - self.last) > 0.5 else { return }
+            self.last = span
+            self.onSpan(span)
+        }
+    }
+
+    private func measuredSpan() -> CGFloat? {
+        guard let window else { return nil }
+        let originY = convert(CGPoint.zero, to: window).y
+        guard originY.isFinite, let bar = navigationBar() else { return nil }
+        let bottom = bar.convert(bar.bounds, to: window).maxY
+        guard bottom.isFinite, bottom > originY else { return nil }
+        return bottom - originY + ChatsHeader.depth
+    }
+
+    private func navigationBar() -> UINavigationBar? {
+        var responder: UIResponder? = self
+        while let current = responder {
+            if let controller = current as? UIViewController, let bar = controller.navigationController?.navigationBar {
+                return bar
+            }
+            responder = current.next
+        }
+        guard let window else { return nil }
+        let midX = convert(bounds, to: window).midX
+        return bars(in: window).min { lhs, rhs in
+            abs(lhs.convert(lhs.bounds, to: window).midX - midX) < abs(rhs.convert(rhs.bounds, to: window).midX - midX)
+        }
+    }
+
+    private func bars(in view: UIView) -> [UINavigationBar] {
+        var found: [UINavigationBar] = []
+        if let bar = view as? UINavigationBar, !bar.isHidden, bar.bounds.height > 1 { found.append(bar) }
+        for subview in view.subviews { found.append(contentsOf: bars(in: subview)) }
+        return found
+    }
+}
+#endif
