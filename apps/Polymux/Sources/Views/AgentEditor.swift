@@ -18,6 +18,7 @@ struct AgentEditor: View {
     @State private var reviews: Proactivity?
     @State private var routines: [Routine] = []
     @State private var scheduleBusy = false
+    @State private var reviewToggle = OptimisticToggle(isOn: false)
 
     init(agent: Agent, session: AppSession) {
         self.agent = agent
@@ -127,11 +128,22 @@ struct AgentEditor: View {
 
     // What this agent does on its own: its review cadence and the routines it scheduled.
     @ViewBuilder private var scheduleSection: some View {
+        let choice = reviewToggle.binding(
+            apply: { enabled in
+                reviews = Proactivity(enabled: enabled, intervalSeconds: reviews?.intervalSeconds ?? 14400,
+                                      nextAt: reviews?.nextAt)
+            },
+            commit: { enabled in
+                reviews = try await session.client.setProactivity(
+                    agentID: agent.id,
+                    settings: Proactivity(enabled: enabled, intervalSeconds: reviews?.intervalSeconds ?? 14400))
+            })
         Section {
-            Toggle("Background reviews", isOn: Binding(
-                get: { reviews?.enabled ?? false },
-                set: { enabled in Task { await setReviews(enabled) } }))
-                .disabled(reviews == nil || scheduleBusy)
+            Toggle("Background reviews", isOn: choice.isOn)
+                .disabled(reviews == nil || !choice.isEnabled())
+            if let message = reviewToggle.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            }
             ForEach(routines, id: \.id) { routine in
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -155,21 +167,15 @@ struct AgentEditor: View {
             Text("Schedule")
         }
         .panelRow()
+        .onChange(of: reviews?.enabled, initial: true) { _, enabled in
+            guard let enabled else { return }
+            reviewToggle.adopt(enabled)
+        }
     }
 
     private func nextFire(_ routine: Routine) -> String {
         guard let at = routine.nextAt, let date = WireDate.parse(at) else { return "Scheduled" }
         return date.formatted(date: .abbreviated, time: .shortened)
-    }
-
-    private func setReviews(_ enabled: Bool) async {
-        guard !scheduleBusy else { return }
-        scheduleBusy = true
-        defer { scheduleBusy = false }
-        let current = reviews
-        reviews = try? await session.client.setProactivity(
-            agentID: agent.id,
-            settings: Proactivity(enabled: enabled, intervalSeconds: current?.intervalSeconds ?? 14400))
     }
 
     private func cancel(_ routine: Routine) async {
