@@ -469,6 +469,16 @@ func (s *Store) Read(ctx context.Context, id string, seq int64) error {
 }
 
 func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *contract.Message) (contract.Event, error) {
+	if message != nil && message.Status == "streaming" && event.RunID != nil {
+		var status string
+		err := tx.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, *event.RunID).Scan(&status)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return event, err
+		}
+		if Terminal(status) {
+			return event, context.Canceled
+		}
+	}
 	if event.Run != nil {
 		var data string
 		err := tx.QueryRowContext(ctx, `SELECT data FROM runs WHERE id=?`, event.Run.ID).Scan(&data)
@@ -548,6 +558,9 @@ func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *co
 	_, err = tx.ExecContext(ctx, `INSERT INTO events(thread_id,seq,data) VALUES(?,?,?)`, event.ConversationID, event.Seq, string(data))
 	if err == nil {
 		err = noticeTx(ctx, tx, message, event)
+	}
+	if err == nil && event.Run != nil && endsChildren(event.Run.Status) {
+		err = cancelDescendants(ctx, tx, event.Run.ID)
 	}
 	return event, err
 }

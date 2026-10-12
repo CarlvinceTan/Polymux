@@ -745,29 +745,29 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	a := s.actors[t.AgentID]
 	group := s.groups[t.ID]
 	s.actorsMu.RUnlock()
+	var cancel context.CancelFunc
+	if a != nil && group == nil {
+		a.mu.Lock()
+		cancel = a.cancel
+		a.mu.Unlock()
+	}
+	ids, err := s.Store.StopRuns(r.Context(), t.ID)
+	if err != nil {
+		s.respond(w, nil, err)
+		return
+	}
+	for _, id := range ids {
+		if active, ok := s.turns.Load(id); ok {
+			active.(*execution).cancel()
+		}
+	}
 	if group != nil {
 		group.abort()
 		write(w, 200, map[string]bool{"stopped": true})
 		return
 	}
-	if a != nil {
-		a.mu.Lock()
-		cancel := a.cancel
-		a.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		} else {
-			ids, err := s.Store.StopWaiting(r.Context(), t.ID)
-			if err != nil {
-				s.respond(w, nil, err)
-				return
-			}
-			for _, id := range ids {
-				if active, ok := s.turns.Load(id); ok {
-					active.(*execution).cancel()
-				}
-			}
-		}
+	if cancel != nil {
+		cancel()
 	}
 	write(w, 200, map[string]bool{"stopped": true})
 }
@@ -905,6 +905,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		run.SourceMessageID = &user.ID
 	}
+	if work.Trigger != "review" {
+		run.MessageID = pointer("reply:" + run.ID)
+	}
 	state := &turnState{run: run, work: work, store: s.Store, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
 	runCtx = context.WithValue(runCtx, turnKey{}, state)
 	if resuming {
@@ -946,9 +949,6 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	m := contract.Message{ID: "reply:" + run.ID, ThreadID: user.ThreadID, Role: "assistant", Parts: []contract.Part{}, CreatedAt: store.Now(), Status: "streaming", AgentID: &a.id, RunID: &run.ID}
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		m.ReplyToID = &user.ID
-	}
-	if work.Trigger != "review" {
-		run.MessageID = &m.ID
 	}
 	appendEvent := func(kind string, delta *string, problem *contract.Error, usage *contract.Usage) error {
 		_, err := s.Store.Append(writeCtx, contract.Event{ConversationID: m.ThreadID, Type: kind, MessageID: &m.ID, AgentID: &a.id, RunID: &run.ID, Text: delta, Error: problem, Usage: usage}, &m)
@@ -1189,6 +1189,16 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		err = setActivity("generating", "Composing reply")
 	}
 	if err == nil {
+		aborted := make(chan struct{})
+		// Durable work outlives Send's wait context until the session is aborted.
+		stopAbort := context.AfterFunc(runCtx, func() {
+			defer close(aborted)
+			abortCtx, end := context.WithTimeout(context.WithoutCancel(runCtx), time.Second)
+			defer end()
+			if e := sess.Abort(abortCtx); e != nil && !errors.Is(e, context.Canceled) {
+				s.config.Log.Warn("abort stopped session", "error", e)
+			}
+		})
 		result, err = sess.Send(runCtx, user, func(delta agentruntime.Delta) error {
 			messageMu.Lock()
 			defer messageMu.Unlock()
@@ -1327,6 +1337,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			}
 			return nil
 		})
+		if !stopAbort() {
+			<-aborted
+		}
 	}
 	if background && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		err = errors.Join(err, runCtx.Err())
@@ -1511,6 +1524,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		finalized = true
 	}
 	messageMu.Unlock()
+	if finalized && endsChildren(run.Status) {
+		s.cancelTree(writeCtx, run.ID)
+	}
 	if err != nil {
 		s.config.Log.Warn("agent reply", "id", user.ID, "error", err)
 	}
@@ -1532,6 +1548,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if finalized && work.DeliveryID != "" {
 		if e := s.Store.Receipt(writeCtx, work.DeliveryID, run, m); e != nil {
 			s.config.Log.Error("publish peer result", "error", e)
+		} else if work.ParentRunID != nil {
+			if origin, e := s.Store.Run(writeCtx, *work.ParentRunID); e == nil && endsChildren(origin.Status) {
+				s.cancelTree(writeCtx, origin.ID)
+			}
 		}
 	}
 	if chain, _ := parent.Value(chainKey{}).(*chainState); finalized && chain != nil && handed && run.Status == "completed" {
@@ -1549,6 +1569,23 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 }
 
 func pointer(text string) *string { return &text }
+
+func endsChildren(status string) bool {
+	return status == "failed" || status == "cancelled" || status == "interrupted"
+}
+
+func (s *Server) cancelTree(ctx context.Context, id string) {
+	ids, err := s.Store.DescendantIDs(ctx, id)
+	if err != nil {
+		s.config.Log.Error("cancel child runs", "error", err)
+		return
+	}
+	for _, child := range ids {
+		if active, ok := s.turns.Load(child); ok {
+			active.(*execution).cancel()
+		}
+	}
+}
 
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<20)
