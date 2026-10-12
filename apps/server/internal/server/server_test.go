@@ -92,6 +92,18 @@ func TestTimeoutNotice(t *testing.T) {
 	if err := db.RunEvent(t.Context(), "run.start", &parent, nil); err != nil {
 		t.Fatal(err)
 	}
+	task := "Ask for background help"
+	source := store.Work{Trigger: "message", Message: contract.Message{
+		ID: "request", ThreadID: "a", Role: "user", CreatedAt: store.Now(),
+		Parts: []contract.Part{{Kind: "text", Text: &task}},
+	}}
+	encoded, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(t.Context(), `INSERT INTO jobs(id,thread_id,request,state,input) VALUES(?,?,?,'done',?)`, "request", "a", "{}", string(encoded)); err != nil {
+		t.Fatal(err)
+	}
 	text := "Hold child"
 	work := store.Work{Trigger: "peer", DeliveryID: "delivery", ParentRunID: &parent.ID,
 		Message: contract.Message{ID: "delivery", ThreadID: "b", Role: "user", Parts: []contract.Part{{Kind: "text", Text: &text}}, CreatedAt: store.Now()},
@@ -147,6 +159,15 @@ func TestTimeoutNotice(t *testing.T) {
 		if strings.HasPrefix(message.ID, "receipt:") || strings.Contains(body, "appears stuck") || strings.Contains(body, child.Error.Message) {
 			t.Fatalf("stuck notice: %+v", message)
 		}
+	}
+	follow, err := db.Work(t.Context(), "followup:"+parent.ID)
+	body := store.Text(follow.Message)
+	if err != nil || follow.Trigger != "follow_up" || !strings.Contains(body, child.Error.Message) || !strings.Contains(body, `"status":"failed"`) {
+		t.Fatalf("follow-up not armed: %+v %v", follow, err)
+	}
+	var jobs int
+	if err := db.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM jobs WHERE id=?`, "followup:"+parent.ID).Scan(&jobs); err != nil || jobs != 1 {
+		t.Fatalf("followup job: %d %v", jobs, err)
 	}
 }
 
