@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -71,6 +72,88 @@ func TestPeerRemoval(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStopRuns(t *testing.T) {
+	for _, status := range []string{"running", "waiting_peer", "waiting_input"} {
+		t.Run(status, func(t *testing.T) {
+			s, parent, child := peerFixture(t)
+			parent.Status = status
+			if err := s.RunEvent(t.Context(), "run.update", &parent, nil); err != nil {
+				t.Fatal(err)
+			}
+			text := "Nested task"
+			work := Work{Trigger: "peer", Message: contract.Message{ID: "nested", ThreadID: "a", Role: "user", CreatedAt: Now(), Parts: []contract.Part{{Kind: "text", Text: &text}}}, ParentRunID: &child.ID, DeliveryID: "nested"}
+			delivery := contract.PeerDelivery{ID: "nested", SourceAgentID: "b", TargetAgentID: "a", ConversationID: "b", ParentRunID: child.ID, Intent: "request", Status: "queued", CreatedAt: Now()}
+			if _, err := s.Deliver(t.Context(), delivery, work, true); err != nil {
+				t.Fatal(err)
+			}
+			child.Status = "failed"
+			if err := s.RunEvent(t.Context(), "run.done", &child, nil); err != nil {
+				t.Fatal(err)
+			}
+			request := contract.SendRequest{ID: "unrelated", Text: "Independent work", AttachmentIDs: []string{}}
+			if _, _, err := s.Send(t.Context(), "b", request, []contract.Part{{Kind: "text", Text: &request.Text}}, "b"); err != nil {
+				t.Fatal(err)
+			}
+			ids, err := s.StopRuns(t.Context(), "a")
+			if err != nil || len(ids) != 2 {
+				t.Fatalf("stop tree: %v %v", ids, err)
+			}
+			for _, id := range []string{parent.ID, NewRun("nested", "a", "a", "peer").ID} {
+				run, err := s.Run(t.Context(), id)
+				if err != nil || run.Status != "cancelled" || run.Error == nil || run.Error.Code != "stopped" {
+					t.Fatalf("run not stopped: %+v %v", run, err)
+				}
+			}
+			stored, err := s.Run(t.Context(), child.ID)
+			if err != nil || stored.Status != "failed" || stored.Seq != child.Seq {
+				t.Fatalf("terminal intermediate changed: %+v %v", stored, err)
+			}
+			if job, err := s.Job(t.Context(), "b"); err != nil || job != "unrelated" {
+				t.Fatalf("unrelated work lost: %s %v", job, err)
+			}
+			if _, err := s.Job(t.Context(), "a"); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatal("nested work remains executable", err)
+			}
+			if _, err := s.Work(t.Context(), "followup:"+parent.ID); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatal("stopped parent resumed", err)
+			}
+			work.Message.ID, work.DeliveryID, delivery.ID = "late", "late", "late"
+			work.ParentRunID, delivery.ParentRunID = &parent.ID, parent.ID
+			if _, err := s.Deliver(t.Context(), delivery, work, true); !errors.Is(err, ErrConflict) {
+				t.Fatal("stopped parent created new work", err)
+			}
+			if ids, err := s.StopRuns(t.Context(), "a"); err != nil || len(ids) != 0 {
+				t.Fatalf("repeated stop changed terminal runs: %v %v", ids, err)
+			}
+		})
+	}
+}
+
+func TestStoppedStream(t *testing.T) {
+	s, parent, _ := peerFixture(t)
+	parent.Status = "running"
+	message := contract.Message{ID: "stream", ThreadID: "a", Role: "assistant", Status: "streaming", CreatedAt: Now(), RunID: &parent.ID, Parts: []contract.Part{}}
+	parent.MessageID = &message.ID
+	if err := s.RunEvent(t.Context(), "run.update", &parent, nil); err != nil {
+		t.Fatal(err)
+	}
+	event := contract.Event{ConversationID: "a", Type: "message.start", MessageID: &message.ID, RunID: &parent.ID}
+	if _, err := s.Append(t.Context(), event, &message); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StopRuns(t.Context(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	event.Type = "message.delta"
+	if _, err := s.Append(t.Context(), event, &message); !errors.Is(err, context.Canceled) {
+		t.Fatal("stopped run accepted a late stream update", err)
+	}
+	stored, err := s.Message(t.Context(), message.ID)
+	if err != nil || stored.Status != "error" {
+		t.Fatalf("stopped message reopened: %+v %v", stored, err)
 	}
 }
 

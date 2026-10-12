@@ -124,6 +124,64 @@ func closePeers(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]s
 	return ids, nil
 }
 
+func (s *Store) StopRuns(ctx context.Context, thread string) ([]string, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE stopped(id) AS (
+SELECT id FROM runs WHERE thread_id=? AND status IN('running','waiting_peer','waiting_input')
+UNION
+SELECT child.id FROM runs child JOIN stopped ON json_extract(child.data,'$.parentRunID')=stopped.id
+) SELECT data FROM runs WHERE id IN(SELECT id FROM stopped)`, thread)
+	if err != nil {
+		return nil, err
+	}
+	var runs []contract.Run
+	for rows.Next() {
+		var data string
+		var run contract.Run
+		if err := rows.Scan(&data); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(data), &run); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	// Seal the entire tree before receipts can resolve waits or enqueue follow-ups.
+	for i := range runs {
+		run := &runs[i]
+		if Terminal(run.Status) {
+			continue
+		}
+		run.Status, run.Summary = "cancelled", "Reply stopped"
+		run.Error = &contract.Error{Code: "stopped", Message: "Reply stopped."}
+		if err := endRun(ctx, tx, run); err != nil {
+			return nil, err
+		}
+		ids = append(ids, run.ID)
+	}
+	for _, run := range runs {
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='done' WHERE id=? AND NOT EXISTS(SELECT 1 FROM runs WHERE job_id=? AND status IN('queued','running','waiting_peer','waiting_input'))`, run.JobID, run.JobID); err != nil {
+			return nil, err
+		}
+		if _, err := closePeers(ctx, tx, `SELECT data,input FROM deliveries WHERE json_extract(data,'$.parentRunID')=? AND json_extract(data,'$.status')='queued'`, run.ID); err != nil {
+			return nil, err
+		}
+	}
+	return ids, tx.Commit()
+}
+
 func (s *Store) StopWaiting(ctx context.Context, thread string) ([]string, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {

@@ -422,6 +422,14 @@ func (s *Store) Deliver(ctx context.Context, delivery contract.PeerDelivery, wor
 	if !errors.Is(err, sql.ErrNoRows) {
 		return delivery, err
 	}
+	var parent string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, delivery.ParentRunID).Scan(&parent)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return delivery, err
+	}
+	if parent == "cancelled" || parent == "interrupted" || parent == "failed" {
+		return delivery, ErrConflict
+	}
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM agents WHERE id IN(?,?)`, delivery.SourceAgentID, delivery.TargetAgentID).Scan(&exists); err != nil {
 		return delivery, err

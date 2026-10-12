@@ -564,6 +564,116 @@ func TestB2BackgroundNotify(t *testing.T) {
 	}
 }
 
+func TestB4StopChildren(t *testing.T) {
+	for _, status := range []string{"running", "waiting_peer"} {
+		t.Run(status, func(t *testing.T) {
+			opened := map[string]chan struct{}{}
+			closed := map[string]chan struct{}{}
+			for _, id := range []string{"parent", "b", "c", "unrelated"} {
+				opened[id], closed[id] = make(chan struct{}), make(chan struct{})
+			}
+			release := make(chan struct{})
+			defer close(release)
+			hold := func(id string) Response {
+				return HoldReply("working", release, func() { close(opened[id]) }, func() { close(closed[id]) })
+			}
+			reply := func(req *ChatRequest) Response {
+				text := requestText(req)
+				switch {
+				case strings.Contains(text, "B4 unrelated"):
+					return hold("unrelated")
+				case strings.Contains(text, "B4 child b"):
+					return hold("b")
+				case strings.Contains(text, "B4 child c"):
+					return hold("c")
+				case strings.Contains(text, "B4 child d"):
+					return TextReply("queued child should never execute")
+				default:
+					for _, id := range []string{"b", "c", "d"} {
+						if !hasToolResult(req, "b4-"+id, "delivery:") {
+							return ToolReply("b4-"+id, "message_agent", map[string]any{
+								"agent_id": id, "message": "B4 child " + id, "intent": "request",
+							})
+						}
+					}
+					if status == "running" {
+						return hold("parent")
+					}
+					return TextReply("delegated work")
+				}
+			}
+			var steps []Step
+			for range 7 {
+				steps = append(steps, Step{Response: reply})
+			}
+			var agents []agentruntime.Definition
+			for _, id := range []string{"a", "b", "c", "d"} {
+				agents = append(agents, agentruntime.Definition{Agent: contract.Agent{ID: id, Name: id, Model: evalModel}, Tools: []string{}})
+			}
+			h := Start(t, Options{ID: "B4", Agents: agents, Steps: steps})
+			if code := h.Send("d", "b4-unrelated", "B4 unrelated"); code != http.StatusAccepted {
+				h.die(fmt.Sprintf("unrelated send status %d", code))
+			}
+			WaitHold(t, "B4", opened["unrelated"], holdWait)
+			if code := h.Send("a", "b4-parent", "Delegate three tasks"); code != http.StatusAccepted {
+				h.die(fmt.Sprintf("parent send status %d", code))
+			}
+			parentID := RunID("b4-parent", "a")
+			for _, id := range []string{"b", "c"} {
+				WaitHold(t, "B4", opened[id], holdWait)
+			}
+			if status == "running" {
+				WaitHold(t, "B4", opened["parent"], holdWait)
+			}
+			h.WaitStatus(parentID, deadline, status)
+			childID := func(id string) string { return RunID("delivery:"+parentID+":b4-"+id, id) }
+			h.WaitStatus(childID("d"), deadline, "queued")
+			stopAt := time.Now()
+			end := stopAt.Add(cancelMax)
+			if code := h.Stop("a"); code != http.StatusOK {
+				h.die(fmt.Sprintf("stop status %d", code))
+			}
+			for _, id := range []string{parentID, childID("b"), childID("c"), childID("d")} {
+				run := h.WaitRunID(id, time.Until(end))
+				if run.Status != "cancelled" || run.Error == nil || run.Error.Code != "stopped" {
+					h.die(fmt.Sprintf("run %s not stopped: %+v", id, run))
+				}
+			}
+			for _, id := range []string{"b", "c"} {
+				WaitHold(t, "B4", closed[id], time.Until(end))
+			}
+			if status == "running" {
+				WaitHold(t, "B4", closed["parent"], time.Until(end))
+			}
+			if time.Now().After(end) {
+				h.die("parent and children took at least 2 seconds to stop")
+			}
+			select {
+			case <-closed["unrelated"]:
+				h.die("stop cancelled unrelated work on a child agent")
+			default:
+			}
+			time.Sleep(200 * time.Millisecond)
+			for _, ts := range h.Emulator.RequestTimes() {
+				if ts.After(stopAt) {
+					h.die("model request arrived after parent stop")
+				}
+			}
+			var queued int
+			if err := h.Store.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM jobs WHERE id=? AND state!='done'`, "delivery:"+parentID+":b4-d").Scan(&queued); err != nil || queued != 0 {
+				h.die(fmt.Sprintf("queued child remains executable: %d %v", queued, err))
+			}
+			if _, err := h.Store.Work(t.Context(), "followup:"+parentID); !errors.Is(err, sql.ErrNoRows) {
+				h.die(fmt.Sprintf("stopped parent generated a follow-up: %v", err))
+			}
+			if err := h.Emulator.Done(); err != nil {
+				h.die(err.Error())
+			}
+			pass(t, "B4", "stop cancelled parent, active streams, and queued children within 2s while preserving unrelated work")
+		})
+	}
+}
+
 func countPeerReceipts(messages []contract.Message) int {
 	n := 0
 	for _, m := range messages {

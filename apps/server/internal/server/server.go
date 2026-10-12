@@ -743,29 +743,29 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	a := s.actors[t.AgentID]
 	group := s.groups[t.ID]
 	s.actorsMu.RUnlock()
+	var cancel context.CancelFunc
+	if a != nil && group == nil {
+		a.mu.Lock()
+		cancel = a.cancel
+		a.mu.Unlock()
+	}
+	ids, err := s.Store.StopRuns(r.Context(), t.ID)
+	if err != nil {
+		s.respond(w, nil, err)
+		return
+	}
+	for _, id := range ids {
+		if active, ok := s.turns.Load(id); ok {
+			active.(*execution).cancel()
+		}
+	}
 	if group != nil {
 		group.abort()
 		write(w, 200, map[string]bool{"stopped": true})
 		return
 	}
-	if a != nil {
-		a.mu.Lock()
-		cancel := a.cancel
-		a.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		} else {
-			ids, err := s.Store.StopWaiting(r.Context(), t.ID)
-			if err != nil {
-				s.respond(w, nil, err)
-				return
-			}
-			for _, id := range ids {
-				if active, ok := s.turns.Load(id); ok {
-					active.(*execution).cancel()
-				}
-			}
-		}
+	if cancel != nil {
+		cancel()
 	}
 	write(w, 200, map[string]bool{"stopped": true})
 }
@@ -899,6 +899,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		run.SourceMessageID = &user.ID
 	}
+	if work.Trigger != "review" {
+		run.MessageID = pointer("reply:" + run.ID)
+	}
 	state := &turnState{run: run, work: work, store: s.Store, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
 	runCtx = context.WithValue(runCtx, turnKey{}, state)
 	if resuming {
@@ -940,9 +943,6 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	m := contract.Message{ID: "reply:" + run.ID, ThreadID: user.ThreadID, Role: "assistant", Parts: []contract.Part{}, CreatedAt: store.Now(), Status: "streaming", AgentID: &a.id, RunID: &run.ID}
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		m.ReplyToID = &user.ID
-	}
-	if work.Trigger != "review" {
-		run.MessageID = &m.ID
 	}
 	appendEvent := func(kind string, delta *string, problem *contract.Error, usage *contract.Usage) error {
 		_, err := s.Store.Append(writeCtx, contract.Event{ConversationID: m.ThreadID, Type: kind, MessageID: &m.ID, AgentID: &a.id, RunID: &run.ID, Text: delta, Error: problem, Usage: usage}, &m)
@@ -1183,6 +1183,16 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		err = setActivity("generating", "Composing reply")
 	}
 	if err == nil {
+		aborted := make(chan struct{})
+		// Durable work outlives Send's wait context until the session is aborted.
+		stopAbort := context.AfterFunc(runCtx, func() {
+			defer close(aborted)
+			abortCtx, end := context.WithTimeout(context.WithoutCancel(runCtx), time.Second)
+			defer end()
+			if e := sess.Abort(abortCtx); e != nil && !errors.Is(e, context.Canceled) {
+				s.config.Log.Warn("abort stopped session", "error", e)
+			}
+		})
 		result, err = sess.Send(runCtx, user, func(delta agentruntime.Delta) error {
 			messageMu.Lock()
 			defer messageMu.Unlock()
@@ -1321,6 +1331,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			}
 			return nil
 		})
+		if !stopAbort() {
+			<-aborted
+		}
 	}
 	messageMu.Lock()
 	accepting = false
