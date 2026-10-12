@@ -864,6 +864,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	writeCtx, end := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
 	defer end()
 	user := work.Message
+	delegated := work.Trigger == "peer" || work.Trigger == "child"
 	run := store.NewRun(user.ID, user.ThreadID, a.id, work.Trigger)
 	if existing, e := s.Store.Run(writeCtx, run.ID); e == nil {
 		run = existing
@@ -920,7 +921,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	} else if err == nil && work.Trigger != "created" && !automatic(work.Trigger) {
 		user, err = s.peerContext(runCtx, store.Work{Trigger: work.Trigger, Message: user, DeliveryID: work.DeliveryID, ParentRunID: work.ParentRunID})
 	}
-	if err == nil && work.Trigger != "created" && work.Trigger != "peer" {
+	if err == nil && work.Trigger != "created" && !delegated {
 		user, err = s.workContext(runCtx, run, user)
 		if err == nil {
 			user, err = s.memoryContext(runCtx, run, user, store.Text(work.Message))
@@ -965,7 +966,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	a.mu.Lock()
 	d, revision := a.definition, a.revision
 	sess := a.session
-	isolated := work.Trigger == "peer" || automatic(work.Trigger)
+	isolated := delegated || automatic(work.Trigger)
 	if isolated {
 		sess = nil
 	}
@@ -983,7 +984,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	state.external = map[string]bool{}
 	state.classes = map[string]ToolClass{}
 	state.known = map[string]bool{}
-	if s.config.Devices != nil && a.threadID == "" && work.Trigger != "peer" {
+	if s.config.Devices != nil && a.threadID == "" && !delegated {
 		state.external["control_device"] = true
 		state.known["control_device"] = true
 	}
@@ -1023,6 +1024,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		var pathErr error
 		if isolated {
 			d.Scope = fmt.Sprintf("peer-%x", sha256.Sum256([]byte(work.DeliveryID)))
+			if work.Trigger == "child" {
+				d.Scope = fmt.Sprintf("child-%x", sha256.Sum256([]byte(run.ID)))
+			}
 			if automatic(work.Trigger) {
 				d.Scope = run.ConversationID
 				d.Ephemeral, d.Automatic = true, true
@@ -1046,18 +1050,18 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				d.ExtraTools = nil
 			} else {
 				d.ExtraTools = slices.Clone(d.ExtraTools)
-				if s.config.Devices != nil && a.threadID == "" && work.Trigger != "peer" {
+				if s.config.Devices != nil && a.threadID == "" && !delegated {
 					d.ExtraTools = append(d.ExtraTools, &controlTool{broker: s.config.Devices, agent: a.id})
 				}
 				if !d.Automatic {
 					d.ExtraTools = append(d.ExtraTools,
-						&peerTool{server: s, handoff: a.threadID != ""}, &routineTool{server: s}, &triggerTool{server: s})
+						&peerTool{server: s, handoff: a.threadID != ""}, &spawnTool{server: s}, &routineTool{server: s}, &triggerTool{server: s})
 				}
 				if work.Trigger == "message" && a.threadID == "" {
 					d.ExtraTools = append(d.ExtraTools, &integrationTool{server: s})
 					state.external["manage_integrations"] = true
 				}
-				if work.Trigger != "peer" {
+				if !delegated {
 					d.ExtraTools = append(d.ExtraTools, &workTool{store: s.Store})
 					if work.Trigger != "review" {
 						d.ExtraTools = append(d.ExtraTools, &taskTool{server: s})

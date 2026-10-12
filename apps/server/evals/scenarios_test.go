@@ -391,6 +391,88 @@ func TestX6DisconnectMidStream(t *testing.T) {
 	}
 }
 
+func TestB1Spawn(t *testing.T) {
+	for _, target := range []struct{ name, id string }{{"own agent", ""}, {"other agent", "b"}} {
+		t.Run(target.name, func(t *testing.T) {
+			opened := make(chan struct{})
+			release := make(chan struct{})
+			args := map[string]any{"task": "CHILD_ONLY_B1: Complete the bounded task"}
+			if target.id != "" {
+				args["agent_id"] = target.id
+			}
+			reply := func(req *ChatRequest) Response {
+				text := requestText(req)
+				if strings.Contains(text, "CHILD_ONLY_B1") {
+					if strings.Contains(text, "PRIVATE_PARENT_B1") {
+						t.Error("child received private parent context")
+					}
+					return HoldReply("child finished", release, func() { close(opened) }, nil)
+				}
+				if !hasToolResult(req, "b1-spawn", "child") {
+					t.Error("parent did not receive the child run")
+				}
+				return TextReply("parent continues independently")
+			}
+			h := Start(t, Options{
+				ID: "B1",
+				Agents: []agentruntime.Definition{
+					{Agent: contract.Agent{ID: "a", Name: "A", Model: evalModel}, Tools: []string{}},
+					{Agent: contract.Agent{ID: "b", Name: "B", Model: evalModel}, Tools: []string{}},
+				},
+				Steps: []Step{
+					Fixed(func(req *ChatRequest) error {
+						if !strings.Contains(string(req.Tools), "spawn_task") {
+							return fmt.Errorf("spawn_task is unavailable")
+						}
+						return nil
+					}, ToolReply("b1-spawn", "spawn_task", args)),
+					{Response: reply}, {Response: reply},
+				},
+			})
+			t.Cleanup(func() { close(release) })
+			if code := h.Send("a", "b1-user", "Spawn a bounded child task, then reply. PRIVATE_PARENT_B1"); code != http.StatusAccepted && code != http.StatusOK {
+				fail(t, "B1", fmt.Sprintf("send status %d", code))
+				return
+			}
+			WaitHold(t, "B1", opened, holdWait)
+			parent := h.WaitRun("a", "b1-user", "a", deadline)
+			owner := target.id
+			if owner == "" {
+				owner = "a"
+			}
+			runs, err := h.Store.Runs(t.Context(), owner)
+			if err != nil {
+				fail(t, "B1", err.Error())
+				return
+			}
+			var children []contract.Run
+			for _, run := range runs {
+				if run.ParentRunID != nil && *run.ParentRunID == parent.ID {
+					children = append(children, run)
+				}
+			}
+			if parent.Status != "completed" || len(children) != 1 || children[0].Trigger != "child" || children[0].Status != "running" {
+				fail(t, "B1", fmt.Sprintf("parent=%s children=%+v", parent.Status, children))
+				return
+			}
+			if parent.MessageID == nil {
+				fail(t, "B1", "parent has no final message")
+				return
+			}
+			message, err := h.Store.Message(t.Context(), *parent.MessageID)
+			if err != nil || messageText(message) != "parent continues independently" {
+				fail(t, "B1", fmt.Sprintf("parent did not continue after spawn: %v", err))
+				return
+			}
+			if err := h.Emulator.Done(); err != nil {
+				fail(t, "B1", err.Error())
+				return
+			}
+			pass(t, "B1", "parent continued and completed while its isolated child run remained active")
+		})
+	}
+}
+
 func TestB2BackgroundNotify(t *testing.T) {
 	b2Reply := func(req *ChatRequest) Response {
 		text := requestText(req)
