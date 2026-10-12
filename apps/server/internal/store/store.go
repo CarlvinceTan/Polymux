@@ -107,6 +107,11 @@ func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition
 		return fmt.Errorf("invalid agent definition")
 	}
 	a.Active = false
+	if a.Avatar == nil {
+		if avatar := contract.GrokBotAvatarFromDefinition(definition); avatar != nil {
+			a.Avatar = avatar
+		}
+	}
 	data, err := json.Marshal(a)
 	if err != nil {
 		return err
@@ -305,6 +310,16 @@ func (s *Store) UpdateDefinition(ctx context.Context, a contract.Agent, definiti
 	}
 	if err := json.Unmarshal([]byte(data), &a); err != nil {
 		return a, err
+	}
+	if avatar := contract.GrokBotAvatarFromDefinition(definition); avatar != nil {
+		a.Avatar = avatar
+		agentData, err := json.Marshal(a)
+		if err != nil {
+			return a, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET data=? WHERE id=?`, string(agentData), a.ID); err != nil {
+			return a, err
+		}
 	}
 	return a, tx.Commit()
 }
