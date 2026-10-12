@@ -270,7 +270,6 @@ struct ChatPane: View {
                                  if reply == quote { reply = nil }
                                  if store.error == nil { onSent?() }
                              },
-                              voice: openVoice,
                              reply: reply, agentName: reply.flatMap { quote in session.sidebar.agents.first { $0.id == quote.agentID }?.name } ?? agent.name,
                              clearReply: { reply = nil }, drops: drops, members: thread.isGroup ? members : [])
                     .frame(height: showVoice ? 0 : nil)
