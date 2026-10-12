@@ -82,6 +82,9 @@ func beforeTool(ctx context.Context, call, name string, args json.RawMessage) ag
 	if state.tools > limit {
 		return agent.ToolCallHookResult{Block: true, Terminate: true, Reason: "Turn tool budget exhausted"}
 	}
+	if state.work.Trigger == "child" && (name == "spawn_task" || name == "message_agent" || name == "handoff_agent" || name == "manage_tasks") {
+		return agent.ToolCallHookResult{Block: true, Reason: "Child tasks cannot delegate or schedule continuations"}
+	}
 	if chain, _ := ctx.Value(chainKey{}).(*chainState); chain != nil {
 		chain.mu.Lock()
 		defer chain.mu.Unlock()
@@ -377,6 +380,9 @@ func (s *Server) peerContext(ctx context.Context, work store.Work) (contract.Mes
 	}
 	if work.Trigger == "peer" {
 		text += fmt.Sprintf("\nPeer request %s, parent run %s. Answer only the explicit request; do not recursively delegate. Your result is delivered to its source automatically.", work.DeliveryID, value(work.ParentRunID))
+	}
+	if work.Trigger == "child" {
+		text += fmt.Sprintf("\nChild task, parent run %s. Complete only the explicit task in this fresh session; do not delegate or schedule continuations.", value(work.ParentRunID))
 	}
 	m.Parts = append([]contract.Part{{Kind: "text", Text: &text}}, m.Parts...)
 	return m, nil

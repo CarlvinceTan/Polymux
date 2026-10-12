@@ -46,6 +46,7 @@ var builtinClass = map[string]ToolClass{
 	// external side effect that requires a user approval gate.
 	"message_agent":       ToolReversible,
 	"handoff_agent":       ToolReversible,
+	"spawn_task":          ToolReversible,
 	"manage_routines":     ToolConsequential,
 	"manage_integrations": ToolConsequential,
 	"manage_triggers":     ToolConsequential,
