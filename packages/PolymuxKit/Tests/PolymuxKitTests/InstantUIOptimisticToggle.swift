@@ -13,10 +13,12 @@ struct InstantUIOptimisticToggle {
         #expect(choice.isEnabled())
         #expect(toggle.isPending)
         #expect(toggle.signpostTrace == ["apply true"])
+        expectBudgets(toggle.trace, names: ["apply"])
         gate.open()
         await toggle.settled()
         #expect(choice.get())
         #expect(toggle.signpostTrace == ["apply true", "commit true"])
+        expectBudgets(toggle.trace, names: ["apply", "commit"])
         #expect(toggle.message == nil)
         #expect(!toggle.isPending)
     }
@@ -28,6 +30,7 @@ struct InstantUIOptimisticToggle {
         await toggle.settled()
         #expect(toggle.signposts == [.apply(false), .commit(false)])
         #expect(toggle.signpostTrace == ["apply false", "commit false"])
+        expectBudgets(toggle.trace, names: ["apply", "commit"])
     }
 
     @Test func forcedFailureRollsBackWithMessage() async {
@@ -42,6 +45,7 @@ struct InstantUIOptimisticToggle {
         #expect(toggle.message == "Couldn’t update background reviews.")
         #expect(choice.isEnabled())
         #expect(toggle.signposts == [.apply(true), .rollback(false, "Couldn’t update background reviews.")])
+        expectBudgets(toggle.trace, names: ["apply", "rollback"])
     }
 
     @Test func failureLeavesTheControlEnabled() async {
@@ -72,7 +76,28 @@ struct InstantUIOptimisticToggle {
             "apply true",
             "rollback false Couldn’t change background control. Check Login Items in System Settings."
         ])
+        expectBudgets(toggle.trace, names: ["apply", "rollback"])
         #expect(toggle.isEnabled)
+    }
+
+    @Test func slowPublishFailsTheBudgetCheck() async throws {
+        let toggle = OptimisticToggle(isOn: false)
+        let choice = toggle.binding(apply: { _ in block(for: .milliseconds(80)) }) { _ in
+            throw ToggleFailure("Couldn’t update background reviews.")
+        }
+        choice.set(true)
+        let apply = try #require(toggle.trace.spans.first { $0.name == "apply" })
+        #expect(apply.budget == InstantUI.feedbackBudget)
+        #expect(apply.duration > InstantUI.stateBudget)
+        #expect(!apply.withinBudget)
+        #expect(!toggle.trace.meetsBudgets)
+        await toggle.settled()
+        let rollback = try #require(toggle.trace.spans.first { $0.name == "rollback" })
+        #expect(rollback.budget == InstantUI.feedbackBudget)
+        #expect(rollback.duration > InstantUI.stateBudget)
+        #expect(!rollback.withinBudget)
+        #expect(!toggle.trace.meetsBudgets)
+        #expect(!toggle.isOn)
     }
 
     @Test func emptyFailureUsesAClearMessage() async {
@@ -128,6 +153,7 @@ struct InstantUIOptimisticToggle {
             "apply true",
             "commit true"
         ])
+        expectBudgets(toggle.trace, names: ["apply", "rollback", "apply", "commit"])
     }
 
     @Test func sideEffectRollsBackWithTheValue() async {
@@ -180,6 +206,28 @@ struct InstantUIOptimisticToggle {
         #expect(toggle.signpostTrace == ["apply true", "commit true"])
         #expect(choice.isEnabled())
     }
+
+    private func expectBudgets(_ trace: SignpostTrace, names: [String], sourceLocation: SourceLocation = #_sourceLocation) {
+        #expect(InstantUI.feedbackBudget == .milliseconds(16), sourceLocation: sourceLocation)
+        #expect(InstantUI.stateBudget == .milliseconds(50), sourceLocation: sourceLocation)
+        #expect(trace.spans.map(\.name) == names, sourceLocation: sourceLocation)
+        #expect(trace.meetsBudgets, sourceLocation: sourceLocation)
+        for span in trace.spans {
+            let budget = span.name == "commit" ? InstantUI.stateBudget : InstantUI.feedbackBudget
+            #expect(span.budget == budget, "\(span.name)", sourceLocation: sourceLocation)
+            #expect(span.duration < InstantUI.stateBudget, "\(span.name)", sourceLocation: sourceLocation)
+            if span.name != "commit" {
+                #expect(span.duration < InstantUI.feedbackBudget, "\(span.name)", sourceLocation: sourceLocation)
+            }
+            #expect(span.withinBudget, sourceLocation: sourceLocation)
+        }
+    }
+}
+
+private func block(for duration: Duration) {
+    let clock = ContinuousClock()
+    let start = clock.now
+    while start.duration(to: clock.now) < duration {}
 }
 
 private struct BlankError: LocalizedError {

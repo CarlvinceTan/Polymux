@@ -1,8 +1,5 @@
 import Foundation
 import Observation
-#if os(macOS) || os(iOS)
-import os
-#endif
 
 public enum ToggleSignpost: Equatable, Sendable {
     case apply(Bool)
@@ -47,6 +44,7 @@ public final class OptimisticToggle {
     /// In-flight confirms stay tappable. Disabling the switch is what left it grey.
     public var isEnabled: Bool { true }
     @ObservationIgnored public private(set) var signposts: [ToggleSignpost] = []
+    @ObservationIgnored public let trace = SignpostTrace()
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var settledGeneration = 0
     @ObservationIgnored private var tail: Task<Void, Never>?
@@ -78,13 +76,20 @@ public final class OptimisticToggle {
     public func set(_ next: Bool, apply: (@MainActor (Bool) -> Void)? = nil,
                     commit: @escaping @MainActor (Bool) async throws -> Void) {
         guard next != isOn else { return }
-        generation += 1
-        let token = generation
-        let previous = isOn
-        isOn = next
-        message = nil
-        mark(.apply(next))
-        apply?(next)
+        let trace = self.trace
+        // Clock starts at the tap and stops when the switch and its side effect are published.
+        let published = InstantUI.interval("apply", budget: InstantUI.feedbackBudget, trace: trace) { () -> (Int, Bool) in
+            generation += 1
+            let token = generation
+            let previous = isOn
+            isOn = next
+            message = nil
+            signposts.append(.apply(next))
+            apply?(next)
+            return (token, previous)
+        }
+        let token = published.0
+        let previous = published.1
         let prior = tail
         let job = Task { @MainActor in
             await prior?.value
@@ -92,15 +97,20 @@ public final class OptimisticToggle {
             do {
                 try await commit(next)
                 guard token == generation else { return }
-                self.mark(.commit(next))
+                // The confirm may wait on the network. This interval is only the published settle.
+                InstantUI.interval("commit", budget: InstantUI.stateBudget, trace: trace) {
+                    self.signposts.append(.commit(next))
+                }
             } catch {
                 // A newer flip owns the value; an older failure must not restore it.
                 guard token == generation else { return }
-                self.isOn = previous
                 let text = Self.describe(error)
-                self.message = text
-                apply?(previous)
-                self.mark(.rollback(previous, text))
+                InstantUI.interval("rollback", budget: InstantUI.feedbackBudget, trace: trace) {
+                    self.isOn = previous
+                    self.message = text
+                    apply?(previous)
+                    self.signposts.append(.rollback(previous, text))
+                }
             }
             if token == generation { self.settledGeneration = token }
         }
@@ -127,21 +137,4 @@ public final class OptimisticToggle {
         if !fallback.isEmpty { return fallback }
         return "Couldn’t save this change."
     }
-
-    private func mark(_ event: ToggleSignpost) {
-        signposts.append(event)
-        #if os(macOS) || os(iOS)
-        switch event {
-        case .apply: InstantUISignpost.signposter.emitEvent("apply")
-        case .commit: InstantUISignpost.signposter.emitEvent("commit")
-        case .rollback: InstantUISignpost.signposter.emitEvent("rollback")
-        }
-        #endif
-    }
 }
-
-#if os(macOS) || os(iOS)
-private enum InstantUISignpost {
-    static let signposter = OSSignposter(subsystem: "app.polymux", category: "InstantUI")
-}
-#endif
