@@ -1472,7 +1472,8 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			code = "timeout"
 			message = "The model took too long to reply."
 			if background {
-				message = "Background work appears stuck and was stopped after taking too long. Review before retrying."
+				// Agent context only. The parent follow-up speaks to the user.
+				message = "The background task timed out and was stopped."
 				run.Summary = "Background work timed out"
 			}
 		}

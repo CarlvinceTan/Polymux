@@ -117,10 +117,10 @@ func TestTimeoutNotice(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	child, err := db.Run(t.Context(), childID)
-	if err != nil || child.Status != "failed" || child.Error == nil || child.Error.Code != "timeout" || !strings.Contains(child.Error.Message, "stuck") || child.FinishedAt == nil {
+	if err != nil || child.Status != "failed" || child.Error == nil || child.Error.Code != "timeout" || !strings.Contains(strings.ToLower(child.Error.Message), "timed out") || child.FinishedAt == nil {
 		t.Fatalf("child timeout: %+v %v", child, err)
 	}
-	if parent.Status != "failed" {
+	if parent.Status != "failed" || parent.Error == nil || parent.Error.Code != "peer_failed" {
 		t.Fatalf("parent left waiting: %+v", parent)
 	}
 	select {
@@ -131,9 +131,22 @@ func TestTimeoutNotice(t *testing.T) {
 	if err := db.Receipt(t.Context(), "delivery", child, contract.Message{}); err != nil {
 		t.Fatal(err)
 	}
+	var raw string
+	if err := db.DB.QueryRowContext(t.Context(), `SELECT data FROM deliveries WHERE id=?`, "delivery").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(raw), &delivery); err != nil || delivery.Status != "failed" {
+		t.Fatalf("delivery status: %s %v", raw, err)
+	}
 	messages, err := db.Messages(t.Context(), "a", 0, 100)
-	if err != nil || len(messages) != 1 || store.Text(messages[0]) != child.Error.Message || messages[0].Status != "done" || messages[0].ReplyToID == nil || *messages[0].ReplyToID != "request" {
-		t.Fatalf("stuck notice: %+v %v", messages, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range messages {
+		body := store.Text(message)
+		if strings.HasPrefix(message.ID, "receipt:") || strings.Contains(body, "appears stuck") || strings.Contains(body, child.Error.Message) {
+			t.Fatalf("stuck notice: %+v", message)
+		}
 	}
 }
 

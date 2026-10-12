@@ -585,11 +585,12 @@ func TestB5StuckBackground(t *testing.T) {
 			{Response: reply},
 			{Response: reply},
 			Fixed(func(req *ChatRequest) error {
-				if !strings.Contains(requestText(req), "Background work appears stuck") {
-					return errors.New("follow-up did not receive the stuck notice")
+				text := requestText(req)
+				if !strings.Contains(text, "timed out") || !strings.Contains(text, `"status":"failed"`) {
+					return errors.New("follow-up did not receive the timeout")
 				}
 				return nil
-			}, TextReply("The background task stopped. Review before retrying.")),
+			}, TextReply("I stopped that background task because it took too long. Tell me if you want to try again.")),
 		},
 	})
 	t.Cleanup(func() { close(release) })
@@ -606,8 +607,8 @@ func TestB5StuckBackground(t *testing.T) {
 	if child.Status != "failed" || child.Error == nil || child.Error.Code != "timeout" || child.FinishedAt == nil {
 		h.die(fmt.Sprintf("child did not fail cleanly on timeout: %+v", child))
 	}
-	if !strings.Contains(strings.ToLower(child.Error.Message), "stuck") {
-		h.die("child timeout did not identify stuck background work")
+	if !strings.Contains(strings.ToLower(child.Error.Message), "timed out") {
+		h.die("child timeout did not explain the stop")
 	}
 	if parent.Status != "failed" || parent.Error == nil || parent.Error.Code != "peer_failed" {
 		h.die("parent left waiting: " + parent.Status)
@@ -615,17 +616,19 @@ func TestB5StuckBackground(t *testing.T) {
 	if followup := h.WaitRunID(store.NewRun("followup:"+parentID, "a", "a", "follow_up").ID, holdWait); followup.Status != "completed" {
 		h.die("follow-up did not finish: " + followup.Status)
 	}
-	receipts := 0
+	said := "I stopped that background task because it took too long. Tell me if you want to try again."
+	sawReply := false
 	for _, message := range h.Messages("a") {
-		if message.ID == "receipt:"+deliveryID {
-			receipts++
-			if message.Status != "done" || messageText(message) != child.Error.Message || message.ReplyToID == nil || *message.ReplyToID != "b5-user" {
-				h.die(fmt.Sprintf("stuck notice missing from user conversation: %+v", message))
-			}
+		body := messageText(message)
+		if strings.HasPrefix(message.ID, "receipt:") || strings.Contains(body, "Background work appears stuck") || strings.Contains(body, child.Error.Message) {
+			h.die(fmt.Sprintf("stuck notice in the user conversation: %+v", message))
+		}
+		if message.Role == "assistant" && message.Status == "done" && body == said {
+			sawReply = true
 		}
 	}
-	if receipts != 1 {
-		h.die(fmt.Sprintf("want one stuck notice, got %d", receipts))
+	if !sawReply {
+		h.die("follow-up reply missing from the user conversation")
 	}
 	if err := h.Store.Receipt(t.Context(), deliveryID, child, contract.Message{}); err != nil {
 		h.die(err.Error())
@@ -636,20 +639,20 @@ func TestB5StuckBackground(t *testing.T) {
 	}
 	notices, failures := 0, 0
 	for _, event := range events {
-		if event.Type == "message.start" && event.MessageID != nil && *event.MessageID == "receipt:"+deliveryID {
+		if event.Type == "message.start" && event.MessageID != nil && strings.HasPrefix(*event.MessageID, "receipt:") {
 			notices++
 		}
 		if event.Type == "peer.delivery" && event.Delivery != nil && event.Delivery.ID == deliveryID && event.Delivery.Status == "failed" {
 			failures++
 		}
 	}
-	if notices != 1 || failures != 1 {
-		h.die(fmt.Sprintf("want one pushed notice and failed delivery, got %d and %d", notices, failures))
+	if notices != 0 || failures != 1 {
+		h.die(fmt.Sprintf("want no receipt notice and one failed delivery, got %d and %d", notices, failures))
 	}
 	if err := h.Emulator.Done(); err != nil {
 		h.die(err.Error())
 	}
-	pass(t, "B5", "held child timed out, closed its stream, and pushed one stuck notice to the user")
+	pass(t, "B5", "held child timed out and aborted, and the parent explained it in chat without a receipt notice")
 }
 
 func countPeerReceipts(messages []contract.Message) int {

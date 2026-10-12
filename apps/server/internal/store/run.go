@@ -538,13 +538,12 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 	}
 	run = stored
 	delivery.Status, delivery.RunID = run.Status, &run.ID
-	if delivery.Intent != "handoff" {
+	// A timeout is explained by the parent follow-up, not a receipt notice.
+	timedOut := run.Error != nil && run.Error.Code == "timeout"
+	if delivery.Intent != "handoff" && !timedOut {
 		text := Text(result)
 		if run.Status != "completed" {
 			text = "Peer work " + run.Status + ". Review before retrying."
-			if run.Error != nil && run.Error.Code == "timeout" {
-				text = run.Error.Message
-			}
 		}
 		if text == "" {
 			text = "Peer work completed without a text result."
