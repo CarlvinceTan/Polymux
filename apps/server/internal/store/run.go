@@ -322,6 +322,13 @@ func (s *Store) recoverRuns(ctx context.Context) error {
 		return err
 	}
 	for _, run := range runs {
+		var status string
+		if err := s.DB.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, run.ID).Scan(&status); err != nil {
+			return err
+		}
+		if Terminal(status) {
+			continue
+		}
 		if run.Status == "waiting_peer" && run.MessageID != nil {
 			var durable int
 			if err := s.DB.QueryRowContext(ctx,

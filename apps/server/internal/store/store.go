@@ -559,6 +559,9 @@ func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *co
 	if err == nil {
 		err = noticeTx(ctx, tx, message, event)
 	}
+	if err == nil && event.Run != nil && endsChildren(event.Run.Status) {
+		err = cancelDescendants(ctx, tx, event.Run.ID)
+	}
 	return event, err
 }
 

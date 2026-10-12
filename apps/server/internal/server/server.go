@@ -1502,6 +1502,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		finalized = true
 	}
 	messageMu.Unlock()
+	if finalized && endsChildren(run.Status) {
+		s.cancelTree(writeCtx, run.ID)
+	}
 	if err != nil {
 		s.config.Log.Warn("agent reply", "id", user.ID, "error", err)
 	}
@@ -1523,6 +1526,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if finalized && work.DeliveryID != "" {
 		if e := s.Store.Receipt(writeCtx, work.DeliveryID, run, m); e != nil {
 			s.config.Log.Error("publish peer result", "error", e)
+		} else if work.ParentRunID != nil {
+			if origin, e := s.Store.Run(writeCtx, *work.ParentRunID); e == nil && endsChildren(origin.Status) {
+				s.cancelTree(writeCtx, origin.ID)
+			}
 		}
 	}
 	if chain, _ := parent.Value(chainKey{}).(*chainState); finalized && chain != nil && handed && run.Status == "completed" {
@@ -1540,6 +1547,23 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 }
 
 func pointer(text string) *string { return &text }
+
+func endsChildren(status string) bool {
+	return status == "failed" || status == "cancelled" || status == "interrupted"
+}
+
+func (s *Server) cancelTree(ctx context.Context, id string) {
+	ids, err := s.Store.DescendantIDs(ctx, id)
+	if err != nil {
+		s.config.Log.Error("cancel child runs", "error", err)
+		return
+	}
+	for _, child := range ids {
+		if active, ok := s.turns.Load(child); ok {
+			active.(*execution).cancel()
+		}
+	}
+}
 
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<20)
