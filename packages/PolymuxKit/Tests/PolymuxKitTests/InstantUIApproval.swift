@@ -16,13 +16,14 @@ struct InstantUIApproval {
             }, publish: { gate.publish($0) })
         }
         let shown = await gate.optimistic()
+        await gate.untilStarted()
         #expect(shown.optionID == "day")
         #expect(shown.failed == false)
         #expect(shown.isSending == true)
         #expect(shown.shown == "day")
-        #expect(InstantUI.paintBudget == .milliseconds(16))
-        #expect(InstantUI.feedbackBudget == .milliseconds(100))
-        expectBudgets(trace, names: ["ApprovalAnswer", "ApprovalFeedback"])
+        #expect(InstantUI.feedbackBudget == .milliseconds(16))
+        #expect(InstantUI.stateBudget == .milliseconds(50))
+        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState"])
         gate.release()
         let settled = await task.value
         #expect(settled.optionID == "day")
@@ -44,7 +45,7 @@ struct InstantUIApproval {
         #expect(settled == ApprovalChoice(failed: true))
         #expect(settled.shown == nil)
         #expect(seen[1] == settled)
-        expectBudgets(trace, names: ["ApprovalAnswer", "ApprovalFeedback", "ApprovalRollback"])
+        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState", "ApprovalRollback"])
     }
 
     @Test func failedRequestRollsBack() async throws {
@@ -61,7 +62,7 @@ struct InstantUIApproval {
         #expect(ApprovalProtocol.routes.optionID(for: host) == "code")
         #expect(settled == ApprovalChoice(failed: true))
         #expect(settled.shown == nil)
-        expectBudgets(trace, names: ["ApprovalAnswer", "ApprovalFeedback", "ApprovalRollback"])
+        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState", "ApprovalRollback"])
     }
 
     @Test func acceptedAnswerStays() async throws {
@@ -81,7 +82,7 @@ struct InstantUIApproval {
         #expect(settled.optionID == "everything")
         #expect(settled.failed == false)
         #expect(settled.isSending == false)
-        expectBudgets(trace, names: ["ApprovalAnswer", "ApprovalFeedback"])
+        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState"])
     }
 
     @Test func inflightAnswerIsKept() async {
@@ -120,14 +121,39 @@ struct InstantUIApproval {
         #expect(settled.optionID == FocusAnswer.dismissed)
         #expect(settled.failed == false)
         #expect(settled.shown == FocusAnswer.dismissed)
-        expectBudgets(trace, names: ["ApprovalAnswer", "ApprovalFeedback"])
+        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState"])
+    }
+
+    @Test func slowPublishExceedsBudget() async {
+        let trace = SignpostTrace()
+        _ = await ApprovalChoice.apply(optionID: "day", trace: trace, send: {}, publish: { _ in
+            stall(.milliseconds(80))
+        })
+        #expect(trace.meetsBudgets == false)
+        let feedback = trace.spans.first { $0.name == "ApprovalFeedback" }
+        let state = trace.spans.first { $0.name == "ApprovalState" }
+        #expect(feedback?.withinBudget == false)
+        #expect(state?.withinBudget == false)
+        #expect((feedback?.duration ?? .zero) > InstantUI.feedbackBudget)
+        #expect((state?.duration ?? .zero) > InstantUI.stateBudget)
+    }
+
+    @Test func staleTapExceedsBudget() async {
+        let trace = SignpostTrace()
+        let tap = ContinuousClock().now
+        stall(.milliseconds(80))
+        _ = await ApprovalChoice.apply(optionID: "day", tap: tap, trace: trace, send: {}, publish: { _ in })
+        #expect(trace.meetsBudgets == false)
+        let state = trace.spans.first { $0.name == "ApprovalState" }
+        #expect(state?.withinBudget == false)
+        #expect((state?.duration ?? .zero) > InstantUI.stateBudget)
     }
 
     private func expectBudgets(_ trace: SignpostTrace, names: [String], sourceLocation: SourceLocation = #_sourceLocation) {
         #expect(trace.meetsBudgets, sourceLocation: sourceLocation)
         #expect(trace.spans.map(\.name) == names, sourceLocation: sourceLocation)
         for span in trace.spans {
-            let budget = span.name == "ApprovalFeedback" ? InstantUI.feedbackBudget : InstantUI.paintBudget
+            let budget = span.name == "ApprovalState" ? InstantUI.stateBudget : InstantUI.feedbackBudget
             #expect(span.budget == budget, sourceLocation: sourceLocation)
             #expect(span.withinBudget, sourceLocation: sourceLocation)
         }
@@ -145,7 +171,9 @@ private final class Gate: @unchecked Sendable {
     private var shown: ApprovalChoice?
     private var waiters: [CheckedContinuation<ApprovalChoice, Never>] = []
     private var holders: [CheckedContinuation<Void, Never>] = []
+    private var starters: [CheckedContinuation<Void, Never>] = []
     private var open = false
+    private var started = false
 
     func publish(_ choice: ApprovalChoice) {
         lock.lock()
@@ -173,7 +201,22 @@ private final class Gate: @unchecked Sendable {
         }
     }
 
+    func untilStarted() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if started {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                starters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
     func hold() async {
+        let pending = takeStarters()
+        for starter in pending { starter.resume() }
         await withCheckedContinuation { continuation in
             lock.lock()
             if open {
@@ -184,6 +227,15 @@ private final class Gate: @unchecked Sendable {
                 lock.unlock()
             }
         }
+    }
+
+    private func takeStarters() -> [CheckedContinuation<Void, Never>] {
+        lock.lock()
+        started = true
+        let pending = starters
+        starters.removeAll()
+        lock.unlock()
+        return pending
     }
 
     func release() {
@@ -248,6 +300,12 @@ private final class ApprovalProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private func stall(_ duration: Duration) {
+    let clock = ContinuousClock()
+    let start = clock.now
+    while start.duration(to: clock.now) < duration {}
 }
 
 private func requestBody(_ request: URLRequest) -> Data {

@@ -23,7 +23,7 @@ struct FocusCard: View {
                 .foregroundStyle(.secondary)
             } else {
                 ForEach(Array((part.options ?? []).enumerated()), id: \.element.id) { index, option in
-                    Button { Task { await choose(option.id) } } label: {
+                    Button { select(option.id) } label: {
                         HStack(spacing: 10) {
                             Text(letter(index)).font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary).frame(width: 14, alignment: .leading)
@@ -35,7 +35,7 @@ struct FocusCard: View {
                     .disabled(choice.isSending)
                     .accessibilityLabel("\(letter(index)). \(option.label)")
                 }
-                Button("Skip") { Task { await choose(FocusAnswer.dismissed) } }
+                Button("Skip") { select(FocusAnswer.dismissed) }
                     .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
                     .disabled(choice.isSending)
             }
@@ -56,9 +56,14 @@ struct FocusCard: View {
         return (part.options ?? []).first { $0.id == answer }?.label ?? answer
     }
 
-    private func choose(_ option: String) async {
+    private func select(_ option: String) {
+        let tap = ContinuousClock().now
+        Task { await choose(option, tap: tap) }
+    }
+
+    private func choose(_ option: String, tap: ContinuousClock.Instant) async {
         guard part.answerID == nil else { return }
-        choice = await ApprovalChoice.apply(current: choice, optionID: option, send: {
+        choice = await ApprovalChoice.apply(current: choice, optionID: option, tap: tap, send: {
             _ = try await client.answerFocus(agentID: agentID, optionID: option)
         }, publish: { choice = $0 })
     }

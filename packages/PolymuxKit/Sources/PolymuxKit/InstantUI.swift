@@ -3,19 +3,25 @@ import os
 #endif
 import Foundation
 
-/// P0 budgets: one frame to paint, a tenth of a second before the answer is shown.
+/// Visible feedback within 16 ms, and the published state change within 50 ms.
 public enum InstantUI {
-    public static let paintBudget: Duration = .milliseconds(16)
-    public static let feedbackBudget: Duration = .milliseconds(100)
+    public static let feedbackBudget: Duration = .milliseconds(16)
+    public static let stateBudget: Duration = .milliseconds(50)
 
-    /// Records a signpost interval and keeps its duration on `trace`.
-    public static func interval(_ name: StaticString, budget: Duration, trace: SignpostTrace, _ body: () -> Void) {
+    /// Records a signpost from `tap` through `body` and keeps the duration on `trace`.
+    public static func interval(
+        _ name: StaticString,
+        budget: Duration,
+        trace: SignpostTrace,
+        from tap: ContinuousClock.Instant? = nil,
+        _ body: () -> Void
+    ) {
         prepare()
         let clock = ContinuousClock()
         #if os(macOS) || os(iOS) || os(visionOS) || os(tvOS) || os(watchOS)
         let state = signposter.beginInterval(name)
         #endif
-        let start = clock.now
+        let start = tap ?? clock.now
         body()
         let duration = start.duration(to: clock.now)
         #if os(macOS) || os(iOS) || os(visionOS) || os(tvOS) || os(watchOS)
@@ -53,31 +59,34 @@ public struct ApprovalChoice: Equatable, Sendable {
 
     public var shown: String? { failed ? nil : optionID }
 
-    /// Paints `optionID` before `send`. A thrown send restores the unanswered card.
+    /// Publishes the chosen answer before `send`, measured from `tap` through that publish.
+    /// A thrown send restores the unanswered card.
     @MainActor
     @discardableResult
     public static func apply(
         current: ApprovalChoice = ApprovalChoice(),
         optionID: String,
+        tap: ContinuousClock.Instant? = nil,
         trace: SignpostTrace = SignpostTrace(),
         send: () async throws -> Void,
         publish: (ApprovalChoice) -> Void
     ) async -> ApprovalChoice {
         guard !current.isSending, current.shown == nil else { return current }
         var choice = ApprovalChoice()
-        InstantUI.interval("ApprovalFeedback", budget: InstantUI.feedbackBudget, trace: trace) {
-            InstantUI.interval("ApprovalAnswer", budget: InstantUI.paintBudget, trace: trace) {
+        let origin = tap ?? ContinuousClock().now
+        InstantUI.interval("ApprovalState", budget: InstantUI.stateBudget, trace: trace, from: origin) {
+            InstantUI.interval("ApprovalFeedback", budget: InstantUI.feedbackBudget, trace: trace, from: origin) {
                 choice.optionID = optionID
                 choice.isSending = true
+                publish(choice)
             }
         }
-        publish(choice)
         do {
             try await send()
             choice.isSending = false
             publish(choice)
         } catch {
-            InstantUI.interval("ApprovalRollback", budget: InstantUI.paintBudget, trace: trace) {
+            InstantUI.interval("ApprovalRollback", budget: InstantUI.feedbackBudget, trace: trace) {
                 choice = ApprovalChoice(failed: true)
                 publish(choice)
             }
