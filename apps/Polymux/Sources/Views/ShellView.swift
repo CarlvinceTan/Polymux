@@ -32,6 +32,17 @@ struct ShellView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #endif
 
+    private var selectionBinding: Binding<String?> {
+        Binding {
+            selection
+        } set: { value in
+            if let value {
+                SwitchTrace.click(threadID: value, cached: session.chats.contains(value))
+            }
+            selection = value
+        }
+    }
+
     private var sidebarWidth: Double { session.settings.value?.sidebarWidth ?? SidebarWidth.initial }
     private var widthBinding: Binding<Double> {
         Binding(get: { sidebarWidth }, set: { value in
@@ -43,7 +54,7 @@ struct ShellView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $visibility) {
-            List(selection: $selection) {
+            List(selection: selectionBinding) {
                 ForEach(conversations) { thread in
                     chatLink(thread)
                 }
@@ -185,6 +196,7 @@ struct ShellView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .onChange(of: selection, initial: true) { _, value in
+            session.chats.activate(value)
             Notifications.shared.visible(scenePhase == .active ? value : nil, window: windowID)
         }
         .onChange(of: scenePhase) { _, phase in
@@ -603,6 +615,7 @@ private struct SidebarChatLink<Content: View>: View {
 
     var body: some View {
         NavigationLink(value: threadID) { content() }
+            .accessibilityIdentifier("chat-\(threadID)")
             .navigationLinkIndicatorVisibility(.hidden)
             .listRowBackground(
                 ZStack {

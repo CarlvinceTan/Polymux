@@ -1,13 +1,27 @@
+import Dispatch
 import Foundation
 import Observation
 
+public struct ScrollAnchor: Equatable, Sendable {
+    public var messageID: String
+    public var atBottom: Bool
+
+    public init(messageID: String, atBottom: Bool) {
+        self.messageID = messageID
+        self.atBottom = atBottom
+    }
+}
+
 @MainActor @Observable
 public final class ChatStore {
+    public static var createdCount = 0
     public let activity: ActivityStore
     public private(set) var runs: [Run] = []
     public let threadID: String
     public private(set) var messages: [Message] = []
     public private(set) var isConnected = false
+    public private(set) var isPaused = false
+    public private(set) var scrollAnchor: ScrollAnchor?
     public var isVisible = true
     public private(set) var isSending = false
     public private(set) var error: String?
@@ -28,26 +42,57 @@ public final class ChatStore {
         let continuation: AsyncThrowingStream<VoiceFragment, any Error>.Continuation
     }
 
+    private struct Applied: Sendable {
+        var ignored: Bool
+        var message: Message?
+        var runs: [Run]?
+    }
+
+    /// The visible transcript is whatever this store already holds. Disk is read once, off the main actor.
+    public var scrollTarget: String? {
+        guard let scrollAnchor, !scrollAnchor.atBottom else { return nil }
+        guard messages.contains(where: { $0.id == scrollAnchor.messageID }) else { return nil }
+        return scrollAnchor.messageID
+    }
+
     public init(client: APIClient, cache: LocalCache, threadID: String, sidebar: SidebarStore? = nil) {
+        Self.createdCount += 1
         self.client = client
         self.cache = cache
         self.threadID = threadID
         self.sidebar = sidebar
         activity = sidebar?.activity ?? ActivityStore()
-        runs = (try? cache.runs(threadID: threadID)) ?? []
+        let snapshot = Self.snapshot(cache: cache, threadID: threadID)
+        runs = snapshot.runs
         activity.restore(runs)
-        messages = (try? cache.messages(threadID: threadID, limit: 100)) ?? []
+        messages = snapshot.messages
+    }
+
+    public func rememberScroll(messageID: String?, atBottom: Bool) {
+        if atBottom {
+            scrollAnchor = ScrollAnchor(messageID: messages.last?.id ?? messageID ?? "", atBottom: true)
+            return
+        }
+        guard let messageID, messages.contains(where: { $0.id == messageID }) else { return }
+        scrollAnchor = ScrollAnchor(messageID: messageID, atBottom: false)
     }
 
     public func start() async {
+        isPaused = false
         guard streamTask == nil else { return }
-        messages = (try? cache.messages(threadID: threadID, limit: 100)) ?? messages
         streamTask = Task { [weak self] in await self?.connect() }
     }
 
-    public func stop() {
+    /// Leave the chat without dropping messages or the scroll anchor.
+    public func pause() {
         streamTask?.cancel()
         streamTask = nil
+        isPaused = true
+    }
+
+    public func stop() {
+        pause()
+        isPaused = false
         isConnected = false
         for reply in voices.values { reply.continuation.finish(throwing: CancellationError()) }
         voices.removeAll()
@@ -60,10 +105,10 @@ public final class ChatStore {
     public func retry(messageID: String) async {
         guard !isFlushing, let message = messages.first(where: { $0.id == messageID }), message.role == "user",
               ["pending", "failed", "error"].contains(message.status) else { return }
-        if (try? cache.accepted(id: messageID)) == true { return }
-        try? cache.setStatus(id: messageID, status: "pending")
-        if let message = try? cache.messages(threadID: threadID).first(where: { $0.id == messageID }) { update(message) }
-        if let pending = try? cache.pending(threadID: threadID), pending.contains(where: { $0.id == messageID }) {
+        if (try? await withCache({ try $0.accepted(id: messageID) })) == true { return }
+        try? await withCache { try $0.setStatus(id: messageID, status: "pending") }
+        if let message = try? await withCache({ try $0.messages(threadID: threadID).first(where: { $0.id == messageID }) }) { update(message) }
+        if let pending = try? await withCache({ try $0.pending(threadID: threadID) }), pending.contains(where: { $0.id == messageID }) {
             await flush()
         } else if let message = messages.first(where: { $0.id == messageID }), message.role == "user" {
             await send(text: message.text, attachments: message.attachments, id: message.id, reply: message.reply, mentions: message.mentions ?? [])
@@ -80,8 +125,11 @@ public final class ChatStore {
     public func markRead() async {
         guard isVisible else { return }
         do {
-            let seq = try cache.cursor(threadID: threadID)
-            try cache.markRead(threadID: threadID, seq: seq)
+            let seq = try await withCache { cache -> Int64 in
+                let seq = try cache.cursor(threadID: threadID)
+                try cache.markRead(threadID: threadID, seq: seq)
+                return seq
+            }
             onUpdate?()
             if isConnected { try await client.markRead(threadID: threadID, seq: seq) }
         } catch { self.error = error.localizedDescription }
@@ -90,11 +138,11 @@ public final class ChatStore {
     public func loadEarlier() async {
         guard hasEarlier, let first = messages.filter({ $0.seq > 0 }).map(\.seq).min() else { return }
         do {
-            var earlier = try cache.messages(threadID: threadID, before: first, limit: 100)
+            var earlier = try await withCache { try $0.messages(threadID: threadID, before: first, limit: 100) }
             if earlier.count < 100 {
                 let fetched = try await client.messages(threadID: threadID, before: first)
-                try cache.merge(fetched)
-                earlier = try cache.messages(threadID: threadID, before: first, limit: 100)
+                try await withCache { try $0.merge(fetched) }
+                earlier = try await withCache { try $0.messages(threadID: threadID, before: first, limit: 100) }
             }
             for message in earlier { update(message) }
             hasEarlier = earlier.count == 100
@@ -124,7 +172,7 @@ public final class ChatStore {
         do {
             let request = SendRequest(id: id, text: text, attachmentIDs: attachments.map(\.id), replyToID: reply?.messageID,
                                       replyPart: reply?.partIndex, mentions: mentions.isEmpty ? nil : mentions)
-            let message = try cache.enqueue(threadID: threadID, request: request, attachments: attachments, reply: reply)
+            let message = try await withCache { try $0.enqueue(threadID: threadID, request: request, attachments: attachments, reply: reply) }
             update(message)
             onUpdate?()
             await flush()
@@ -139,27 +187,23 @@ public final class ChatStore {
         while !Task.isCancelled {
             do {
                 try await repairSequences()
-                var cursor = try cache.cursor(threadID: threadID)
-                let visibleCount = max(100, messages.count)
+                var cursor = try await withCache { try $0.cursor(threadID: threadID) }
                 while true {
                     let replay = try await client.events(threadID: threadID, after: cursor)
                     try Task.checkCancellation()
                     if replay.isEmpty { break }
-                    for event in replay { try receive(event, live: false) }
-                    cursor = try cache.cursor(threadID: threadID)
+                    for event in replay { try await receive(event, live: false) }
+                    cursor = try await withCache { try $0.cursor(threadID: threadID) }
                 }
-                messages = try cache.messages(threadID: threadID, limit: visibleCount)
-                runs = try cache.runs(threadID: threadID)
-                activity.restore(runs)
                 isConnected = true
                 error = nil
                 delay = 1
                 await flush()
                 await markRead()
-                cursor = try cache.cursor(threadID: threadID)
+                cursor = try await withCache { try $0.cursor(threadID: threadID) }
                 for try await event in client.stream(threadID: threadID, after: cursor) {
                     try Task.checkCancellation()
-                    try receive(event)
+                    try await receive(event)
                     if event.type == "message.start" || event.type == "message.done" {
                         await markRead()
                     }
@@ -177,28 +221,36 @@ public final class ChatStore {
     }
 
     private func repairSequences() async throws {
-        guard try !cache.repairIDs(threadID: threadID).isEmpty else { return }
+        let pending = try await withCache { try $0.repairIDs(threadID: threadID) }
+        guard !pending.isEmpty else { return }
         var before: Int64?
         while true {
             try Task.checkCancellation()
             let snapshots = try await client.messages(threadID: threadID, before: before)
-            try cache.repairSequences(snapshots)
-            if try cache.repairIDs(threadID: threadID).isEmpty { return }
+            try await withCache { try $0.repairSequences(snapshots) }
+            let remaining = try await withCache { try $0.repairIDs(threadID: threadID) }
+            if remaining.isEmpty { return }
             guard let next = snapshots.map(\.seq).min(), next > 0, next != before else {
-                try cache.finishRepair(threadID: threadID)
+                try await withCache { try $0.finishRepair(threadID: threadID) }
                 return
             }
             before = next
         }
     }
 
-    private func receive(_ event: Event, live: Bool = true) throws {
+    private func receive(_ event: Event, live: Bool = true) async throws {
         guard event.conversationID == threadID else { return }
-        let before = try cache.cursor(threadID: threadID)
-        guard event.seq > before else { return }
-        if let message = try cache.apply(event) { update(message) }
+        let applied = try await withCache { cache -> Applied in
+            let before = try cache.cursor(threadID: event.conversationID)
+            guard event.seq > before else { return Applied(ignored: true, message: nil, runs: nil) }
+            let message = try cache.apply(event)
+            let runs = event.run != nil ? try cache.runs(threadID: event.conversationID) : nil
+            return Applied(ignored: false, message: message, runs: runs)
+        }
+        if applied.ignored { return }
+        if let message = applied.message { update(message) }
+        if let runs = applied.runs { self.runs = runs }
         activity.receive(event, live: live)
-        if event.run != nil { runs = try cache.runs(threadID: threadID) }
         if live { isConnected = true }
         forwardVoice(event)
         onUpdate?()
@@ -224,31 +276,31 @@ public final class ChatStore {
         isSending = true
         defer { isFlushing = false; isSending = false }
         do {
-            while let request = try cache.pending(threadID: threadID).first {
+            while let request = try await withCache({ try $0.pending(threadID: threadID).first }) {
                 do {
-                    try cache.setStatus(id: request.id, status: "pending")
-                    if let message = try cache.messages(threadID: threadID).first(where: { $0.id == request.id }) { update(message) }
+                    try await withCache { try $0.setStatus(id: request.id, status: "pending") }
+                    if let message = try await withCache({ try $0.messages(threadID: threadID).first(where: { $0.id == request.id }) }) { update(message) }
                     try await sidebar?.syncEdit(threadID)
                     try await client.send(threadID: threadID, request: request)
-                    try cache.acknowledge(id: request.id)
-                    if let message = try cache.messages(threadID: threadID).first(where: { $0.id == request.id }) { update(message) }
+                    try await withCache { try $0.acknowledge(id: request.id) }
+                    if let message = try await withCache({ try $0.messages(threadID: threadID).first(where: { $0.id == request.id }) }) { update(message) }
                     error = nil
                 } catch {
-                    if try cache.accepted(id: request.id) {
-                        try cache.acknowledge(id: request.id)
+                    if try await withCache({ try $0.accepted(id: request.id) }) {
+                        try await withCache { try $0.acknowledge(id: request.id) }
                         continue
                     }
                     if case let ClientError.response(code, _) = error, (400..<500).contains(code), code != 408, code != 429 {
-                        try cache.setStatus(id: request.id, status: "error")
-                        if let message = try cache.messages(threadID: threadID).first(where: { $0.id == request.id }) { update(message) }
+                        try await withCache { try $0.setStatus(id: request.id, status: "error") }
+                        if let message = try await withCache({ try $0.messages(threadID: threadID).first(where: { $0.id == request.id }) }) { update(message) }
                         self.error = error.localizedDescription
                         failVoices(DeliveryFailure.interrupted, ids: [request.id])
                         continue
                     }
-                    let pending = try cache.pending(threadID: threadID)
+                    let pending = try await withCache { try $0.pending(threadID: threadID) }
                     for pending in pending {
-                        try cache.setStatus(id: pending.id, status: "failed")
-                        if let message = try cache.messages(threadID: threadID).first(where: { $0.id == pending.id }) { update(message) }
+                        try await withCache { try $0.setStatus(id: pending.id, status: "failed") }
+                        if let message = try await withCache({ try $0.messages(threadID: threadID).first(where: { $0.id == pending.id }) }) { update(message) }
                     }
                     isConnected = false
                     self.error = error.localizedDescription
@@ -299,5 +351,90 @@ public final class ChatStore {
             }
             voices[token] = reply
         }
+    }
+
+    private func withCache<T: Sendable>(_ body: @Sendable (LocalCache) throws -> T) async throws -> T {
+        let cache = cache
+        return try await withoutActuallyEscaping(body) { body in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let result = Result { () throws -> T in
+                        try CacheAudit.strict {
+                            #if DEBUG
+                            dispatchPrecondition(condition: .notOnQueue(.main))
+                            #endif
+                            return try body(cache)
+                        }
+                    }
+                    continuation.resume(with: result)
+                }
+            }
+        }
+    }
+
+    /// One disk read, never on the main thread. Later switches reuse the in-memory transcript.
+    private static func snapshot(cache: LocalCache, threadID: String) -> (messages: [Message], runs: [Run]) {
+        let loaded = try? CacheAudit.hop {
+            try CacheAudit.strict { () throws -> (messages: [Message], runs: [Run]) in
+                #if DEBUG
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                #endif
+                let runs = (try? cache.runs(threadID: threadID)) ?? []
+                let messages = (try? cache.messages(threadID: threadID, limit: 100)) ?? []
+                return (messages, runs)
+            }
+        }
+        return loaded ?? ([], [])
+    }
+}
+
+/// Keeps the last few chats resident so a reselect paints the transcript it already has.
+@MainActor
+public final class ChatStoreCache {
+    public static let capacity = 8
+    public private(set) var activeID: String?
+    private var stores: [String: ChatStore] = [:]
+    private var order: [String] = []
+    private let client: APIClient
+    private let cache: LocalCache
+    private weak var sidebar: SidebarStore?
+
+    public init(client: APIClient, cache: LocalCache, sidebar: SidebarStore?) {
+        self.client = client
+        self.cache = cache
+        self.sidebar = sidebar
+    }
+
+    public var count: Int { stores.count }
+
+    public func contains(_ threadID: String) -> Bool { stores[threadID] != nil }
+
+    public func store(for threadID: String) -> ChatStore {
+        if let existing = stores[threadID] {
+            touch(threadID)
+            return existing
+        }
+        let created = ChatStore(client: client, cache: cache, threadID: threadID, sidebar: sidebar)
+        stores[threadID] = created
+        order.append(threadID)
+        while stores.count > Self.capacity, let oldest = order.first {
+            order.removeFirst()
+            stores.removeValue(forKey: oldest)?.stop()
+        }
+        return created
+    }
+
+    public func activate(_ threadID: String?) {
+        activeID = threadID
+        for (id, store) in stores where id != threadID {
+            store.pause()
+        }
+        guard let threadID else { return }
+        _ = store(for: threadID)
+    }
+
+    private func touch(_ threadID: String) {
+        order.removeAll { $0 == threadID }
+        order.append(threadID)
     }
 }

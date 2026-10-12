@@ -1,5 +1,105 @@
 import CSQLite
+import Dispatch
 import Foundation
+
+/// Records whether SQLite ran on the main queue. Chat work binds `strict` on the
+/// worker so a main-actor call hits dispatchPrecondition.
+enum CacheAudit {
+    @TaskLocal static var strict = false
+    private static let gate = NSLock()
+    nonisolated(unsafe) private static let mainKey: DispatchSpecificKey<UInt8> = {
+        let key = DispatchSpecificKey<UInt8>()
+        DispatchQueue.main.setSpecific(key: key, value: 1)
+        return key
+    }()
+    nonisolated(unsafe) private static var mainHits = 0
+    nonisolated(unsafe) private static var offHits = 0
+    nonisolated(unsafe) private static var strictHits = 0
+
+    static var onMain: Bool {
+        DispatchQueue.getSpecific(key: mainKey) != nil
+    }
+
+    static func strict<T>(_ body: () throws -> T) rethrows -> T {
+        try $strict.withValue(true, operation: body)
+    }
+
+    /// `sync` onto a background queue stays on the main queue under Linux libdispatch.
+    /// An async hop is the one that actually leaves it, which is what the precondition checks.
+    static func hop<T: Sendable>(_ body: @escaping @Sendable () throws -> T) throws -> T {
+        if !onMain { return try body() }
+        let slot = Slot<T>()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            slot.result = Result { try body() }
+            done.signal()
+        }
+        done.wait()
+        return try slot.result!.get()
+    }
+
+    static var mainCount: Int {
+        gate.lock()
+        defer { gate.unlock() }
+        return mainHits
+    }
+
+    static var offCount: Int {
+        gate.lock()
+        defer { gate.unlock() }
+        return offHits
+    }
+
+    static var strictCount: Int {
+        gate.lock()
+        defer { gate.unlock() }
+        return strictHits
+    }
+
+    static func enter() {
+        let main = onMain
+        if strict {
+            if main {
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                preconditionFailure("LocalCache called on the main actor")
+            }
+            gate.lock()
+            strictHits += 1
+            gate.unlock()
+        }
+        gate.lock()
+        if main { mainHits += 1 } else { offHits += 1 }
+        gate.unlock()
+    }
+}
+
+private final class Slot<T>: @unchecked Sendable {
+    var result: Result<T, Error>?
+}
+
+private final class CallCounts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var mainHits = 0
+    private var offHits = 0
+
+    var main: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return mainHits
+    }
+
+    var off: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return offHits
+    }
+
+    func record(_ onMain: Bool) {
+        lock.lock()
+        if onMain { mainHits += 1 } else { offHits += 1 }
+        lock.unlock()
+    }
+}
 
 private final class Connection: @unchecked Sendable {
     let db: OpaquePointer
@@ -17,12 +117,16 @@ private final class Connection: @unchecked Sendable {
     deinit { sqlite3_close(db) }
 }
 
-@MainActor
-public final class LocalCache {
+public final class LocalCache: @unchecked Sendable {
     private let connection: Connection
     private var db: OpaquePointer { connection.db }
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let lock = NSRecursiveLock()
+    private let calls = CallCounts()
+
+    var mainCalls: Int { calls.main }
+    var offCalls: Int { calls.off }
 
     public init(url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -365,17 +469,27 @@ public final class LocalCache {
     }
 
     private func encode<T: Encodable>(_ value: T) throws -> String {
-        String(decoding: try encoder.encode(value), as: UTF8.self)
+        try perform { String(decoding: try encoder.encode(value), as: UTF8.self) }
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ value: String) throws -> T {
-        try decoder.decode(type, from: Data(value.utf8))
+        try perform { try decoder.decode(type, from: Data(value.utf8)) }
+    }
+
+    private func perform<T>(_ body: () throws -> T) throws -> T {
+        CacheAudit.enter()
+        calls.record(CacheAudit.onMain)
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
     }
 
     private func transaction(_ body: () throws -> Void) throws {
-        try execute("BEGIN IMMEDIATE")
-        do { try body(); try execute("COMMIT") }
-        catch { try? execute("ROLLBACK"); throw error }
+        try perform {
+            _ = try query("BEGIN IMMEDIATE")
+            do { try body(); _ = try query("COMMIT") }
+            catch { _ = try? query("ROLLBACK"); throw error }
+        }
     }
 
     private enum Value {
@@ -388,6 +502,10 @@ public final class LocalCache {
     }
 
     private func rows(_ sql: String, _ values: [Value] = []) throws -> [[String]] {
+        try perform { try query(sql, values) }
+    }
+
+    private func query(_ sql: String, _ values: [Value] = []) throws -> [[String]] {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
             throw ClientError.cache(String(cString: sqlite3_errmsg(db)))

@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Observation
 
@@ -24,12 +25,12 @@ public final class SidebarStore {
     public init(client: APIClient, cache: LocalCache) {
         self.client = client
         self.cache = cache
-        agents = (try? cache.agents()) ?? []
-        threads = (try? cache.threads()) ?? []
-        for thread in (try? cache.threadEdits()) ?? [] {
+        agents = (try? offMain { try $0.agents() }) ?? []
+        threads = (try? offMain { try $0.threads() }) ?? []
+        for thread in (try? offMain { try $0.threadEdits() }) ?? [] {
             pendingThreads[thread.id] = thread
             acceptedThreads[thread.id] = thread
-            merge(thread, into: &threads)
+            Self.merge(thread, into: &threads)
         }
     }
 
@@ -56,19 +57,19 @@ public final class SidebarStore {
     public func accept(_ thread: Thread) {
         revision &+= 1
         acceptedThreads[thread.id] = thread
-        merge(thread, into: &threads)
+        Self.merge(thread, into: &threads)
         persist()
     }
 
     public func accept(_ agent: Agent) {
         revision &+= 1
         acceptedAgents[agent.id] = agent
-        merge(agent, into: &agents)
+        Self.merge(agent, into: &agents)
         if !threads.contains(where: { $0.id == agent.id }) {
-            let cached = try? cache.threads().first { $0.id == agent.id }
+            let cached = try? offMain { try $0.threads() }.first { $0.id == agent.id }
             let thread = cached ?? Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
             acceptedThreads[thread.id] = thread
-            merge(thread, into: &threads)
+            Self.merge(thread, into: &threads)
         }
         persist()
     }
@@ -80,7 +81,7 @@ public final class SidebarStore {
         pendingThreads[thread.id] = thread
         acceptedThreads[thread.id] = thread
         editIssues[thread.id] = nil
-        merge(thread, into: &threads)
+        Self.merge(thread, into: &threads)
         do {
             try persistEdits()
         } catch {
@@ -135,7 +136,7 @@ public final class SidebarStore {
                     editDates[id] = nil
                     editIssues[id] = nil
                     acceptedThreads[id] = updated
-                    merge(updated, into: &threads)
+                    Self.merge(updated, into: &threads)
                     try persistEdits()
                 }
             } catch {
@@ -147,10 +148,14 @@ public final class SidebarStore {
     }
 
     private func persistEdits() throws {
-        try cache.saveEdits(Array(pendingThreads.values))
-        var cached = try cache.threads()
-        for thread in acceptedThreads.values { merge(thread, into: &cached) }
-        try cache.save(agents: try cache.agents(), threads: cached)
+        let pending = Array(pendingThreads.values)
+        let accepted = Array(acceptedThreads.values)
+        try offMain { cache in
+            try cache.saveEdits(pending)
+            var cached = try cache.threads()
+            for thread in accepted { Self.merge(thread, into: &cached) }
+            try cache.save(agents: try cache.agents(), threads: cached)
+        }
         reload()
     }
 
@@ -158,21 +163,25 @@ public final class SidebarStore {
         isConnected = true
         error = nil
         do {
-            var agents = try cache.agents()
-            var threads = try cache.threads()
-            for agent in acceptedAgents.values { merge(agent, into: &agents) }
-            for thread in acceptedThreads.values { merge(thread, into: &threads) }
-            try cache.save(agents: agents, threads: threads)
+            let acceptedAgents = Array(acceptedAgents.values)
+            let acceptedThreads = Array(acceptedThreads.values)
+            try offMain { cache in
+                var agents = try cache.agents()
+                var threads = try cache.threads()
+                for agent in acceptedAgents { Self.merge(agent, into: &agents) }
+                for thread in acceptedThreads { Self.merge(thread, into: &threads) }
+                try cache.save(agents: agents, threads: threads)
+            }
             reload()
         } catch { self.error = error.localizedDescription }
     }
 
-    private func merge(_ agent: Agent, into agents: inout [Agent]) {
+    private nonisolated static func merge(_ agent: Agent, into agents: inout [Agent]) {
         if let index = agents.firstIndex(where: { $0.id == agent.id }) { agents[index] = agent }
         else { agents.append(agent) }
     }
 
-    private func merge(_ thread: Thread, into threads: inout [Thread]) {
+    private nonisolated static func merge(_ thread: Thread, into threads: inout [Thread]) {
         guard let index = threads.firstIndex(where: { $0.id == thread.id }) else { threads.append(thread); return }
         var accepted = thread
         let previous = threads[index]
@@ -199,11 +208,15 @@ public final class SidebarStore {
             var values = try await (agents, threads)
             guard generation == self.generation, revision == self.revision else { return }
             let snapshots = values.1
-            for pending in pendingThreads.values { merge(pending, into: &values.1) }
-            try cache.save(agents: values.0, threads: values.1)
-            for thread in snapshots { try cache.reconcile(thread) }
+            for pending in pendingThreads.values { Self.merge(pending, into: &values.1) }
+            let savedAgents = values.0
+            let savedThreads = values.1
+            try offMain { cache in
+                try cache.save(agents: savedAgents, threads: savedThreads)
+                for thread in snapshots { try cache.reconcile(thread) }
+            }
             self.agents = values.0
-            self.threads = try cache.threads()
+            self.threads = try offMain { try $0.threads() }
             activity.retain(Set(self.threads.map(\.id)))
             for thread in self.threads { activity.reconcile(thread) }
             acceptedAgents.removeAll()
@@ -226,29 +239,31 @@ public final class SidebarStore {
         defer { isFlushing = false }
         do {
             var blocked: Set<String> = []
-            while let queued = try cache.queued().first(where: { !blocked.contains($0.threadID) }) {
+            while let queued = try offMain({ try $0.queued() }).first(where: { !blocked.contains($0.threadID) }) {
                 do { try await syncEdit(queued.threadID) }
                 catch {
                     blocked.insert(queued.threadID)
-                    for pending in try cache.queued() where pending.threadID == queued.threadID {
-                        try cache.setStatus(id: pending.request.id, status: "failed")
+                    let failed = try offMain { try $0.queued().filter { $0.threadID == queued.threadID } }
+                    for pending in failed {
+                        try offMain { try $0.setStatus(id: pending.request.id, status: "failed") }
                     }
                     continue
                 }
                 do {
                     try await client.send(threadID: queued.threadID, request: queued.request)
-                    try cache.acknowledge(id: queued.request.id)
+                    try offMain { try $0.acknowledge(id: queued.request.id) }
                 } catch {
-                    if try cache.accepted(id: queued.request.id) {
-                        try cache.acknowledge(id: queued.request.id)
+                    if try offMain({ try $0.accepted(id: queued.request.id) }) {
+                        try offMain { try $0.acknowledge(id: queued.request.id) }
                         continue
                     }
                     if case let ClientError.response(code, _) = error, (400..<500).contains(code), code != 408, code != 429 {
-                        try cache.setStatus(id: queued.request.id, status: "error")
+                        try offMain { try $0.setStatus(id: queued.request.id, status: "error") }
                         continue
                     }
-                    for pending in try cache.queued() {
-                        try cache.setStatus(id: pending.request.id, status: "failed")
+                    let pending = try offMain { try $0.queued() }
+                    for pending in pending {
+                        try offMain { try $0.setStatus(id: pending.request.id, status: "failed") }
                     }
                     isConnected = false
                     self.error = error.localizedDescription
@@ -259,12 +274,24 @@ public final class SidebarStore {
     }
 
     public func reload() {
-        var agents = (try? cache.agents()) ?? agents
-        var threads = (try? cache.threads()) ?? threads
-        for agent in acceptedAgents.values { merge(agent, into: &agents) }
-        for thread in acceptedThreads.values { merge(thread, into: &threads) }
+        var agents = (try? offMain { try $0.agents() }) ?? agents
+        var threads = (try? offMain { try $0.threads() }) ?? threads
+        for agent in acceptedAgents.values { Self.merge(agent, into: &agents) }
+        for thread in acceptedThreads.values { Self.merge(thread, into: &threads) }
         self.agents = agents
         self.threads = threads
         for thread in threads { activity.reconcile(thread) }
+    }
+
+    private func offMain<T: Sendable>(_ body: @escaping @Sendable (LocalCache) throws -> T) throws -> T {
+        let cache = cache
+        return try CacheAudit.hop {
+            try CacheAudit.strict {
+                #if DEBUG
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                #endif
+                return try body(cache)
+            }
+        }
     }
 }

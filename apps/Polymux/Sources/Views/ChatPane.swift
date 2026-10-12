@@ -50,7 +50,7 @@ struct ChatPane: View {
         self.showHeader = showHeader
         self.onSent = onSent
         self.drops = drops
-        _store = State(initialValue: ChatStore(client: session.client, cache: session.cache, threadID: thread.id, sidebar: session.sidebar))
+        _store = State(initialValue: session.chats.store(for: thread.id))
     }
 
     var body: some View {
@@ -164,11 +164,20 @@ struct ChatPane: View {
         .task {
             store.isVisible = scenePhase == .active
             store.onUpdate = { session.sidebar.reload() }
+            if !store.messages.isEmpty {
+                SwitchTrace.content(threadID: thread.id, messages: store.messages.count)
+            }
             await store.start()
             await store.markRead()
         }
         .task(id: agent.id) { await offerFocus() }
-        .onDisappear { store.stop(); clearDate(); highlight = nil; target = nil }
+        .onDisappear {
+            captureScroll()
+            if session.chats.activeID != store.threadID { store.pause() }
+            clearDate()
+            highlight = nil
+            target = nil
+        }
         .onChange(of: scenePhase) { _, phase in
             store.isVisible = phase == .active
             if store.isVisible { Task { await store.markRead() } }
@@ -385,8 +394,19 @@ struct ChatPane: View {
             .onChange(of: store.messages.last?.text) { _, _ in
                 if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: store.messages.count) { _, _ in
+            .onChange(of: store.messages.count) { old, new in
+                if old == 0, new > 0 {
+                    SwitchTrace.content(threadID: thread.id, messages: new)
+                }
                 if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+            .onChange(of: atBottom) { _, _ in captureScroll() }
+            .task(id: thread.id) {
+                guard let id = store.scrollTarget else { return }
+                atBottom = false
+                await Task.yield()
+                guard !Task.isCancelled, store.messages.contains(where: { $0.id == id }) else { return }
+                proxy.scrollTo(id, anchor: .top)
             }
             .onChange(of: composerHeight) { _, _ in
                 updateDate()
@@ -455,6 +475,7 @@ struct ChatPane: View {
             updateDate()
         } else if phase == .idle {
             dateScrolling = false
+            captureScroll()
             guard dateVisible else { return }
             dateTask?.cancel()
             dateTask = Task { @MainActor in
@@ -467,6 +488,15 @@ struct ChatPane: View {
             dateTask?.cancel()
             dateTask = nil
         }
+    }
+
+    private func captureScroll() {
+        let messageID = atBottom ? store.messages.last?.id : topMessageID()
+        store.rememberScroll(messageID: messageID, atBottom: atBottom)
+    }
+
+    private func topMessageID() -> String? {
+        dateFrames.min { $0.value.frame.minY < $1.value.frame.minY }?.key
     }
 
     private func clearDate() {

@@ -55,6 +55,7 @@ final class AppSession {
     let client: APIClient
     let cache: LocalCache
     let sidebar: SidebarStore
+    let chats: ChatStoreCache
     let settings: SettingsStore
     let avatars: AvatarStore
 
@@ -71,6 +72,7 @@ final class AppSession {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         cache = try LocalCache(url: directory.appending(path: "cache.sqlite"))
         sidebar = SidebarStore(client: client, cache: cache)
+        chats = ChatStoreCache(client: client, cache: cache, sidebar: sidebar)
         settings = SettingsStore(client: client)
         avatars = AvatarStore(sidebar: sidebar)
     }
