@@ -43,7 +43,7 @@ struct ShellView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $visibility) {
-            List(selection: $selection) {
+            List(selection: listSelection) {
                 ForEach(conversations) { thread in
                     chatLink(thread)
                 }
@@ -250,7 +250,12 @@ struct ShellView: View {
             AgentEditor(agent: contact.agent, session: session)
         }
         .alert("Delete agent?", isPresented: $confirmDelete, presenting: deleteTarget) { contact in
-            Button("Delete", role: .destructive) { Task { await delete(contact.agent) } }
+            Button("Delete", role: .destructive) {
+                let agent = contact.agent
+                deleting = agent.id
+                session.sidebar.removeAgent(id: agent.id)
+                Task { await delete(agent) }
+            }
             Button("Cancel", role: .cancel) {}
         } message: { contact in
             Text("This will permanently remove \(contact.agent.name) and their conversation.")
@@ -268,7 +273,7 @@ struct ShellView: View {
                     await session.avatars.flush(client: session.client)
                 }
                 #if os(macOS)
-                if selection == nil { selection = Notifications.shared.destination ?? session.sidebar.threads.first(where: { $0.agentID == "assistant" && !$0.isGroup })?.id ?? conversations.first?.id }
+                if selection == nil { selection = Notifications.shared.destination ?? session.sidebar.listedThreads.first(where: { $0.agentID == "assistant" && !$0.isGroup })?.id ?? conversations.first?.id }
                 #endif
                 try? await Task.sleep(for: .seconds(3))
             }
@@ -312,7 +317,7 @@ struct ShellView: View {
 
     private var conversations: [PolymuxKit.Thread] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return session.sidebar.threads.filter { thread in
+        return session.sidebar.listedThreads.filter { thread in
             let members = participants(thread)
             guard !members.isEmpty else { return false }
             let matches = term.isEmpty || title(thread).localizedStandardContains(term) || members.contains {
@@ -409,6 +414,14 @@ struct ShellView: View {
         else if let agent = participants(thread).first { profiling = AvatarContact(agent: agent) }
     }
 
+    /// The list drops a selection it can no longer see. Hold it until delete finishes so failure restores the row under the open chat.
+    private var listSelection: Binding<String?> {
+        Binding(get: { selection }, set: { value in
+            if value == nil, deleting != nil { return }
+            selection = value
+        })
+    }
+
     private func requestDelete(_ agent: Agent) {
         deleteTarget = AvatarContact(agent: agent)
         confirmDelete = true
@@ -418,9 +431,8 @@ struct ShellView: View {
         deleting = agent.id
         defer { deleting = nil }
         do {
-            try await session.client.deleteAgent(id: agent.id)
+            try await session.sidebar.deleteAgent(id: agent.id)
             session.avatars.remove(id: agent.id)
-            await session.sidebar.refresh()
             if !session.sidebar.threads.contains(where: { $0.id == selection }) { selection = conversations.first?.id }
         } catch { deleteError = error.localizedDescription }
     }

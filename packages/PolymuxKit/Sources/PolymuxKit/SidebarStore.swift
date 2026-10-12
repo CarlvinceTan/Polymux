@@ -20,6 +20,11 @@ public final class SidebarStore {
     @ObservationIgnored private var editTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var editDates: [String: Date] = [:]
     @ObservationIgnored private var editWorkers: [String: Task<Bool, Never>] = [:]
+    @ObservationIgnored private(set) var signposts: [InstantSignpost] = []
+    /// Agents whose conversation row is hidden while delete is in flight.
+    private var deletingAgents: Set<String> = []
+    /// Deletes the server accepted. A stale refresh must not put the row back.
+    private var deletedAgents: Set<String> = []
 
     public init(client: APIClient, cache: LocalCache) {
         self.client = client
@@ -35,6 +40,35 @@ public final class SidebarStore {
 
     public func thread(for agent: Agent) -> Thread? {
         threads.first { !$0.isGroup && $0.agentID == agent.id }
+    }
+
+    /// Sidebar rows. A delete hides its conversation before the server answers.
+    public var listedThreads: [Thread] {
+        let hidden = deletingAgents.union(deletedAgents)
+        guard !hidden.isEmpty else { return threads }
+        return threads.filter { $0.isGroup || !hidden.contains($0.agentID) }
+    }
+
+    /// Hides the agent's conversation on this turn. Failure puts the row back.
+    public func removeAgent(id: String) {
+        guard !id.isEmpty, !deletedAgents.contains(id), !deletingAgents.contains(id) else { return }
+        guard agents.contains(where: { $0.id == id }) || threads.contains(where: { !$0.isGroup && $0.agentID == id }) else { return }
+        let signpost = InstantTrace.measure(InstantTrace.row) {
+            revision &+= 1
+            deletingAgents = deletingAgents.union([id])
+        }
+        record(signpost)
+    }
+
+    public func deleteAgent(id: String) async throws {
+        removeAgent(id: id)
+        do {
+            _ = try await client.deleteAgent(id: id)
+            commitDelete(id)
+        } catch {
+            rollbackDelete(id)
+            throw error
+        }
     }
 
     public var groups: [Thread] { threads.filter(\.isGroup) }
@@ -199,9 +233,15 @@ public final class SidebarStore {
             var values = try await (agents, threads)
             guard generation == self.generation, revision == self.revision else { return }
             let snapshots = values.1
+            // Keep a confirmed delete hidden when a refresh still lists the agent.
+            deletedAgents.formIntersection(Set(values.0.map(\.id)))
+            values.0.removeAll { deletedAgents.contains($0.id) }
+            values.1.removeAll { !$0.isGroup && deletedAgents.contains($0.agentID) }
             for pending in pendingThreads.values { merge(pending, into: &values.1) }
             try cache.save(agents: values.0, threads: values.1)
-            for thread in snapshots { try cache.reconcile(thread) }
+            for thread in snapshots where thread.isGroup || !deletedAgents.contains(thread.agentID) {
+                try cache.reconcile(thread)
+            }
             self.agents = values.0
             self.threads = try cache.threads()
             activity.retain(Set(self.threads.map(\.id)))
@@ -265,6 +305,51 @@ public final class SidebarStore {
         for thread in acceptedThreads.values { merge(thread, into: &threads) }
         self.agents = agents
         self.threads = threads
-        for thread in threads { activity.reconcile(thread) }
+        for thread in self.threads { activity.reconcile(thread) }
+        applyCommittedDeletes()
+    }
+
+    private func commitDelete(_ id: String) {
+        revision &+= 1
+        deletingAgents.remove(id)
+        deletedAgents.insert(id)
+        acceptedAgents.removeValue(forKey: id)
+        for thread in threads where !thread.isGroup && thread.agentID == id {
+            pendingThreads.removeValue(forKey: thread.id)
+            acceptedThreads.removeValue(forKey: thread.id)
+            editIssues[thread.id] = nil
+            editDates[thread.id] = nil
+            editTasks[thread.id]?.cancel()
+            editTasks[thread.id] = nil
+        }
+        do {
+            try cache.saveEdits(Array(pendingThreads.values))
+            var nextAgents = try cache.agents().filter { $0.id != id }
+            var nextThreads = try cache.threads().filter { $0.isGroup || $0.agentID != id }
+            for agent in acceptedAgents.values { merge(agent, into: &nextAgents) }
+            for thread in acceptedThreads.values { merge(thread, into: &nextThreads) }
+            try cache.save(agents: nextAgents, threads: nextThreads)
+        } catch { self.error = error.localizedDescription }
+        reload()
+    }
+
+    private func rollbackDelete(_ id: String) {
+        guard deletingAgents.contains(id) else { return }
+        let signpost = InstantTrace.measure(InstantTrace.rollback) {
+            revision &+= 1
+            deletingAgents = deletingAgents.subtracting([id])
+        }
+        record(signpost)
+    }
+
+    private func applyCommittedDeletes() {
+        guard !deletedAgents.isEmpty else { return }
+        agents.removeAll { deletedAgents.contains($0.id) }
+        threads.removeAll { !$0.isGroup && deletedAgents.contains($0.agentID) }
+    }
+
+    private func record(_ signpost: InstantSignpost) {
+        signposts.removeAll { $0.name == signpost.name }
+        signposts.append(signpost)
     }
 }
