@@ -8,6 +8,8 @@ public final class SidebarStore {
     public private(set) var threads: [Thread] = []
     public private(set) var isConnected = false
     public private(set) var error: String?
+    /// Shown when an optimistic chat or agent is removed.
+    public private(set) var notice: String?
     public private(set) var editIssues: [String: String] = [:]
     @ObservationIgnored private let client: APIClient
     @ObservationIgnored private let cache: LocalCache
@@ -78,15 +80,26 @@ public final class SidebarStore {
 
     /// Shows a chat before the server confirms it. Refresh keeps it until it is replaced or dropped.
     func stage(_ thread: Thread) {
-        revision &+= 1
-        stagedThreads[thread.id] = thread
-        acceptedThreads[thread.id] = thread
-        merge(thread, into: &threads)
-        persist()
+        reveal(thread)
+        saveStaged()
     }
 
     /// Shows an agent, and a direct chat when none exists, before the server confirms it.
     func stage(_ agent: Agent) {
+        reveal(agent)
+        saveStaged()
+    }
+
+    func reveal(_ thread: Thread) {
+        notice = nil
+        revision &+= 1
+        stagedThreads[thread.id] = thread
+        acceptedThreads[thread.id] = thread
+        merge(thread, into: &threads)
+    }
+
+    func reveal(_ agent: Agent) {
+        notice = nil
         revision &+= 1
         stagedAgents[agent.id] = agent
         acceptedAgents[agent.id] = agent
@@ -98,18 +111,22 @@ public final class SidebarStore {
             acceptedThreads[thread.id] = thread
             merge(thread, into: &threads)
         }
-        persist()
     }
 
-    func dropStaged(thread id: String) {
+    func saveStaged() { persist() }
+
+    public func clearNotice() { notice = nil }
+
+    func dropStaged(thread id: String, notice message: String) {
         guard stagedThreads.removeValue(forKey: id) != nil else { return }
         revision &+= 1
         acceptedThreads[id] = nil
         threads.removeAll { $0.id == id }
+        notice = message
         persist(omittingThreads: [id])
     }
 
-    func dropStaged(agent id: String) {
+    func dropStaged(agent id: String, notice message: String) {
         guard stagedAgents.removeValue(forKey: id) != nil else { return }
         revision &+= 1
         acceptedAgents[id] = nil
@@ -121,6 +138,7 @@ public final class SidebarStore {
             threads.removeAll { $0.id == id }
             omittingThreads.insert(id)
         }
+        notice = message
         persist(omittingAgents: [id], omittingThreads: omittingThreads)
     }
 

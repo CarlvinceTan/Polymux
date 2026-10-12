@@ -13,9 +13,13 @@ struct InstantUINewChat {
         let trace = SignpostTrace()
         let launch = InstantChat.start(agents: [rig.arlo], title: nil, sidebar: rig.sidebar, client: rig.client, trace: trace)
         #expect(launch.thread?.id == rig.arlo.id)
+        #expect(launch.feedback.name == InstantChat.chatFeedback)
         #expect(launch.mark.name == InstantChat.chatSignpost)
+        #expect(launch.feedback.budget == .milliseconds(16))
+        #expect(launch.mark.budget == .milliseconds(50))
+        #expect(launch.feedback.withinBudget)
         #expect(launch.mark.withinBudget)
-        #expect(trace.posts(named: InstantChat.chatSignpost).allSatisfy { $0.withinBudget })
+        #expect(trace.meetsBudgets)
         #expect(await launch.finish() == nil)
         #expect(await rig.probe.calls == 0)
         #expect(launch.thread?.id == rig.arlo.id)
@@ -27,7 +31,9 @@ struct InstantUINewChat {
         let trace = SignpostTrace()
         let launch = InstantChat.start(agents: [rig.arlo], title: nil, sidebar: rig.sidebar, client: rig.client, trace: trace)
         #expect(launch.thread == nil)
+        #expect(launch.feedback.withinBudget)
         #expect(launch.mark.withinBudget)
+        #expect(trace.meetsBudgets)
         let message = await launch.finish()
         #expect(message == "This agent’s chat isn’t available yet. Try again.")
         #expect(rig.sidebar.thread(for: rig.arlo) == nil)
@@ -43,8 +49,9 @@ struct InstantUINewChat {
         let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: "Trip", sidebar: rig.sidebar, client: rig.client, trace: trace)
         let local = try #require(launch.thread?.id)
         #expect(local.hasPrefix("local-"))
+        #expect(launch.feedback.withinBudget)
         #expect(launch.mark.withinBudget)
-        #expect(launch.mark.duration < .milliseconds(250))
+        #expect(trace.meetsBudgets)
         #expect(rig.sidebar.threads.contains { $0.id == local })
         #expect(await rig.probe.calls == 0)
 
@@ -54,6 +61,7 @@ struct InstantUINewChat {
         #expect(rig.sidebar.threads.contains { $0.id == local })
         let message = await failure
         #expect(message == "Couldn’t create this chat. forced failure")
+        #expect(rig.sidebar.notice == message)
         #expect(launch.thread == nil)
         #expect(!rig.sidebar.threads.contains { $0.id == local })
         #expect(try rig.cache.agents() == beforeAgents)
@@ -70,8 +78,13 @@ struct InstantUINewChat {
         let request = CreateAgentRequest(name: "Nova", role: "", prompt: "")
         let launch = InstantChat.create(request, sidebar: rig.sidebar, client: rig.client, trace: trace)
         #expect(launch.agent.name == "Nova")
+        #expect(launch.feedback.name == InstantChat.agentFeedback)
         #expect(launch.mark.name == InstantChat.agentSignpost)
+        #expect(launch.feedback.budget == InstantUI.feedbackBudget)
+        #expect(launch.mark.budget == InstantUI.stateBudget)
+        #expect(launch.feedback.withinBudget)
         #expect(launch.mark.withinBudget)
+        #expect(trace.meetsBudgets)
         #expect(rig.sidebar.agents.contains { $0.id == launch.agent.id })
         #expect(rig.sidebar.thread(for: launch.agent)?.id == launch.agent.id)
         #expect(await rig.probe.calls == 0)
@@ -80,7 +93,8 @@ struct InstantUINewChat {
         await rig.probe.waitUntilEntered()
         #expect(rig.sidebar.agents.contains { $0.id == launch.agent.id })
         let message = await failure
-        #expect(message == "forced failure")
+        #expect(message == "Couldn’t create this agent. forced failure")
+        #expect(rig.sidebar.notice == message)
         #expect(launch.saved == nil)
         #expect(!rig.sidebar.agents.contains { $0.id == launch.agent.id })
         #expect(rig.sidebar.thread(for: launch.agent) == nil)
@@ -94,7 +108,9 @@ struct InstantUINewChat {
         let trace = SignpostTrace()
         let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: "Trip", sidebar: rig.sidebar, client: rig.client, trace: trace)
         let local = try #require(launch.thread?.id)
+        #expect(launch.feedback.withinBudget)
         #expect(launch.mark.withinBudget)
+        #expect(trace.meetsBudgets)
         #expect(await rig.probe.calls == 0)
         let message = await launch.finish()
         #expect(message == nil)
@@ -103,6 +119,25 @@ struct InstantUINewChat {
         #expect(rig.sidebar.threads.contains { $0.id == "server-group" && $0.title == "Trip" })
         #expect(try rig.cache.threads().contains { $0.id == "server-group" })
         #expect(try !rig.cache.threads().contains { $0.id == local })
+    }
+
+    @Test func slowCreateExceedsBudget() throws {
+        let rig = try Rig()
+        defer { rig.close() }
+        let trace = SignpostTrace()
+        let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: "Trip", sidebar: rig.sidebar, client: rig.client, trace: trace, stall: {
+            let until = ContinuousClock.now.advanced(by: .milliseconds(70))
+            while ContinuousClock.now < until { Thread.sleep(forTimeInterval: 0.005) }
+        })
+        let local = try #require(launch.thread?.id)
+        #expect(rig.sidebar.threads.contains { $0.id == local })
+        #expect(launch.feedback.budget == .milliseconds(16))
+        #expect(launch.mark.budget == .milliseconds(50))
+        #expect(launch.feedback.duration > launch.feedback.budget)
+        #expect(launch.mark.duration > launch.mark.budget)
+        #expect(!launch.feedback.withinBudget)
+        #expect(!launch.mark.withinBudget)
+        #expect(!trace.meetsBudgets)
     }
 
     @Test func newChatViewHasNoBlockingSpinner() throws {
@@ -115,6 +150,8 @@ struct InstantUINewChat {
         #expect(!source.contains("ProgressView"))
         #expect(!source.contains("starting"))
         #expect(!source.contains("creating"))
+        let shell = try String(contentsOf: root.appendingPathComponent("apps/Polymux/Sources/Views/ShellView.swift"), encoding: .utf8)
+        #expect(shell.contains("sidebar.notice"))
     }
 }
 

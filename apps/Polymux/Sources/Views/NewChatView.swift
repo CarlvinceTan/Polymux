@@ -182,15 +182,15 @@ struct NewChatView: View {
 
     private func start() {
         guard !opened, !recipients.isEmpty, validTitle else { return }
-        opened = true
-        error = nil
         let launch = InstantChat.start(agents: recipients, title: cleanTitle.isEmpty ? nil : cleanTitle,
-                                       sidebar: session.sidebar, client: session.client)
-        let shown = launch.thread?.id
-        if let thread = launch.thread {
+                                       sidebar: session.sidebar, client: session.client, begin: {
+            opened = true
+            error = nil
+        }) { thread in
             focused = false
             select(thread)
         }
+        let shown = launch.thread?.id
         Task { @MainActor in
             let failure = await launch.finish()
             if let failure {
@@ -206,11 +206,13 @@ struct NewChatView: View {
 
     private func create() {
         guard recipients.count < 16 else { return }
-        error = nil
-        let launch = InstantChat.create(draftAgent(), sidebar: session.sidebar, client: session.client)
-        recipients.append(launch.agent)
-        query = ""
-        focused = true
+        let launch = InstantChat.create(draftAgent(), sidebar: session.sidebar, client: session.client, begin: {
+            error = nil
+        }) { agent in
+            recipients.append(agent)
+            query = ""
+            focused = true
+        }
         Task { @MainActor in
             let failure = await launch.finish()
             if let failure {
