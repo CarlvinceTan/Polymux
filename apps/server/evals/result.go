@@ -15,7 +15,7 @@ var (
 	evalMu    sync.Mutex
 	evalRows  []evalLine
 	evalOrder = []string{
-		"T2", "T4", "T5", "C1", "C3", "C4", "X1", "X2", "X4", "X6", "B1", "B2", "B4", "T3", "C5",
+		"T2", "T4", "T5", "C1", "C3", "C4", "X1", "X2", "X4", "X6", "B1", "B2", "B4", "B5", "T3", "C5",
 		"T1", "C6", "X3", "R2", "G4", "M1", "M2",
 	}
 )

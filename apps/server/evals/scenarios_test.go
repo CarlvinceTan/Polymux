@@ -674,6 +674,97 @@ func TestB4StopChildren(t *testing.T) {
 	}
 }
 
+func TestB5StuckBackground(t *testing.T) {
+	opened, closed, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	reply := func(req *ChatRequest) Response {
+		if _, ok := toolMessage(req, "b5-call"); ok {
+			return TextReply("Delegated background work.")
+		}
+		return HoldReply("child still working", release, func() { close(opened) }, func() { close(closed) })
+	}
+	h := Start(t, Options{
+		ID: "B5", BackgroundTimeout: time.Second,
+		Agents: []agentruntime.Definition{
+			{Agent: contract.Agent{ID: "a", Name: "A", Model: evalModel}},
+			{Agent: contract.Agent{ID: "b", Name: "B", Model: evalModel}},
+		},
+		Steps: []Step{
+			Fixed(nil, ToolReply("b5-call", "message_agent", map[string]any{
+				"agent_id": "b", "message": "Hold this background task", "intent": "request",
+			})),
+			{Response: reply},
+			{Response: reply},
+			Fixed(func(req *ChatRequest) error {
+				text := requestText(req)
+				if !strings.Contains(text, "timed out") || !strings.Contains(text, `"status":"failed"`) {
+					return errors.New("follow-up did not receive the timeout")
+				}
+				return nil
+			}, TextReply("I stopped that background task because it took too long. Tell me if you want to try again.")),
+		},
+	})
+	t.Cleanup(func() { close(release) })
+	if code := h.Send("a", "b5-user", "Ask B for background help"); code != http.StatusAccepted {
+		h.die(fmt.Sprintf("send status %d", code))
+	}
+	WaitHold(t, "B5", opened, holdWait)
+	parentID := RunID("b5-user", "a")
+	deliveryID := "delivery:" + parentID + ":b5-call"
+	childID := store.NewRun(deliveryID, "b", "b", "peer").ID
+	child := h.WaitRunID(childID, holdWait)
+	parent := h.WaitRunID(parentID, holdWait)
+	WaitHold(t, "B5", closed, holdWait)
+	if child.Status != "failed" || child.Error == nil || child.Error.Code != "timeout" || child.FinishedAt == nil {
+		h.die(fmt.Sprintf("child did not fail cleanly on timeout: %+v", child))
+	}
+	if !strings.Contains(strings.ToLower(child.Error.Message), "timed out") {
+		h.die("child timeout did not explain the stop")
+	}
+	if parent.Status != "failed" || parent.Error == nil || parent.Error.Code != "peer_failed" {
+		h.die("parent left waiting: " + parent.Status)
+	}
+	if followup := h.WaitRunID(store.NewRun("followup:"+parentID, "a", "a", "follow_up").ID, holdWait); followup.Status != "completed" {
+		h.die("follow-up did not finish: " + followup.Status)
+	}
+	said := "I stopped that background task because it took too long. Tell me if you want to try again."
+	sawReply := false
+	for _, message := range h.Messages("a") {
+		body := messageText(message)
+		if strings.HasPrefix(message.ID, "receipt:") || strings.Contains(body, "Background work appears stuck") || strings.Contains(body, child.Error.Message) {
+			h.die(fmt.Sprintf("stuck notice in the user conversation: %+v", message))
+		}
+		if message.Role == "assistant" && message.Status == "done" && body == said {
+			sawReply = true
+		}
+	}
+	if !sawReply {
+		h.die("follow-up reply missing from the user conversation")
+	}
+	if err := h.Store.Receipt(t.Context(), deliveryID, child, contract.Message{}); err != nil {
+		h.die(err.Error())
+	}
+	events, err := h.Store.Events(t.Context(), "a", 0, 200)
+	if err != nil {
+		h.die(err.Error())
+	}
+	notices, failures := 0, 0
+	for _, event := range events {
+		if event.Type == "message.start" && event.MessageID != nil && strings.HasPrefix(*event.MessageID, "receipt:") {
+			notices++
+		}
+		if event.Type == "peer.delivery" && event.Delivery != nil && event.Delivery.ID == deliveryID && event.Delivery.Status == "failed" {
+			failures++
+		}
+	}
+	if notices != 0 || failures != 1 {
+		h.die(fmt.Sprintf("want no receipt notice and one failed delivery, got %d and %d", notices, failures))
+	}
+	if err := h.Emulator.Done(); err != nil {
+		h.die(err.Error())
+	}
+	pass(t, "B5", "held child timed out and aborted, and the parent explained it in chat without a receipt notice")
+}
+
 func countPeerReceipts(messages []contract.Message) int {
 	n := 0
 	for _, m := range messages {
@@ -784,7 +875,7 @@ func TestC5ApprovalGate(t *testing.T) {
 		fail(t, "C5", "missing approval_requested event")
 		return
 	}
-	resp, err := approvalPost(h.HTTP.URL+"/approvals/"+pending[0].ID+"/approve")
+	resp, err := approvalPost(h.HTTP.URL + "/approvals/" + pending[0].ID + "/approve")
 	if err != nil {
 		fail(t, "C5", err.Error())
 		return
@@ -839,7 +930,7 @@ func TestC5ApprovalGate(t *testing.T) {
 		fail(t, "C5", fmt.Sprintf("deny pending: %v %v", denyPending, err))
 		return
 	}
-	resp, err = approvalPost(h2.HTTP.URL+"/approvals/"+denyPending[0].ID+"/deny")
+	resp, err = approvalPost(h2.HTTP.URL + "/approvals/" + denyPending[0].ID + "/deny")
 	if err != nil {
 		fail(t, "C5", err.Error())
 		return
