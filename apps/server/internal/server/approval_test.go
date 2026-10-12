@@ -68,6 +68,26 @@ func TestClassifyToolTableAndHeuristics(t *testing.T) {
 	}
 }
 
+func TestReviewedMCPReadsDoNotNeedApproval(t *testing.T) {
+	for _, reviewed := range []bool{false, true} {
+		t.Run(fmt.Sprint(reviewed), func(t *testing.T) {
+			db := openApprovalStore(t)
+			run := seedApprovalRun(t, db, "mcp-read")
+			state := &turnState{run: run, store: db, prefixes: []string{"safe__"}}
+			if reviewed {
+				state.readPrefixes = []string{"safe__"}
+			}
+			decision := gateApproval(t.Context(), state, "call", "safe__mail_accounts", json.RawMessage(`{}`))
+			if (decision == nil) != reviewed {
+				t.Fatal("read approval did not follow the operator-reviewed connection")
+			}
+			if decision := gateApproval(t.Context(), state, "unknown", "other__mail_accounts", json.RawMessage(`{}`)); decision == nil {
+				t.Fatal("unclassified MCP connection bypassed approval")
+			}
+		})
+	}
+}
+
 func TestApprovalExactlyOnce(t *testing.T) {
 	db := openApprovalStore(t)
 	run := seedApprovalRun(t, db, "job-once")

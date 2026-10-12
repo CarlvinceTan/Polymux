@@ -35,26 +35,27 @@ type handoffWork struct {
 }
 
 type turnState struct {
-	run        contract.Run
-	work       store.Work
-	mu         sync.Mutex
-	handoff    *store.Work
-	target     string
-	tools      int
-	notice     *string
-	external   map[string]bool
-	prefixes   []string
-	classes    map[string]ToolClass
-	known      map[string]bool
-	waits      map[string]bool
-	checkpoint *store.Checkpoint
-	store      *store.Store
-	hookErr    error
-	task       *store.Task
-	cancel     context.CancelFunc
-	approval   *store.Approval
-	claims     map[string]string // tool-call id → claimed approval id
-	noResume   bool              // voice turns gate but do not enqueue actor resume
+	run          contract.Run
+	work         store.Work
+	mu           sync.Mutex
+	handoff      *store.Work
+	target       string
+	tools        int
+	notice       *string
+	external     map[string]bool
+	prefixes     []string
+	readPrefixes []string
+	classes      map[string]ToolClass
+	known        map[string]bool
+	waits        map[string]bool
+	checkpoint   *store.Checkpoint
+	store        *store.Store
+	hookErr      error
+	task         *store.Task
+	cancel       context.CancelFunc
+	approval     *store.Approval
+	claims       map[string]string // tool-call id → claimed approval id
+	noResume     bool              // voice turns gate but do not enqueue actor resume
 }
 
 func beforeTool(ctx context.Context, call, name string, args json.RawMessage) agent.ToolCallHookResult {
@@ -123,6 +124,14 @@ func gateApproval(ctx context.Context, state *turnState, call, name string, args
 		return nil
 	}
 	declared := state.classes[name]
+	if declared == "" {
+		for _, prefix := range state.readPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				declared = ToolRead
+				break
+			}
+		}
+	}
 	class := classifyTool(name, declared, state.known[name], externalTool(state, name))
 	if class != ToolConsequential {
 		return nil
@@ -175,7 +184,7 @@ func gateApproval(ctx context.Context, state *turnState, call, name string, args
 		jobID = ""
 	}
 	created, isNew, err := state.store.CreateApproval(ctx, store.Approval{
-		ID: "approval:" + state.run.ID + ":" + fmt.Sprintf("%x", sha256Sum(key)),
+		ID:    "approval:" + state.run.ID + ":" + fmt.Sprintf("%x", sha256Sum(key)),
 		RunID: state.run.ID, AgentID: state.run.AgentID, ThreadID: state.run.ConversationID,
 		Tool: name, Args: args, Key: key, JobID: jobID,
 	})

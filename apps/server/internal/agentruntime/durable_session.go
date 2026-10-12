@@ -22,6 +22,7 @@ import (
 	envnode "github.com/MichaelKinsy/PiG/durable/env/node"
 	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/MichaelKinsy/PiG/durable/tools"
+	"github.com/MichaelKinsy/PiG/mcp"
 )
 
 // DurableRuntime runs Polymux conversations on PiG's durable harness instead of the coding
@@ -32,6 +33,7 @@ type DurableRuntime struct {
 	model    string
 	dir      string
 	client   Client
+	sessions sync.Map
 }
 
 // NewDurable opens a durable harness over the given storage. Conversations, generations,
@@ -41,7 +43,7 @@ func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Cli
 		return nil, err
 	}
 	registry := harness.CreateRegistry()
-	opened, err := harness.OpenHarness(ctx, storage, harness.HarnessOptions{
+	opened, err := harness.OpenHarness(ctx, cacheHistory(storage), harness.HarnessOptions{
 		Models: durableModels(baseURL, key, model, client),
 		Settings: func() *harness.HarnessSettings {
 			return &harness.HarnessSettings{Compaction: &harness.CompactionPolicyPatch{
@@ -80,7 +82,12 @@ func builtinTool(name string) *durable.ToolRegistration {
 }
 
 func (r *DurableRuntime) Close() error {
-	return r.harness.Close(context.WithoutCancel(context.Background()))
+	err := r.harness.Close(context.WithoutCancel(context.Background()))
+	r.sessions.Range(func(key, _ any) bool {
+		err = errors.Join(err, key.(*durableSession).Close())
+		return true
+	})
+	return err
 }
 
 // Open resumes the conversation Polymux recorded, or starts one. An ephemeral definition never
@@ -93,8 +100,30 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	if err != nil {
 		return nil, err
 	}
-	session := &durableSession{conversation: conversation, definition: d, attachments: filepath.Join(r.dir, "attachments")}
-	tools := Tools(d, conversation.Id())
+	cwd := filepath.Join(r.dir, d.Agent.ID)
+	if err := os.MkdirAll(cwd, 0700); err != nil {
+		return nil, err
+	}
+	servers := d.MCP
+	if d.Intro {
+		servers = nil
+	}
+	connected, clients, mcpErr := connectMCP(ctx, servers, cwd)
+	session := &durableSession{conversation: conversation, definition: d, attachments: filepath.Join(r.dir, "attachments"), clients: clients, runtime: r, degraded: mcpErr != nil}
+	opened := false
+	defer func() {
+		if !opened {
+			_ = session.Close()
+		}
+	}()
+	registration := d
+	registration.ExtraTools = append(append([]agent.AgentTool{}, d.ExtraTools...), connected...)
+	if d.TurnContext != nil {
+		registration.TurnContext = func() (context.Context, bool) {
+			return session.turnContext(conversation.Id(), ctx)
+		}
+	}
+	tools := Tools(registration, conversation.Id())
 	for _, name := range d.Tools {
 		if registration := builtinTool(name); registration != nil {
 			tools = append(tools, registration)
@@ -104,11 +133,10 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	for _, registration := range tools {
 		names = append(names, registration.ToolSchema.Name)
 	}
-	prompt, err := buildPrompt(d, names, len(d.MCP) > 0)
+	prompt, err := buildPrompt(d, names, mcpErr != nil || d.Intro && len(d.MCP) > 0)
 	if err != nil {
 		return nil, err
 	}
-	cwd := filepath.Join(r.dir, d.Agent.ID)
 	change := harness.AgentChange{
 		Instructions: harness.SetTo(prompt),
 		Model:        harness.SetTo(durable.ModelRef{Provider: DurableProvider, ModelId: modelID(d, r.model)}),
@@ -118,10 +146,11 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	// selects which of them this conversation offers. Each tool gets its own extension so a
 	// later turn's install cannot replace an earlier one's.
 	for _, registration := range tools {
-		extension := &durable.Extension{Name: "polymux:" + registration.ToolSchema.Name, Tools: []*durable.ToolRegistration{registration}}
+		extension := &durable.Extension{Name: "polymux:" + strconv.FormatInt(int64(conversation.Id()), 10) + ":" + registration.ToolSchema.Name, Tools: []*durable.ToolRegistration{registration}}
 		if err := r.registry.Install(extension); err != nil {
 			return nil, err
 		}
+		session.extensions = append(session.extensions, extension)
 	}
 	// An explicit selection, even an empty one: a conversation without a filter would
 	// otherwise inherit every tool ever installed.
@@ -131,10 +160,14 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 		if err := r.registry.Install(extension); err != nil {
 			return nil, err
 		}
+		session.extensions = append(session.extensions, extension)
 	}
+	change.Extensions = harness.SetTo(harness.ExtensionChange{Exact: true, List: session.extensions})
 	if err := conversation.Configure(ctx, change); err != nil {
 		return nil, err
 	}
+	r.sessions.Store(session, struct{}{})
+	opened = true
 	return session, nil
 }
 
@@ -154,7 +187,7 @@ func (r *DurableRuntime) conversation(ctx context.Context, d Definition, path st
 // DurableProvider is the models-runtime provider ID Polymux registers its endpoint under.
 const DurableProvider = "polymux"
 
-// MaxRequestBytes bounds the encoded provider body, including tools and summary requests.
+// MaxRequestBytes is the observed request bound for compaction evals.
 const MaxRequestBytes = 128 << 10
 
 // durableModels registers Polymux's OpenAI-compatible endpoint with the durable models runtime.
@@ -178,26 +211,6 @@ func durableModels(baseURL, key, model string, client Client) *ai.Models {
 // passthrough adapts an ai.Provider to the models runtime stream signature.
 func passthrough(provider ai.Provider) ai.ModelsStreamFunction {
 	return func(ctx context.Context, _ *ai.Model, transcript ai.TranscriptContext, opts ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
-		previous := opts.OnPayload
-		opts.OnPayload = func(payload any, model *ai.Model) (any, error) {
-			if previous != nil {
-				replaced, err := previous(payload, model)
-				if err != nil {
-					return nil, err
-				}
-				if replaced != nil {
-					payload = replaced
-				}
-			}
-			body, err := json.Marshal(payload)
-			if err != nil {
-				return nil, err
-			}
-			if len(body) > MaxRequestBytes {
-				return nil, errors.New("model request size limit exceeded")
-			}
-			return payload, nil
-		}
 		return provider.Stream(ctx, transcript, opts)
 	}
 }
@@ -222,7 +235,13 @@ type durableSession struct {
 	emitMu sync.Mutex
 	emit   func(Delta) error
 	// park is set when BeforeTool requests Terminate; AfterTools aborts the in-flight turn.
-	park atomic.Bool
+	park       atomic.Bool
+	clients    []*mcp.Client
+	extensions []*durable.Extension
+	runtime    *DurableRuntime
+	degraded   bool
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // turnContext restores the context this conversation's tool calls and hooks run under.
@@ -314,7 +333,7 @@ var errApprovalPause = errors.New("waiting for approval")
 
 func (s *durableSession) Path() string { return durablePath(s.conversation.Id()) }
 func (s *durableSession) Reusable() bool {
-	return true
+	return !s.degraded
 }
 func (s *durableSession) Abort(ctx context.Context) error { return s.conversation.Abort(ctx, nil) }
 
@@ -326,8 +345,23 @@ func (s *durableSession) BindTurn(before agent.BeforeToolCallHook, turn func() (
 	s.definition.TurnContext = turn
 }
 
-// Close releases nothing: the conversation is durable and belongs to the harness.
-func (s *durableSession) Close() error { return nil }
+// The conversation persists; its live clients and registrations are released.
+func (s *durableSession) Close() error {
+	s.closeOnce.Do(func() {
+		s.closeErr = closeMCP(s.clients)
+		if s.runtime != nil {
+			for _, extension := range s.extensions {
+				// A reopened conversation may have replaced this registration.
+				if s.runtime.registry.Snapshot().Extension(extension.Name) == extension {
+					s.runtime.registry.Uninstall(extension)
+				}
+			}
+			s.extensions = nil
+			s.runtime.sessions.Delete(s)
+		}
+	})
+	return s.closeErr
+}
 
 func durablePath(id durable.ConversationId) string {
 	return "durable:" + strconv.FormatInt(int64(id), 10)
@@ -463,16 +497,18 @@ func (s *durableSession) stream(ctx context.Context, emit func(Delta) error) fun
 		}
 		if !started {
 			started = true
+			seen = lastAnswer(view)
 			if err := emit(Delta{Kind: "generating"}); err != nil {
 				return nil
 			}
+			return nil
 		}
 		text := lastAnswer(view)
-		if text == "" || text == seen || !strings.HasPrefix(text, seen) {
-			if text != seen {
-				seen = text
-			}
+		if text == "" || text == seen {
 			return nil
+		}
+		if !strings.HasPrefix(text, seen) {
+			seen = ""
 		}
 		delta := text[len(seen):]
 		seen = text
