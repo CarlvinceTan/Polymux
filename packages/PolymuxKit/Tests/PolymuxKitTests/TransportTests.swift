@@ -1,5 +1,8 @@
 import CSQLite
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Testing
 @testable import PolymuxKit
 @testable import PolymuxAvatar

@@ -17,6 +17,9 @@ public final class SidebarStore {
     @ObservationIgnored private var acceptedAgents: [String: Agent] = [:]
     @ObservationIgnored private var acceptedThreads: [String: Thread] = [:]
     @ObservationIgnored private var pendingThreads: [String: Thread] = [:]
+    @ObservationIgnored private var stagedAgents: [String: Agent] = [:]
+    @ObservationIgnored private var stagedThreads: [String: Thread] = [:]
+    @ObservationIgnored private var agentChats: Set<String> = []
     @ObservationIgnored private var editTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var editDates: [String: Date] = [:]
     @ObservationIgnored private var editWorkers: [String: Task<Bool, Never>] = [:]
@@ -71,6 +74,90 @@ public final class SidebarStore {
             merge(thread, into: &threads)
         }
         persist()
+    }
+
+    /// Shows a chat before the server confirms it. Refresh keeps it until it is replaced or dropped.
+    func stage(_ thread: Thread) {
+        revision &+= 1
+        stagedThreads[thread.id] = thread
+        acceptedThreads[thread.id] = thread
+        merge(thread, into: &threads)
+        persist()
+    }
+
+    /// Shows an agent, and a direct chat when none exists, before the server confirms it.
+    func stage(_ agent: Agent) {
+        revision &+= 1
+        stagedAgents[agent.id] = agent
+        acceptedAgents[agent.id] = agent
+        merge(agent, into: &agents)
+        if !threads.contains(where: { $0.id == agent.id }) {
+            let thread = Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
+            stagedThreads[thread.id] = thread
+            agentChats.insert(agent.id)
+            acceptedThreads[thread.id] = thread
+            merge(thread, into: &threads)
+        }
+        persist()
+    }
+
+    func dropStaged(thread id: String) {
+        guard stagedThreads.removeValue(forKey: id) != nil else { return }
+        revision &+= 1
+        acceptedThreads[id] = nil
+        threads.removeAll { $0.id == id }
+        persist(omittingThreads: [id])
+    }
+
+    func dropStaged(agent id: String) {
+        guard stagedAgents.removeValue(forKey: id) != nil else { return }
+        revision &+= 1
+        acceptedAgents[id] = nil
+        agents.removeAll { $0.id == id }
+        var omittingThreads: Set<String> = []
+        if agentChats.remove(id) != nil {
+            stagedThreads[id] = nil
+            acceptedThreads[id] = nil
+            threads.removeAll { $0.id == id }
+            omittingThreads.insert(id)
+        }
+        persist(omittingAgents: [id], omittingThreads: omittingThreads)
+    }
+
+    func replaceStaged(_ thread: Thread, local id: String) {
+        revision &+= 1
+        stagedThreads[id] = nil
+        let dropLocal = id != thread.id
+        if dropLocal {
+            acceptedThreads[id] = nil
+            threads.removeAll { $0.id == id }
+        }
+        acceptedThreads[thread.id] = thread
+        merge(thread, into: &threads)
+        persist(omittingThreads: dropLocal ? [id] : [])
+    }
+
+    func replaceStaged(_ agent: Agent, local id: String) {
+        revision &+= 1
+        stagedAgents[id] = nil
+        acceptedAgents[id] = nil
+        agents.removeAll { $0.id == id }
+        var omittingThreads: Set<String> = []
+        if agentChats.remove(id) != nil {
+            stagedThreads[id] = nil
+            acceptedThreads[id] = nil
+            threads.removeAll { $0.id == id }
+            omittingThreads.insert(id)
+        }
+        acceptedAgents[agent.id] = agent
+        merge(agent, into: &agents)
+        if !threads.contains(where: { $0.id == agent.id }) {
+            let thread = Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
+            acceptedThreads[thread.id] = thread
+            merge(thread, into: &threads)
+        }
+        let omittingAgents: Set<String> = id == agent.id ? [] : [id]
+        persist(omittingAgents: omittingAgents, omittingThreads: omittingThreads)
     }
 
     public func edit(_ thread: Thread, delay: Duration = .milliseconds(550)) {
@@ -154,14 +241,16 @@ public final class SidebarStore {
         reload()
     }
 
-    private func persist() {
+    private func persist(omittingAgents: Set<String> = [], omittingThreads: Set<String> = []) {
         isConnected = true
         error = nil
         do {
             var agents = try cache.agents()
             var threads = try cache.threads()
-            for agent in acceptedAgents.values { merge(agent, into: &agents) }
-            for thread in acceptedThreads.values { merge(thread, into: &threads) }
+            if !omittingAgents.isEmpty { agents.removeAll { omittingAgents.contains($0.id) } }
+            if !omittingThreads.isEmpty { threads.removeAll { omittingThreads.contains($0.id) } }
+            for agent in acceptedAgents.values where !omittingAgents.contains(agent.id) { merge(agent, into: &agents) }
+            for thread in acceptedThreads.values where !omittingThreads.contains(thread.id) { merge(thread, into: &threads) }
             try cache.save(agents: agents, threads: threads)
             reload()
         } catch { self.error = error.localizedDescription }
@@ -200,6 +289,8 @@ public final class SidebarStore {
             guard generation == self.generation, revision == self.revision else { return }
             let snapshots = values.1
             for pending in pendingThreads.values { merge(pending, into: &values.1) }
+            for agent in stagedAgents.values { merge(agent, into: &values.0) }
+            for thread in stagedThreads.values { merge(thread, into: &values.1) }
             try cache.save(agents: values.0, threads: values.1)
             for thread in snapshots { try cache.reconcile(thread) }
             self.agents = values.0
@@ -209,6 +300,8 @@ public final class SidebarStore {
             acceptedAgents.removeAll()
             acceptedThreads.removeAll()
             acceptedThreads = pendingThreads
+            for (id, agent) in stagedAgents { acceptedAgents[id] = agent }
+            for (id, thread) in stagedThreads { acceptedThreads[id] = thread }
             isConnected = true
             error = nil
             for id in pendingThreads.keys where editTasks[id] == nil && editWorkers[id] == nil { retryEdit(id) }

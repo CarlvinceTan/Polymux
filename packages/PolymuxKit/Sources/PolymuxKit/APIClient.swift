@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public struct APIClient: Sendable {
     public let baseURL: URL
@@ -297,6 +300,16 @@ public struct APIClient: Sendable {
                     var request = try request("threads/\(threadID)/stream", query: [URLQueryItem(name: "after", value: String(after))])
                     request.timeoutInterval = 60 * 60
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    #if os(Linux)
+                    // FoundationNetworking has no incremental byte stream.
+                    let (data, response) = try await session.data(for: request)
+                    try validate(response)
+                    var parser = SSEParser()
+                    for byte in data {
+                        try Task.checkCancellation()
+                        if let event = try parser.feed(byte) { continuation.yield(event) }
+                    }
+                    #else
                     let (bytes, response) = try await session.bytes(for: request)
                     try validate(response)
                     var parser = SSEParser()
@@ -304,6 +317,7 @@ public struct APIClient: Sendable {
                         try Task.checkCancellation()
                         if let event = try parser.feed(byte) { continuation.yield(event) }
                     }
+                    #endif
                     if let event = try parser.finish() { continuation.yield(event) }
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }

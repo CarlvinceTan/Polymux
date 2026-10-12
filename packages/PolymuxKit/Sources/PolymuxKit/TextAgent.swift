@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public struct TextTurn: Sendable {
     public enum Role: Sendable { case user, assistant, tool }
