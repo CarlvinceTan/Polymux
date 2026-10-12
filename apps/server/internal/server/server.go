@@ -44,6 +44,8 @@ type Config struct {
 	Log         *slog.Logger
 	Push        PushSender
 	Devices     *device.Broker
+	// BackgroundTimeout defaults to the normal turn limit when unset.
+	BackgroundTimeout time.Duration
 }
 type Server struct {
 	Store      *store.Store
@@ -855,6 +857,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger == "review" {
 		timeout = 2 * time.Minute
 	}
+	background := work.Trigger == "peer" || work.Trigger == "handoff" || work.Trigger == "task"
+	if background && s.config.BackgroundTimeout > 0 {
+		timeout = s.config.BackgroundTimeout
+	}
 	runCtx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	a.mu.Lock()
@@ -1322,6 +1328,17 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			return nil
 		})
 	}
+	if background && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		err = errors.Join(err, runCtx.Err())
+		if sess != nil {
+			// Durable generation outlives Send's wait unless explicitly aborted.
+			abortCtx, stop := context.WithTimeout(writeCtx, 5*time.Second)
+			if e := sess.Abort(abortCtx); e != nil {
+				s.config.Log.Warn("abort stuck work", "error", e)
+			}
+			stop()
+		}
+	}
 	messageMu.Lock()
 	accepting = false
 	if e := flush(); e != nil {
@@ -1454,6 +1471,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = "timeout"
 			message = "The model took too long to reply."
+			if background {
+				message = "Background work appears stuck and was stopped after taking too long. Review before retrying."
+				run.Summary = "Background work timed out"
+			}
 		}
 		run.Error = &contract.Error{Code: code, Message: message}
 	}

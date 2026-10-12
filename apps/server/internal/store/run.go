@@ -542,6 +542,9 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 		text := Text(result)
 		if run.Status != "completed" {
 			text = "Peer work " + run.Status + ". Review before retrying."
+			if run.Error != nil && run.Error.Code == "timeout" {
+				text = run.Error.Message
+			}
 		}
 		if text == "" {
 			text = "Peer work completed without a text result."
