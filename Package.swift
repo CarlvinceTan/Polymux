@@ -1,6 +1,15 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+#if os(Linux)
+// The app targets need Apple frameworks. The profile-save proof is portable.
+let package = Package(
+    name: "Polymux",
+    targets: [
+        .testTarget(name: "InstantUIProfileSaveTests", path: "packages/PolymuxKit/Tests/InstantUIProfileSaveTests")
+    ]
+)
+#else
 let package = Package(
     name: "Polymux",
     platforms: [.iOS("27.0"), .macOS("27.0")],
@@ -27,6 +36,8 @@ let package = Package(
         .testTarget(name: "PolymuxKitTests", dependencies: ["PolymuxKit", "PolymuxAvatar", "AvatarKit"], path: "packages/PolymuxKit/Tests/PolymuxKitTests"),
         .testTarget(name: "PolymuxVoiceTests", dependencies: ["PolymuxVoice", "PolymuxKit"], path: "apps/Polymux/Tests/VoiceTests"),
         .testTarget(name: "VoiceCoreTests", dependencies: ["PolymuxVoice", "PolymuxKit"], path: "apps/Polymux/Tests/VoiceCoreTests"),
-        .testTarget(name: "AvatarKitTests", dependencies: ["AvatarKit"], path: "packages/AvatarKit/Tests/AvatarKitTests", resources: [.copy("Fixtures")])
+        .testTarget(name: "AvatarKitTests", dependencies: ["AvatarKit"], path: "packages/AvatarKit/Tests/AvatarKitTests", resources: [.copy("Fixtures")]),
+        .testTarget(name: "InstantUIProfileSaveTests", path: "packages/PolymuxKit/Tests/InstantUIProfileSaveTests")
     ]
 )
+#endif

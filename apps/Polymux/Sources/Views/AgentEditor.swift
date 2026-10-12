@@ -1,5 +1,11 @@
+import os
 import SwiftUI
 import PolymuxKit
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct AgentEditor: View {
     let agent: Agent
@@ -10,7 +16,7 @@ struct AgentEditor: View {
     @State private var prompt = ""
     @State private var loaded = false
     @State private var loading = true
-    @State private var saving = false
+    @State private var closing = false
     @State private var issue: String?
     @State private var showAvatar = false
     @State private var avatarHovered = false
@@ -37,7 +43,7 @@ struct AgentEditor: View {
     }
 
     var body: some View {
-        PanelView("Edit profile", enabled: !saving && !showAvatar, onClose: { dismiss() }) {
+        PanelView("Edit profile", enabled: !showAvatar, onClose: { dismiss() }) {
             Form {
                 Section("Avatar") {
                     HStack {
@@ -61,7 +67,6 @@ struct AgentEditor: View {
                         Spacer()
                     }
                     .padding(.vertical, 8)
-                    .disabled(saving)
                 }
                 .panelRow()
                 Section("Profile") {
@@ -78,7 +83,6 @@ struct AgentEditor: View {
                     }
                 }
                 .textFieldStyle(.roundedBorder)
-                .disabled(saving)
                 .panelRow()
                 Section {
                     roleEditor
@@ -88,12 +92,8 @@ struct AgentEditor: View {
                     Text("Describe what this agent should do and how it should respond.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                .disabled(!loaded || saving)
+                .disabled(!loaded)
                 .panelRow()
-                if loading {
-                    Section { ProgressView("Loading profile…") }
-                        .panelRow()
-                }
                 if let issue {
                     Section {
                         Text(issue).foregroundStyle(.secondary).textSelection(.enabled)
@@ -110,18 +110,14 @@ struct AgentEditor: View {
             }
             .formStyle(.grouped)
         } actions: {
-            Button { Task { await save() } } label: {
-                if saving { ProgressView().controlSize(.small) }
-                else { Text("Save") }
-            }
-            .disabled(!loaded || loading || saving || cleanName.isEmpty)
+            Button("Save", action: save)
+                .disabled(!loaded || cleanName.isEmpty)
         }
         .panel(isPresented: $showAvatar) {
             AvatarEditor(agentID: agent.id, name: cleanName.isEmpty ? agent.name : cleanName,
                          client: session.client, store: session.avatars)
         }
-        .interactiveDismissDisabled(saving)
-        .panelDismiss(enabled: !saving && !showAvatar, onClose: { dismiss() })
+        .panelDismiss(enabled: !showAvatar, onClose: { dismiss() })
         .task { await load() }
     }
 
@@ -237,21 +233,98 @@ struct AgentEditor: View {
         }
     }
 
-    private func save() async {
-        guard loaded, !saving, !cleanName.isEmpty else { return }
-        saving = true
-        issue = nil
-        defer { saving = false }
+    // Close on this turn. The server write continues after the sheet is gone.
+    private func save() {
+        guard loaded, !closing, !cleanName.isEmpty else { return }
+        closing = true
+        let update = UpdateAgentRequest(name: cleanName,
+                                        role: role.trimmingCharacters(in: .whitespacesAndNewlines),
+                                        prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+        let previous = session.sidebar.agents.first { $0.id == agent.id } ?? agent
+        var optimistic = previous
+        optimistic.name = update.name
+        optimistic.role = update.role
+        let signpost = ProfileTrace.signposter.makeSignpostID()
+        let span = ProfileTrace.signposter.beginInterval("ProfileSave", id: signpost)
+        session.sidebar.accept(optimistic)
+        ProfileTrace.signposter.emitEvent("StateVisible", id: signpost)
+        dismiss()
+        ProfileTrace.signposter.emitEvent("SheetClosed", id: signpost)
+        ProfileTrace.signposter.endInterval("ProfileSave", span)
+        syncProfile(client: session.client, sidebar: session.sidebar, id: agent.id,
+                    update: update, previous: previous, optimistic: optimistic)
+    }
+}
+
+@MainActor
+private func syncProfile(client: APIClient, sidebar: SidebarStore, id: String,
+                         update: UpdateAgentRequest, previous: Agent, optimistic: Agent) {
+    Task {
+        let signpost = ProfileTrace.signposter.makeSignpostID()
+        let span = ProfileTrace.signposter.beginInterval("ProfileSync", id: signpost)
         do {
-            let update = UpdateAgentRequest(name: cleanName,
-                                            role: role.trimmingCharacters(in: .whitespacesAndNewlines),
-                                            prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
-            let profile = try await session.client.updateAgent(id: agent.id, request: update)
-            session.sidebar.accept(profile.agent)
-            await session.sidebar.refresh()
-            dismiss()
+            let profile = try await client.updateAgent(id: id, request: update)
+            let shown = sidebar.agents.first { $0.id == id }
+            if shown?.name == optimistic.name && shown?.role == optimistic.role {
+                sidebar.accept(profile.agent)
+                await sidebar.refresh()
+            }
+            ProfileTrace.signposter.endInterval("ProfileSync", span)
         } catch {
-            issue = "Couldn’t save this profile. \(error.localizedDescription)"
+            let shown = sidebar.agents.first { $0.id == id }
+            guard shown?.name == optimistic.name && shown?.role == optimistic.role else {
+                ProfileTrace.signposter.endInterval("ProfileSync", span)
+                return
+            }
+            sidebar.accept(previous)
+            ProfileTrace.signposter.emitEvent("RolledBack", id: signpost)
+            ProfileTrace.signposter.endInterval("ProfileSync", span)
+            let reason = error.localizedDescription
+            reportFailure("Couldn’t save this profile.",
+                          detail: "The previous profile is restored. Edit the profile to try again. \(reason)") {
+                sidebar.accept(optimistic)
+                syncProfile(client: client, sidebar: sidebar, id: id, update: update,
+                            previous: previous, optimistic: optimistic)
+            }
         }
     }
 }
+
+private enum ProfileTrace {
+    static let signposter = OSSignposter(subsystem: "app.polymux.instant", category: "ProfileSave")
+}
+
+@MainActor
+func reportFailure(_ title: String, detail: String, retry: @escaping @MainActor () -> Void) {
+    #if os(macOS)
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = detail
+    alert.addButton(withTitle: "Try again")
+    alert.addButton(withTitle: "OK")
+    guard let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: \.isVisible) else { return }
+    alert.beginSheetModal(for: window) { response in
+        guard response == .alertFirstButtonReturn else { return }
+        Task { @MainActor in retry() }
+    }
+    #else
+    let alert = UIAlertController(title: title, message: detail, preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "Try again", style: .default) { _ in
+        Task { @MainActor in retry() }
+    })
+    alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+    guard let presenter = topPresenter() else { return }
+    presenter.present(alert, animated: true)
+    #endif
+}
+
+#if os(iOS)
+@MainActor
+func topPresenter() -> UIViewController? {
+    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+    let window = scenes.flatMap(\.windows).first { $0.isKeyWindow } ?? scenes.first?.windows.first
+    var presenter = window?.rootViewController
+    while let next = presenter?.presentedViewController, !next.isBeingDismissed { presenter = next }
+    return presenter
+}
+#endif

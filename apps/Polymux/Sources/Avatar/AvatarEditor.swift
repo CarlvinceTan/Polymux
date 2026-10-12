@@ -1,3 +1,4 @@
+import os
 import SwiftUI
 import AvatarKit
 import PolymuxKit
@@ -18,8 +19,9 @@ struct AvatarEditor: View {
     @State private var blocks: [AvatarBlock]
     @State private var advanced = false
     @State private var previewDark: Bool?
-    @State private var saving = false
-    @State private var issue: String?
+    @State private var closing = false
+    @State private var commitStarted = false
+    @State private var baseline: AvatarOptions
     @State private var editID = UUID()
 
     init(agentID: String, name: String, client: APIClient? = nil, store: AvatarStore) {
@@ -27,7 +29,9 @@ struct AvatarEditor: View {
         self.name = name
         self.client = client
         self.store = store
-        _blocks = State(initialValue: store.options(for: agentID).blocks)
+        let current = store.options(for: agentID)
+        _blocks = State(initialValue: current.blocks)
+        _baseline = State(initialValue: current)
     }
 
     private var options: AvatarOptions { store.options(for: agentID) }
@@ -38,7 +42,7 @@ struct AvatarEditor: View {
     private var columns: [GridItem] { [GridItem(.adaptive(minimum: 76), spacing: 8)] }
 
     var body: some View {
-        PanelView("\(name)’s avatar", enabled: !saving, onClose: { dismiss() }) {
+        PanelView("\(name)’s avatar", onClose: { dismiss() }) {
             Form {
                 Section {
                     PillPicker("Options", selection: $advanced, options: [
@@ -110,28 +114,21 @@ struct AvatarEditor: View {
                     }
                     .panelRow()
                 }
-                if let issue {
-                    Section { Text(issue).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled) }
-                        .panelRow()
-                }
             }
             .formStyle(.grouped)
             .scrollIndicators(.hidden)
-            .disabled(saving)
         } actions: {
-            Button { Task { await finish() } } label: {
-                if saving { ProgressView().controlSize(.small) }
-                else { Text("Done") }
-            }
-            .disabled(saving)
+            Button("Done", action: finish)
         }
-        .interactiveDismissDisabled(saving)
-        .panelDismiss(enabled: !saving, onClose: { dismiss() })
+        .panelDismiss(onClose: { dismiss() })
         .onAppear { store.beginEditing(agentID, token: editID) }
         .onDisappear {
             saveBlocks()
             store.endEditing(agentID, token: editID)
-            if let client { Task { await store.flush(client: client) } }
+            guard !commitStarted, let client else { return }
+            commitStarted = true
+            syncAvatar(store: store, client: client, agentID: agentID,
+                       attempted: store.options(for: agentID), baseline: baseline)
         }
         .onChange(of: preview) { _, _ in cursor = 0 }
         .onChange(of: duration) { _, value in cursor = min(cursor, value) }
@@ -339,24 +336,53 @@ struct AvatarEditor: View {
         cursor = blocks.prefix(index).reduce(0) { $0 + $1.duration }
     }
 
-    private func finish() async {
-        guard !saving else { return }
+    // Close on this turn. The server write continues after the sheet is gone.
+    private func finish() {
+        guard !closing else { return }
+        closing = true
         saveBlocks()
-        guard let client else { dismiss(); return }
-        saving = true
-        issue = nil
-        defer { saving = false }
-        do {
-            try await store.commit(for: agentID, client: client)
-            dismiss()
-        } catch {
-            issue = "Couldn’t save your avatar to the server. Your changes are still open here. \(error.localizedDescription)"
-        }
+        let signpost = AvatarTrace.signposter.makeSignpostID()
+        let span = AvatarTrace.signposter.beginInterval("AvatarSave", id: signpost)
+        AvatarTrace.signposter.emitEvent("StateVisible", id: signpost)
+        dismiss()
+        AvatarTrace.signposter.emitEvent("SheetClosed", id: signpost)
+        AvatarTrace.signposter.endInterval("AvatarSave", span)
     }
 
     private func saveBlocks() {
         var next = options
         next.blocks = blocks
         store.set(next, for: agentID)
+    }
+}
+
+private enum AvatarTrace {
+    static let signposter = OSSignposter(subsystem: "app.polymux.instant", category: "AvatarSave")
+}
+
+@MainActor
+private func syncAvatar(store: AvatarStore, client: APIClient, agentID: String,
+                        attempted: AvatarOptions, baseline: AvatarOptions) {
+    Task {
+        let signpost = AvatarTrace.signposter.makeSignpostID()
+        let span = AvatarTrace.signposter.beginInterval("AvatarSync", id: signpost)
+        do {
+            try await store.commit(for: agentID, client: client)
+            AvatarTrace.signposter.endInterval("AvatarSync", span)
+        } catch {
+            guard store.options(for: agentID) == attempted else {
+                AvatarTrace.signposter.endInterval("AvatarSync", span)
+                return
+            }
+            store.set(baseline, for: agentID)
+            AvatarTrace.signposter.emitEvent("RolledBack", id: signpost)
+            AvatarTrace.signposter.endInterval("AvatarSync", span)
+            let reason = error.localizedDescription
+            reportFailure("Couldn’t save this avatar.",
+                          detail: "The previous avatar is restored. Customise the avatar to try again. \(reason)") {
+                store.set(attempted, for: agentID)
+                syncAvatar(store: store, client: client, agentID: agentID, attempted: attempted, baseline: baseline)
+            }
+        }
     }
 }
