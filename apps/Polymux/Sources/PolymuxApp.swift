@@ -77,7 +77,7 @@ final class AppSession {
 }
 
 struct AppRoot: View {
-    @AppStorage("serverAddress") private var address = "http://100.127.193.111:7337"
+    @AppStorage("serverAddress") private var address = "http://cvmini.taila465a3.ts.net:8787"
     @State private var session: AppSession?
     @State private var error: String?
     @State private var showSettings = false
