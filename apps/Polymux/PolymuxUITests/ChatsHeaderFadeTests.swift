@@ -161,11 +161,10 @@ final class ChatsHeaderFadeTests: XCTestCase {
     }
 
     private func waitUntilFadeSettles(_ fade: XCUIElement, below nav: XCUIElement) {
-        let settled = NSPredicate { _, _ in
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             guard fade.exists, fade.frame.height > 40, fade.frame.maxY > nav.frame.maxY + 20 else { return false }
             return Self.alphaReady(fade.value as? String)
-        }
-        let expectation = XCTNSPredicateExpectation(predicate: settled, object: nil)
+        }, object: nil)
         wait(for: [expectation], timeout: 6)
     }
 
@@ -210,12 +209,14 @@ final class ChatsHeaderFadeTests: XCTestCase {
     }
 
     private func chatRow(_ app: XCUIApplication, named name: String) -> XCUIElement {
-        let predicate = NSPredicate(format: "label BEGINSWITH %@", name)
-        let cell = app.cells.matching(predicate).firstMatch
+        func match(_ query: XCUIElementQuery) -> XCUIElement {
+            query.matching(NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch
+        }
+        let cell = match(app.cells)
         if cell.exists { return cell }
-        let button = app.buttons.matching(predicate).firstMatch
+        let button = match(app.buttons)
         if button.exists { return button }
-        return app.descendants(matching: .any).matching(predicate).firstMatch
+        return match(app.descendants(matching: .any))
     }
 
     private func attach(name: String) {
