@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,14 +57,15 @@ func (f *timeoutFactory) Open(context.Context, agentruntime.Definition, string) 
 
 type timeoutSession struct {
 	*testSession
-	aborted chan struct{}
+	aborted   chan struct{}
+	abortOnce sync.Once
 }
 
 func (s *timeoutSession) Abort(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	close(s.aborted)
+	s.abortOnce.Do(func() { close(s.aborted) })
 	return nil
 }
 
