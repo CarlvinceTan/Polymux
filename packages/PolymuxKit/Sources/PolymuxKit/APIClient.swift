@@ -13,6 +13,15 @@ public struct APIClient: Sendable {
         URL(string: path, relativeTo: baseURL)?.absoluteURL
     }
 
+    public func activityObject(threadID: String, seq: Int64) async throws -> [String: String] {
+        try await get("threads/\(threadID)/activity/\(seq)")
+    }
+
+    public func peerHistory(agentID: String, peerID: String, before: Int64? = nil) async throws -> [Message] {
+        try await get("agents/\(agentID)/history/\(peerID)",
+                      query: before.map { [URLQueryItem(name: "before", value: String($0))] } ?? [])
+    }
+
     public func agents() async throws -> [Agent] {
         try await get("agents")
     }
@@ -148,6 +157,20 @@ public struct APIClient: Sendable {
 
     public func routines(agentID: String) async throws -> [Routine] {
         try await get("agents/\(agentID)/routines")
+    }
+
+    public func updateRoutine(agentID: String, routineID: String, prompt: String? = nil, enabled: Bool? = nil) async throws -> Routine {
+        struct Edit: Encodable {
+            let prompt: String?
+            let enabled: Bool?
+        }
+        var request = try request("agents/\(agentID)/routines/\(routineID)")
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Edit(prompt: prompt, enabled: enabled))
+        let (data, response) = try await session.data(for: request)
+        try validate(response, data: data)
+        return try JSONDecoder().decode(Routine.self, from: data)
     }
 
     public func createRoutine(agentID: String, schedule: RoutineRequest) async throws -> Routine {

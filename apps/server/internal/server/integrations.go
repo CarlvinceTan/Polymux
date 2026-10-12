@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 	"github.com/MichaelKinsy/PiG/agent"
 	"github.com/MichaelKinsy/PiG/ai"
 )
@@ -77,8 +79,13 @@ func (t *integrationTool) Execute(ctx context.Context, _ string, args json.RawMe
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	d := a.definition
+	previous, err := json.Marshal(d)
+	if err != nil {
+		return agent.AgentToolResult{}, err
+	}
 	d.MCP, d.Skills = slices.Clone(d.MCP), slices.Clone(d.Skills)
 	d.Devices = slices.Clone(d.Devices)
+	removedSkill := input.Action == "remove" && slices.Contains(d.Skills, input.Path)
 	switch input.Action {
 	case "list":
 		// Credentials and command arguments are not part of the product inventory.
@@ -170,10 +177,53 @@ func (t *integrationTool) Execute(ctx context.Context, _ string, args json.RawMe
 	if err != nil {
 		return agent.AgentToolResult{}, err
 	}
+	if bytes.Equal(previous, data) {
+		return toolResult(map[string]any{"configured": true, "available": "next turn"})
+	}
 	if _, err := s.Store.UpdateDefinition(ctx, d.Agent, data); err != nil {
 		return agent.AgentToolResult{}, err
 	}
 	a.definition = d
 	a.revision++
+	type change struct{ kind, id, label string }
+	changes := []change{}
+	if input.Action == "mcp" {
+		changes = append(changes, change{"connector.added", input.Name, input.Name})
+	}
+	if input.Action == "device" {
+		changes = append(changes, change{"device.added", input.Name, input.Name})
+	}
+	if input.Action == "skill" || removedSkill {
+		label := filepath.Base(input.Path)
+		if label == "SKILL.md" {
+			label = filepath.Base(filepath.Dir(input.Path))
+		}
+		kind := "skill.saved"
+		if input.Action == "remove" {
+			kind = "skill.removed"
+		}
+		changes = append(changes, change{kind, input.Path, label})
+	}
+	if input.Action == "remove" && input.Name != "" {
+		var prior agentruntime.Definition
+		if err := json.Unmarshal(previous, &prior); err != nil {
+			return agent.AgentToolResult{}, err
+		}
+		if slices.ContainsFunc(prior.MCP, func(item agentruntime.MCPServer) bool { return item.Name == input.Name }) {
+			changes = append(changes, change{"connector.removed", input.Name, input.Name})
+		}
+		if slices.ContainsFunc(prior.Devices, func(item agentruntime.Device) bool { return item.Name == input.Name }) {
+			changes = append(changes, change{"device.removed", input.Name, input.Name})
+		}
+	}
+	for _, change := range changes {
+		payload, err := store.NewActivity(change.kind, change.id, change.label)
+		if err != nil {
+			return agent.AgentToolResult{}, err
+		}
+		if err := s.Store.Activity(ctx, state.run.ConversationID, state.run.AgentID, payload); err != nil {
+			return agent.AgentToolResult{}, err
+		}
+	}
 	return toolResult(map[string]any{"configured": true, "available": "next turn"})
 }

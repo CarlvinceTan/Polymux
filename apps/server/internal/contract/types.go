@@ -144,7 +144,19 @@ type Error struct {
 	Message string `json:"message"`
 }
 
+type Activity struct {
+	MessageIDs    []string `json:"messageIDs,omitempty"`
+	Kind          string   `json:"kind"`
+	Verb          string   `json:"verb"`
+	ObjectID      string   `json:"objectID"`
+	ObjectLabel   string   `json:"objectLabel"`
+	IconOrAgentID string   `json:"iconOrAgentID"`
+	At            string   `json:"at"`
+	AgentIDs      []string `json:"agentIDs,omitempty"`
+}
+
 type Event struct {
+	Payload        *Activity        `json:"payload,omitempty"`
 	Seq            int64            `json:"seq"`
 	ConversationID string           `json:"conversationID"`
 	Type           string           `json:"type"`

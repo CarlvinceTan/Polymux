@@ -418,6 +418,7 @@ public struct Event: Codable, Hashable, Sendable {
     public var summary: String?
     public var usage: Usage?
     public var approval: ApprovalRequest?
+    public var payload: Activity?
 
     public init(
         seq: Int64 = 0,
@@ -438,7 +439,8 @@ public struct Event: Codable, Hashable, Sendable {
         routineID: String? = nil,
         summary: String? = nil,
         usage: Usage? = nil,
-        approval: ApprovalRequest? = nil
+        approval: ApprovalRequest? = nil,
+        payload: Activity? = nil
     ) {
         self.seq = seq
         self.conversationID = conversationID
@@ -459,6 +461,7 @@ public struct Event: Codable, Hashable, Sendable {
         self.summary = summary
         self.usage = usage
         self.approval = approval
+        self.payload = payload
     }
 }
 

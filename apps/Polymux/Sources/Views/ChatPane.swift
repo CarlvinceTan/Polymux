@@ -26,6 +26,9 @@ struct ChatPane: View {
     @State private var openingVoice = false
     @State private var voiceIssue: String?
     @State private var showProfile = false
+    @State private var historyPeer: Agent?
+    @State private var activityObject: PolymuxKit.ActivityRow?
+    @State private var routineRow: PolymuxKit.ActivityRow?
     @State private var target: ReplyTarget?
     @State private var highlight: ReplyTarget?
     @State private var jumpID = UUID()
@@ -160,6 +163,25 @@ struct ChatPane: View {
         .panel(isPresented: $showProfile) {
             if thread.isGroup { GroupEditor(thread: thread, session: session) }
             else { AgentEditor(agent: agent, session: session) }
+        }
+        #if os(iOS)
+        .sheet(item: $historyPeer) { peer in
+            AgentHistory(current: agent, peer: peer, client: session.client)
+        }
+        #else
+        .overlay {
+            if let peer = historyPeer {
+                HistoryOverlay(close: { historyPeer = nil }) {
+                    AgentHistory(current: agent, peer: peer, client: session.client, close: { historyPeer = nil })
+                }
+            }
+        }
+        #endif
+        .panel(item: $activityObject) { row in
+            ActivityObject(row: row, client: session.client)
+        }
+        .panel(item: $routineRow) { row in
+            RoutinePanel(agentID: agent.id, row: row, client: session.client)
         }
         .task {
             store.isVisible = scenePhase == .active
@@ -310,6 +332,7 @@ struct ChatPane: View {
 
     private var transcript: some View {
         ScrollViewReader { proxy in
+            let rows = store.transcript
             ScrollView {
                 LazyVStack(spacing: 12) {
                     if !store.messages.isEmpty && store.hasEarlier {
@@ -317,10 +340,23 @@ struct ChatPane: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .buttonStyle(.plain).padding(.top, 12)
                     }
-                    ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
-                        if startsGroup(index) {
-                            ChatStatus(date: message.date)
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                        if ChatTime.startsGroup(row.date, after: index == 0 ? nil : rows[index - 1].lastDate) {
+                            ChatStatus(date: row.date)
                         }
+                        switch row {
+                        case .activity(let activity):
+                            ActivityLine(row: activity,
+                                         names: Dictionary(uniqueKeysWithValues: session.sidebar.agents.map { ($0.id, $0.name) }),
+                                         currentAgent: agent.id,
+                                         avatar: { id in AgentAvatar(agentID: id) },
+                                         open: { id in
+                                             let peer = id == agent.id ? activity.agents.first { $0 != agent.id } : id
+                                             historyPeer = session.sidebar.agents.first { $0.id == peer }
+                                         },
+                                         openObject: objectAction(activity))
+                                .id(activity.id)
+                        case .message(let message):
                         MessageBubble(message: message, client: session.client, agentName: author(message),
                                       showAuthor: thread.isGroup && message.role == "assistant",
                                       replyName: message.reply.flatMap { quote in session.sidebar.agents.first { $0.id == quote.agentID }?.name } ?? agent.name,
@@ -338,6 +374,7 @@ struct ChatPane: View {
                                                         frame: geometry.frame(in: .named(scrollSpace)))])
                             }
                             .allowsHitTesting(false)
+                        }
                         }
                     }
                     ForEach(members, id: \.id) { member in
@@ -386,6 +423,9 @@ struct ChatPane: View {
                 if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: store.messages.count) { _, _ in
+                if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+            .onChange(of: store.activityEvents.last?.seq) { _, _ in
                 if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: composerHeight) { _, _ in
@@ -476,11 +516,12 @@ struct ChatPane: View {
         dateVisible = false
     }
 
-    private func startsGroup(_ index: Int) -> Bool {
-        if index == 0 { return true }
-        let previous = store.messages[index - 1].date
-        let current = store.messages[index].date
-        return !Calendar.current.isDate(previous, inSameDayAs: current) || current.timeIntervalSince(previous) > 1800
+    private func objectAction(_ row: PolymuxKit.ActivityRow) -> (() -> Void)? {
+        if row.payload.kind.hasPrefix("routine.") { return { routineRow = row } }
+        if ["memory", "skill", "subagent"].contains(String(row.payload.kind.split(separator: ".").first ?? "")) {
+            return { activityObject = row }
+        }
+        return nil
     }
 
     private func jump(to id: String, part: Int64? = nil) {
@@ -512,10 +553,11 @@ private struct JumpGlow: ViewModifier {
 
 struct ChatStatus: View {
     let date: Date
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         Text(date, format: ProgressiveTime(separator: true))
-            .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            .font(.caption2.weight(.medium)).foregroundStyle(ActivityInk.color(scheme))
             .frame(maxWidth: .infinity).padding(.vertical, 14)
     }
 }

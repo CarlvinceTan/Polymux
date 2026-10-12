@@ -498,6 +498,28 @@ func (s *Store) Deliver(ctx context.Context, delivery contract.PeerDelivery, wor
 	if _, err := appendTx(ctx, tx, contract.Event{ConversationID: delivery.ConversationID, Type: kind, AgentID: &delivery.SourceAgentID, RunID: &delivery.ParentRunID, Delivery: &delivery}, nil); err != nil {
 		return delivery, err
 	}
+	if delivery.Intent == "handoff" {
+		return delivery, tx.Commit()
+	}
+	payload, err := NewActivity("agent.messaged", delivery.ID, "")
+	if err != nil {
+		return delivery, err
+	}
+	payload.AgentIDs = []string{delivery.SourceAgentID, delivery.TargetAgentID}
+	payload.MessageIDs = []string{work.Message.ID, "receipt:" + delivery.ID}
+	if delivery.RunID != nil {
+		payload.MessageIDs = append(payload.MessageIDs, "reply:"+*delivery.RunID)
+	}
+	payload.IconOrAgentID = delivery.TargetAgentID
+	if err := activityTx(ctx, tx, delivery.ConversationID, delivery.SourceAgentID, payload); err != nil {
+		return delivery, err
+	}
+	if delivery.TargetAgentID != delivery.ConversationID {
+		payload.IconOrAgentID = delivery.SourceAgentID
+		if err := activityTx(ctx, tx, delivery.TargetAgentID, delivery.SourceAgentID, payload); err != nil {
+			return delivery, err
+		}
+	}
 	return delivery, tx.Commit()
 }
 
@@ -559,6 +581,22 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 		m.ReplyToID = origin.SourceMessageID
 		if _, err := appendTx(ctx, tx, contract.Event{ConversationID: m.ThreadID, Type: "message.start", MessageID: &m.ID, AgentID: m.AgentID}, &m); err != nil {
 			return err
+		}
+		payload, err := NewActivity("agent.messaged", id, "")
+		if err != nil {
+			return err
+		}
+		payload.AgentIDs = []string{delivery.SourceAgentID, delivery.TargetAgentID}
+		payload.MessageIDs = []string{m.ID, "reply:" + run.ID}
+		payload.IconOrAgentID = delivery.TargetAgentID
+		if err := activityTx(ctx, tx, delivery.ConversationID, delivery.TargetAgentID, payload); err != nil {
+			return err
+		}
+		if delivery.TargetAgentID != delivery.ConversationID {
+			payload.IconOrAgentID = delivery.SourceAgentID
+			if err := activityTx(ctx, tx, delivery.TargetAgentID, delivery.TargetAgentID, payload); err != nil {
+				return err
+			}
 		}
 	}
 	encoded, err := json.Marshal(delivery)

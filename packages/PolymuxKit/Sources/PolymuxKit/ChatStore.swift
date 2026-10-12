@@ -3,10 +3,12 @@ import Observation
 
 @MainActor @Observable
 public final class ChatStore {
+    public private(set) var activityEvents: [Event] = [] { didSet { refreshTranscript() } }
+    public private(set) var transcript: [TranscriptRow] = []
     public let activity: ActivityStore
     public private(set) var runs: [Run] = []
     public let threadID: String
-    public private(set) var messages: [Message] = []
+    public private(set) var messages: [Message] = [] { didSet { refreshTranscript() } }
     public private(set) var isConnected = false
     public var isVisible = true
     public private(set) var isSending = false
@@ -37,6 +39,8 @@ public final class ChatStore {
         runs = (try? cache.runs(threadID: threadID)) ?? []
         activity.restore(runs)
         messages = (try? cache.messages(threadID: threadID, limit: 100)) ?? []
+        activityEvents = (try? cache.activityEvents(threadID: threadID)) ?? []
+        refreshTranscript()
     }
 
     public func start() async {
@@ -160,7 +164,7 @@ public final class ChatStore {
                 for try await event in client.stream(threadID: threadID, after: cursor) {
                     try Task.checkCancellation()
                     try receive(event)
-                    if event.type == "message.start" || event.type == "message.done" {
+                    if event.type == "message.start" || event.type == "message.done" || event.type == "activity" {
                         await markRead()
                     }
                 }
@@ -196,12 +200,22 @@ public final class ChatStore {
         guard event.conversationID == threadID else { return }
         let before = try cache.cursor(threadID: threadID)
         guard event.seq > before else { return }
-        if let message = try cache.apply(event) { update(message) }
+        if let message = try cache.apply(event), try !cache.isHidden(message.id, threadID: threadID) { update(message) }
+        if event.type == "activity" {
+            activityEvents.append(event)
+            if activityEvents.count > 1000 { activityEvents.removeFirst(activityEvents.count - 1000) }
+            let hidden = Set(event.payload?.messageIDs ?? [])
+            messages.removeAll { hidden.contains($0.id) }
+        }
         activity.receive(event, live: live)
         if event.run != nil { runs = try cache.runs(threadID: threadID) }
         if live { isConnected = true }
         forwardVoice(event)
         onUpdate?()
+    }
+
+    private func refreshTranscript() {
+        transcript = TranscriptRow.ordered(messages: messages, events: activityEvents)
     }
 
     private func update(_ message: Message) {

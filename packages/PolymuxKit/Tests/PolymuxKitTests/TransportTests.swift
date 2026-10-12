@@ -73,6 +73,62 @@ private actor SendProbe {
     }
 }
 
+private actor ActivityProbe {
+    let kind: String
+    private(set) var reads: [Int64] = []
+    private var streamed = false
+
+    init(kind: String) { self.kind = kind }
+
+    func handle(_ request: URLRequest) async throws -> (Int, Data) {
+        let path = request.url?.path ?? ""
+        if path.hasSuffix("/events"), streamed {
+            try await Task.sleep(for: .seconds(5))
+        }
+        if path.hasSuffix("/read") {
+            reads.append(try JSONDecoder().decode(ReadRequest.self, from: requestBody(request)).seq)
+            return (204, Data())
+        }
+        if path.hasSuffix("/stream") {
+            streamed = true
+            let event = Event(seq: 1, conversationID: "one", type: "activity",
+                              payload: Activity(kind: kind, verb: "Finished", objectLabel: "Aria"))
+            let wire = "data: " + String(decoding: try JSONEncoder().encode(event), as: UTF8.self) + "\n\n"
+            return (200, Data(wire.utf8))
+        }
+        return (200, Data("[]".utf8))
+    }
+}
+
+@Suite @MainActor
+struct ActivityReadTests {
+    @Test(arguments: ["agent.messaged", "subagent.finished"], [true, false])
+    func readsVisibleRows(kind: String, visible: Bool) async throws {
+        let probe = ActivityProbe(kind: kind)
+        let host = ProbeProtocol.routes.add { try await probe.handle($0) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = try LocalCache(url: directory.appendingPathComponent("cache.sqlite"))
+        try cache.save(agents: [], threads: [Thread(id: "one", agentID: "aria")])
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ProbeProtocol.self]
+        let client = APIClient(baseURL: URL(string: "http://\(host)")!, session: URLSession(configuration: config))
+        let chat = ChatStore(client: client, cache: cache, threadID: "one")
+        chat.isVisible = visible
+        defer { chat.stop() }
+        await chat.start()
+        for _ in 0..<100 {
+            let read = await probe.reads.contains(1)
+            if chat.activityEvents.count == 1, !visible || read { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(chat.activityEvents.count == 1)
+        #expect(try cache.threads().first?.unreadCount == (visible ? 0 : 1))
+        #expect((await probe.reads).contains(1) == visible)
+    }
+}
+
 private actor ReplyProbe {
     var requests: [SendRequest] = []
     private var online = false

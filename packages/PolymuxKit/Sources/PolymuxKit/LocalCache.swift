@@ -37,9 +37,22 @@ public final class LocalCache {
         try execute("CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, created TEXT NOT NULL, json TEXT NOT NULL)")
         try execute("CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(id UNINDEXED, thread_id UNINDEXED, text)")
         try execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, seq INTEGER NOT NULL, json TEXT NOT NULL)")
+        try execute("CREATE INDEX IF NOT EXISTS activity_order ON events(thread_id,seq) WHERE json_extract(json,'$.type')='activity'")
+        try execute("CREATE INDEX IF NOT EXISTS recent_events ON events(thread_id,seq) WHERE json_extract(json,'$.type')!='activity'")
+        try execute("CREATE TABLE IF NOT EXISTS activity_messages (thread_id TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(thread_id, id))")
+        try migrateActivities()
         try migrateGroups()
         try migrateActivity()
         try migrateSequences()
+    }
+
+    private func migrateActivities() throws {
+        let version: Int = try metadata("activityMessagesVersion") ?? 0
+        guard version < 1 else { return }
+        try transaction {
+            try execute("INSERT OR IGNORE INTO activity_messages SELECT events.thread_id, refs.value FROM events, json_each(events.json,'$.payload.messageIDs') refs WHERE json_extract(events.json,'$.type')='activity'")
+            try setMetadata("activityMessagesVersion", value: 1)
+        }
     }
 
     private func migrateGroups() throws {
@@ -204,7 +217,7 @@ public final class LocalCache {
     }
 
     public func messages(threadID: String, before: Int64? = nil, limit: Int? = nil) throws -> [Message] {
-        var sql = "SELECT json FROM messages WHERE thread_id=?"
+        var sql = "SELECT json FROM messages WHERE thread_id=? AND NOT EXISTS (SELECT 1 FROM activity_messages WHERE activity_messages.thread_id=messages.thread_id AND activity_messages.id=messages.id)"
         var values: [Value] = [.text(threadID)]
         if let before {
             sql += " AND seq>0 AND seq<?"
@@ -274,15 +287,41 @@ public final class LocalCache {
                 threads[index].lastSeq = max(threads[index].lastSeq, event.seq)
                 if let message = changed,
                    message.seq >= (threads[index].lastMessage?.seq ?? 0) { threads[index].lastMessage = message }
-                if isNew, event.type == "message.start", changed?.role == "assistant", event.seq > threads[index].lastReadSeq {
-                    threads[index].unreadCount += 1
+                if isNew, event.seq > threads[index].lastReadSeq {
+                    if event.type == "message.start", let changed, changed.role == "assistant",
+                       try !isHidden(changed.id, threadID: event.conversationID) {
+                        threads[index].unreadCount += 1
+                    }
+                    if event.type == "activity", let payload = event.payload {
+                        var removed = 0
+                        for id in Set(payload.messageIDs ?? []) where try !isHidden(id, threadID: event.conversationID) {
+                            if let message = try message(id: id), message.role == "assistant", message.seq > threads[index].lastReadSeq { removed += 1 }
+                        }
+                        threads[index].unreadCount = max(0, threads[index].unreadCount - Int64(removed))
+                        if payload.countsUnread { threads[index].unreadCount += 1 }
+                    }
                 }
                 try setMetadata("threads", value: threads)
             }
+            if event.type == "activity" {
+                for id in Set(event.payload?.messageIDs ?? []) {
+                    try execute("INSERT OR IGNORE INTO activity_messages(thread_id,id) VALUES(?,?)", [.text(event.conversationID), .text(id)])
+                }
+                try execute("DELETE FROM events WHERE thread_id=? AND seq IN (SELECT seq FROM events WHERE thread_id=? AND json_extract(json,'$.type')='activity' ORDER BY seq DESC LIMIT -1 OFFSET 1000)", [.text(event.conversationID), .text(event.conversationID)])
+            }
             try execute("INSERT INTO cursors(thread_id,seq) VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET seq=excluded.seq", [.text(event.conversationID), .int(event.seq)])
-            try execute("DELETE FROM events WHERE thread_id=? AND seq<?", [.text(event.conversationID), .int(event.seq - 1000)])
+            try execute("DELETE FROM events WHERE thread_id=? AND seq<? AND json_extract(json,'$.type')!='activity'", [.text(event.conversationID), .int(event.seq - 1000)])
         }
         return changed
+    }
+
+    func isHidden(_ id: String, threadID: String) throws -> Bool {
+        try !rows("SELECT 1 FROM activity_messages WHERE thread_id=? AND id=?", [.text(threadID), .text(id)]).isEmpty
+    }
+
+    public func activityEvents(threadID: String) throws -> [Event] {
+        try rows("SELECT json FROM events WHERE thread_id=? AND json_extract(json,'$.type')='activity' ORDER BY seq",
+                 [.text(threadID)]).map { try decoder.decode(Event.self, from: Data($0[0].utf8)) }
     }
 
     public func enqueue(threadID: String, request: SendRequest, attachments: [Attachment], reply: ReplyContext? = nil) throws -> Message {

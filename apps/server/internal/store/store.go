@@ -395,7 +395,17 @@ func (s *Store) Agents(ctx context.Context) ([]contract.Agent, error) {
 }
 
 func (s *Store) Threads(ctx context.Context) ([]contract.Thread, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,(SELECT count(*) FROM messages m WHERE m.thread_id=t.id AND m.role='assistant' AND m.seq>t.last_read_seq),(SELECT data FROM messages m WHERE m.thread_id=t.id ORDER BY seq DESC LIMIT 1),COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),(SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position)) FROM threads t JOIN agents a ON a.id=t.agent_id ORDER BY CASE t.id WHEN 'assistant' THEN 0 ELSE 1 END,t.id`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,
+ (SELECT count(*) FROM messages m WHERE m.thread_id=t.id AND m.role='assistant' AND m.seq>t.last_read_seq
+  AND NOT EXISTS(SELECT 1 FROM events e,json_each(e.data,'$.payload.messageIDs') hidden
+   WHERE e.thread_id=t.id AND json_extract(e.data,'$.type')='activity' AND hidden.value=m.id))
+ + (SELECT count(*) FROM events e WHERE e.thread_id=t.id AND e.seq>t.last_read_seq
+    AND json_extract(e.data,'$.type')='activity'
+    AND json_extract(e.data,'$.payload.kind') IN ('agent.messaged','subagent.finished')),
+ (SELECT data FROM messages m WHERE m.thread_id=t.id ORDER BY seq DESC LIMIT 1),
+ COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),
+ (SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position))
+ FROM threads t JOIN agents a ON a.id=t.agent_id ORDER BY CASE t.id WHEN 'assistant' THEN 0 ELSE 1 END,t.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -469,12 +479,14 @@ func (s *Store) Read(ctx context.Context, id string, seq int64) error {
 }
 
 func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *contract.Message) (contract.Event, error) {
+	newRun := false
 	if event.Run != nil {
 		var data string
 		err := tx.QueryRowContext(ctx, `SELECT data FROM runs WHERE id=?`, event.Run.ID).Scan(&data)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return event, err
 		}
+		newRun = errors.Is(err, sql.ErrNoRows)
 		if err == nil {
 			var previous contract.Run
 			if err := json.Unmarshal([]byte(data), &previous); err != nil {
@@ -548,6 +560,9 @@ func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *co
 	_, err = tx.ExecContext(ctx, `INSERT INTO events(thread_id,seq,data) VALUES(?,?,?)`, event.ConversationID, event.Seq, string(data))
 	if err == nil {
 		err = noticeTx(ctx, tx, message, event)
+	}
+	if err == nil && event.Run != nil && event.Run.ParentRunID != nil && (event.Type == "run.start" && newRun || event.Type == "run.done") {
+		err = childActivity(ctx, tx, event)
 	}
 	return event, err
 }

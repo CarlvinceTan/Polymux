@@ -246,6 +246,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /agents/{id}/history/{peerID}", s.peerHistory)
+	s.mux.HandleFunc("GET /threads/{id}/activity/{seq}", s.activityObject)
+	s.mux.HandleFunc("PATCH /agents/{id}/routines/{routineID}", s.patchRoutine)
 	s.mux.HandleFunc("POST /triggers/{id}/events", s.ingestEvent)
 	s.mux.HandleFunc("GET /notifications", s.notices)
 	s.mux.HandleFunc("PUT /notifications/device", s.registerPush)
@@ -410,7 +413,18 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if a.definition.Prompt != d.Prompt || a.definition.Agent.Name != d.Agent.Name || a.definition.Agent.Role != d.Agent.Role {
 		a.revision++
 	}
+	changedPrompt := a.definition.Prompt != d.Prompt
 	a.definition = d
+	if changedPrompt {
+		payload, err := store.NewActivity("instructions.updated", d.Agent.ID, "")
+		if err == nil {
+			err = s.Store.Activity(r.Context(), d.Agent.ID, d.Agent.ID, payload)
+		}
+		if err != nil {
+			s.respond(w, nil, err)
+			return
+		}
+	}
 	write(w, 200, contract.AgentProfile{Agent: agent, Prompt: d.Prompt})
 }
 
@@ -1111,6 +1125,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	var pending strings.Builder
 	var lastFlush time.Time
 	tools := map[string]contract.ToolActivity{}
+	fileActivities := map[string]contract.Activity{}
 	syncTools := func() {
 		run.Tools = []contract.ToolActivity{}
 		run.ToolID = nil
@@ -1225,6 +1240,14 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				if delta.Failed {
 					status = "failed"
 				}
+				if payload, ok := fileActivities[delta.ToolID]; ok {
+					delete(fileActivities, delta.ToolID)
+					if !delta.Failed {
+						if err := s.Store.Activity(writeCtx, run.ConversationID, run.AgentID, payload); err != nil {
+							return err
+						}
+					}
+				}
 				delete(tools, delta.ToolID)
 				syncTools()
 				run.Activity, run.Summary = "generating", "Composing reply"
@@ -1248,6 +1271,27 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 					return errors.New("tool metadata budget exhausted")
 				}
 				tool := contract.ToolActivity{ID: toolID, RunID: run.ID, Name: bounded(delta.Tool, 128), Status: "running"}
+				if delta.Tool == "write" || delta.Tool == "edit" {
+					var input struct {
+						Path string `json:"path"`
+					}
+					if json.Unmarshal([]byte(delta.Args), &input) == nil {
+						kind, label := "", filepath.Base(input.Path)
+						switch label {
+						case "SKILL.md":
+							kind, label = "skill.saved", filepath.Base(filepath.Dir(input.Path))
+						case "AGENTS.md", "CLAUDE.md", "GEMINI.md":
+							kind = "instructions.updated"
+						}
+						if kind != "" {
+							payload, err := store.NewActivity(kind, input.Path, label)
+							if err != nil {
+								return err
+							}
+							fileActivities[toolID] = payload
+						}
+					}
+				}
 				tools[toolID] = tool
 				syncTools()
 				run.Activity, run.Summary = "tool", "Using "+bounded(delta.Tool, 128)
