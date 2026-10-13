@@ -125,6 +125,7 @@ check "4 racing reclaimers: <=1 winner, winner lock kept" '[ $BAD = 0 ]'
 mkdir -p "$T/pr/scripts"; touch "$T/pr/scripts/test-lanes.sh"
 check "lane tests run from the PR worktree" '[ "$(. scripts/lanelib.sh; lane_tests_path "$T/pr" /infra/scripts)" = "$T/pr/scripts/test-lanes.sh" ] && [ "$(. scripts/lanelib.sh; lane_tests_path "$T/none" /infra/scripts)" = /infra/scripts/test-lanes.sh ]'
 # 15 proof-media branches: old ones (>14d) pruned, dry run by default
+git push -q origin --delete proof-media
 OLD=$(GIT_COMMITTER_DATE="$(( $(date +%s) - 20*86400 )) +0000" git commit-tree "$(git write-tree)" -m old-proof)
 git push -q origin "$OLD:refs/heads/proof-media/old-run"
 # 16 empty-pid lock: live during its grace period, stale after it; gate age is numeric
