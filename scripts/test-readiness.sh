@@ -7,16 +7,18 @@ cat > "$T/xcodebuild" <<'STUB'
 #!/bin/bash
 case "$1" in
   timeout) echo 'Failed to initialize for UI testing: Timed out while enabling automation mode.';;
+  runner) echo 'xcodebuild: error: Timed out waiting for test runner to initialize.';;
+  compile) echo 'Timed out while enabling automation mode.'; echo 'error: cannot find symbol';;
   failure) echo "Test Case '-[ReadinessTests testSidebar]' failed";;
   mixed) echo 'Timed out while enabling automation mode.'; echo "Test Case '-[ReadinessTests testSidebar]' failed";;
 esac
 exit 65
 STUB
 chmod +x "$T/xcodebuild"
-for kind in timeout failure mixed; do
+for kind in timeout runner compile failure mixed; do
   rc=0; "$T/xcodebuild" "$kind" > "$T/log" || rc=$?
   result=$(verify_result macos-test "$rc" "$T/log")
-  expected=FAIL; [ "$kind" != timeout ] || expected=UNAVAILABLE
+  expected=FAIL; case "$kind" in timeout|runner) expected=UNAVAILABLE;; esac
   [ "$result" = "$expected" ] || { echo "$kind: expected $expected, got $result"; exit 1; }
 done
 # Exercise the same level gate used by verify, with otherwise valid readiness proof.
