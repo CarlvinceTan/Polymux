@@ -48,6 +48,11 @@ check "deferred unit (title match): retry parked in deferred/, nothing in queue/
 printf '# Other words entirely\nneeds: none\nexpected_min: 5\n' > "$LANES_HOME/deferred/10131232--slug-match-only.task"
 OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Slug match only' t2e)" 2>&1); RC=$?
 check "deferred unit (slug match): retry parked in deferred/" '[ $RC = 1 ] && ls "$LANES_HOME"/deferred/*-slug-match-only-retry.task >/dev/null 2>&1 && ! ls "$LANES_HOME"/queue/*slug-match-only* >/dev/null 2>&1'
+# 2f lane-guard --task-end already parked the retry in deferred/: run-lane must not write a second one
+printf '# Parked dup (attempt 2)\nneeds: none\nexpected_min: 5\n' > "$LANES_HOME/deferred/10131300-parked-dup.task"
+printf '# Parked dup\nneeds: none\nexpected_min: 5\n' > "$LANES_HOME/deferred/0011--parked-dup.task"
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Parked dup' t2f)" 2>&1); RC=$?
+check "deferred retry already written by lane-guard: no second retry (deferred/ or queue/)" '[ $RC = 1 ] && echo "$OUT" | grep -q "DEFERRED after: laneA" && [ "$(ls "$LANES_HOME"/deferred/ | grep -c parked-dup)" = 2 ] && ! ls "$LANES_HOME"/queue/*parked-dup* >/dev/null 2>&1 && grep -q "already re-queued (.*deferred/10131300-parked-dup.task)" "$LANES_HOME/events.tsv"'
 # 3 stop rule
 cp "$T/t2b.task" "$T/t3.task"; $RL laneA "$T/t3.task" >/dev/null 2>&1; RC=$?
 check "stop rule refuses a twice-failed brief (exit 2)" '[ $RC = 2 ]'

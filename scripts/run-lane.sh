@@ -245,8 +245,10 @@ done
 BT=$(base_title "$TITLE"); AT=$(echo "$TITLE" | sed -nE 's/.* \(attempt ([0-9]+)\)$/\1/p'); AT=${AT:-1}
 if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to place on a free lane
   QD="$OPS/queue"; mkdir -p "$QD"; DUP=""
-  for f in "$QD"/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have re-queued it
-    [ "$(base_title "$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
+  for f in "$QD"/*.task "$OPS"/deferred/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have written the retry
+    t=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)
+    case $f in "$OPS"/deferred/*) echo "$t" | grep -qE ' \(attempt [0-9]+\)$' || continue;; esac   # deferred/: only retries, not the parked brief
+    [ "$(base_title "$t")" = "$BT" ] && DUP=$f; done
   DEF=$(deferred_hit "$BT" "$SLUG") && QD="$OPS/deferred"   # deferred by policy: park the retry beside it, never back in queue/
   if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)-$SLUG-retry.task"
     QB=$(mktemp); { echo "$BT (attempt 2)"; echo "needs: ${NEEDS:-none}"; echo "expected_min: $EXP"   # title first (queue-write rule)
