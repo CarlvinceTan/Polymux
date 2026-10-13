@@ -15,28 +15,33 @@ mac_hosts = ["cvmini", "cvmac"]   # hosts allowed to run Xcode/Swift units (disp
 cursor_install_url = "https://cursor.com/install"
 cursor_install_sha256 = ""        # empty = refuse automatic install; install manually (README)
 
+# Lane layout (Carlvince, 13 Oct 2026): primaries = lane3 (Codex) + lane2 (UniMelb student Cursor);
+# lane4 (OpenCode) is fallback-only; lane1 (main Cursor Ultra account) must NOT code.
 [lane1]
+enabled = false         # main account: never used for coding or failover (13 Oct 2026)
 agent = "cursor"
 account = "ultra"
 key = "Cursor API key - lane1 (ultra)"
-key@cvmini = "Cursor API key (cvmini cursor-agent)"
 cmd = "~/.local/bin/cursor-agent"
 
 [lane2]
 agent = "cursor"
 account = "second"
-key = "Cursor API key - lane2 (second)"
-key@cvmini = "Cursor API key - UniMelb (second account)"
+key = "Cursor API key - UniMelb (second account)"   # vault entry title, read at run time
 cmd = "~/.local/bin/cursor-agent"
-enabled = false         # enable after lane1 is proven (rollout step 6)
+home = "~/.lanes/lane2-unimelb"   # isolated HOME/config for the student account; main logins/keychain untouched
+max_concurrent = 1      # CPU-aware cap
+role = "primary"
 
 [lane3]
 agent = "codex"
 account = "chatgpt"
 cmd = "codex"
+role = "primary"
 until = "2026-10-30"    # Codex access ends 30 Oct 2026; lane auto-skipped after
 
 [lane4]
 agent = "opencode"
 account = "default"
 cmd = "opencode"
+role = "fallback"       # dispatched only when no primary lane is usable

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tiny reader for agents/lanes.toml.
-Usage: lanes.py get KEY | list KEY | lane NAME FIELD | order [FIRST]
+Usage: lanes.py get KEY | list KEY | lane NAME FIELD | order [FIRST] | primaries
 Lane fields honour a per-host override `field@<host>` (host = LANES_HOST or hostname -s)."""
 import ast, datetime, os, socket, sys
 from pathlib import Path
@@ -26,7 +26,14 @@ elif a[0] == "list": v = cfg.get(a[1], []); print(" ".join(v if isinstance(v, li
 elif a[0] == "lane":
     host = os.environ.get("LANES_HOST") or socket.gethostname().split(".")[0]
     l = cfg.get(a[1], {}); print(os.path.expanduser(str(l.get(a[2] + "@" + host, l.get(a[2], "")))))
+elif a[0] == "primaries":  # dispatch rotation: primaries only; fallback lanes only if no primary is usable
+    names = [k for k, v in cfg.items() if isinstance(v, dict) and usable(k)]
+    pri = [n for n in names if cfg[n].get("role") != "fallback"]
+    print(" ".join(pri or names))
 elif a[0] == "order":
     names = [k for k, v in cfg.items() if isinstance(v, dict) and usable(k)]
-    if len(a) > 1 and a[1] in cfg: names = [a[1]] + [n for n in names if n != a[1]]
+    # role = "fallback" lanes go last (reached only when primaries fail or are unusable).
+    names = [n for n in names if cfg[n].get("role") != "fallback"] + [n for n in names if cfg[n].get("role") == "fallback"]
+    # A requested first lane is honoured only if usable and primary: disabled lanes never run or receive failover.
+    if len(a) > 1 and a[1] in names and cfg[a[1]].get("role") != "fallback": names = [a[1]] + [n for n in names if n != a[1]]
     print(" ".join(names))
