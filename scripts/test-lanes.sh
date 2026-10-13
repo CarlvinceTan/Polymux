@@ -3,6 +3,8 @@
 # Uses the run-lane hooks LANE_DRY / LANE_FORCE_FAIL / LANE_STUB_CMD / LANE_SKIP_SETUP in a temp
 # repo with a local bare origin. Usage: bash scripts/test-lanes.sh   (exit 0 = all passed)
 set -uo pipefail
+# The outer lane may disable this watchdog; regression stubs need its default.
+export LANE_WD_TESTFAIL_N=3
 SRC=$(cd "$(dirname "$0")/.." && pwd); T=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$T"' EXIT
 PASS=0; FAILS=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAILS=$((FAILS+1)); echo "FAIL $1"; fi; }
