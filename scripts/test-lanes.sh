@@ -198,6 +198,7 @@ check "cleanup would prune old proof branch only" 'echo "$OUT" | grep -q "would:
 check "dry run kept the old proof branch" 'git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null'
 check "cleanup would remove merged" 'echo "$OUT" | grep -q "remove: $HOME/code/wt/merged (merged=1"'
 check "cleanup dry run deleted nothing" '[ -d "$HOME/code/wt/merged" ] && echo "$OUT" | grep -q "dry run"'
+check "cleanup dry run would trash (move), not delete" 'echo "$OUT" | grep -q "would: git -C .* worktree move $HOME/code/wt/merged $HOME/code/wt-trash/merged"'
 PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1
 # 8b cleanup never deletes a shut-down sim whose verify is still running (live verify.lock or fresh marker)
 SB="$T/simbin"; mkdir -p "$SB" "$LANES_HOME/locks/active"; git worktree add -q --detach "$HOME/code/wt/vlive" main
@@ -208,6 +209,22 @@ OUT=$(PATH="$SB:$T/bin:$PATH" bash scripts/cleanup.sh --apply 2>&1)
 check "cleanup keeps worktree + sim with a live verify.lock and a sim with a fresh marker; deletes the stale one" 'echo "$OUT" | grep -q "keep: $HOME/code/wt/vlive (in use" && ! grep -q "delete U1" "$T/simctl.log" && ! grep -q "delete U2" "$T/simctl.log" && grep -q "simctl delete U3" "$T/simctl.log" && echo "$OUT" | grep -q "keep: polymux-prv-fresh (verify running"'
 rm -rf "$HOME/code/wt/vlive/.build"; git worktree remove "$HOME/code/wt/vlive"
 check "--apply prunes old proof branch, keeps recent" '! git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null && [ "$(git ls-remote origin "refs/heads/proof-media/verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
+# 8c trashed worktrees: a removable tree goes to ~/code/wt-trash with build output (read-only Go
+# module cache included) stripped; the purge deletes old pushed+clean entries and keeps dirty ones.
+git worktree add -q --detach "$HOME/code/wt/trashme" main
+mkdir -p "$HOME/code/wt/trashme/.build/lanehome/go/pkg/mod/x@v"; echo x > "$HOME/code/wt/trashme/.build/lanehome/go/pkg/mod/x@v/x.go"
+chmod -R a-w "$HOME/code/wt/trashme/.build"   # like GOMODCACHE: a plain rm -rf fails until chmod -R u+w
+PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1
+check "cleanup trashes a removable tree: source kept, read-only build output stripped" '[ ! -d "$HOME/code/wt/trashme" ] && [ -f "$HOME/code/wt-trash/trashme/README" ] && [ ! -e "$HOME/code/wt-trash/trashme/.build" ]'
+mkdir -p "$HOME/code/wt-trash"
+git worktree add -q --detach "$HOME/code/wt-trash/oldclean" main && mkdir -p "$HOME/code/wt-trash/oldclean/.build"
+git worktree add -q --detach "$HOME/code/wt-trash/olddirty" main && mkdir -p "$HOME/code/wt-trash/olddirty/.build" && echo dirty >> "$HOME/code/wt-trash/olddirty/README"
+git worktree add -q --detach "$HOME/code/wt-trash/fresh" main && mkdir -p "$HOME/code/wt-trash/fresh/.build"
+mkdir -p "$HOME/code/wt-trash/plain"; echo lost > "$HOME/code/wt-trash/plain/file"
+touch -t 202001010000 "$HOME/code/wt-trash/oldclean" "$HOME/code/wt-trash/olddirty" "$HOME/code/wt-trash/plain"
+OUT=$(PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply 2>&1)
+check "trash purge deletes the old pushed clean tree, keeps the dirty tree" 'echo "$OUT" | grep -q "purge: $HOME/code/wt-trash/oldclean" && [ ! -d "$HOME/code/wt-trash/oldclean" ] && echo "$OUT" | grep -q "keep: $HOME/code/wt-trash/olddirty (uncommitted changes)" && [ "$(tail -1 "$HOME/code/wt-trash/olddirty/README")" = dirty ]'
+check "trash purge strips build output everywhere, keeps fresh and unreadable entries" '[ ! -e "$HOME/code/wt-trash/olddirty/.build" ] && [ ! -e "$HOME/code/wt-trash/fresh/.build" ] && [ -d "$HOME/code/wt-trash/fresh" ] && [ -f "$HOME/code/wt-trash/plain/file" ] && echo "$OUT" | grep -q "keep: $HOME/code/wt-trash/fresh (trashed 0h ago)" && echo "$OUT" | grep -q "keep: $HOME/code/wt-trash/plain (git state unreadable)"'
 # 18 continuous dispatch: once, after the unit lock is released, background, non-fatal
 export GLOG="$T/g18"; rm -rf "$LANES_HOME/chain-fails"
 OUT=$(LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain next' t16)" 2>&1); waitfor "$GLOG" dispatch
@@ -367,7 +384,7 @@ check "non-cursor lane child never inherits CURSOR_API_KEY" 'grep -q "K=unset" "
 CXC="$T/codexbin"; mkdir -p "$CXC"
 cat > "$CXC/codex" <<'X'
 #!/bin/bash
-{ echo "HOME=$HOME"; echo "CODEX_HOME=$CODEX_HOME"; echo "GH_CONFIG_DIR=$GH_CONFIG_DIR"; echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL"; echo "PWD=$PWD"; echo "ARGV=$*"; } > "$REC"
+{ echo "HOME=$HOME"; echo "CODEX_HOME=$CODEX_HOME"; echo "GH_CONFIG_DIR=$GH_CONFIG_DIR"; echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL"; echo "GOMODCACHE=$GOMODCACHE"; echo "GOCACHE=$GOCACHE"; echo "PWD=$PWD"; echo "ARGV=$*"; } > "$REC"
 echo z >> c.txt && git add c.txt && git commit -qm "stub change" -m "Lane: laneC/codex"
 X
 chmod +x "$CXC/codex"
@@ -384,8 +401,9 @@ OUT=$(env LANES_TOML="$T/codex.toml" REC="$T/codex.rec" LANE_NO_CHAIN=1 LANE_DRY
 CWT="$LANES_WT/laneC-codex-home"
 check "codex lane: HOME is the worktree scratch dir, cwd is the worktree, sandbox unchanged" '[ $RC = 0 ] && grep -qx "HOME=$CWT/.build/lanehome" "$T/codex.rec" && grep -qx "PWD=$CWT" "$T/codex.rec" && grep -q -- "-s danger-full-access" "$T/codex.rec"'
 check "codex lane: CODEX_HOME/GH_CONFIG_DIR/GIT_CONFIG_GLOBAL point at the real home" 'grep -qx "CODEX_HOME=$HOME/.codex" "$T/codex.rec" && grep -qx "GH_CONFIG_DIR=$HOME/.config/gh" "$T/codex.rec" && grep -qx "GIT_CONFIG_GLOBAL=$HOME/.gitconfig" "$T/codex.rec"'
+check "codex lane: Go caches are shared outside the scratch HOME and created" 'grep -qx "GOMODCACHE=$HOME/Library/Caches/polymux-lanes/gomod" "$T/codex.rec" && grep -qx "GOCACHE=$HOME/Library/Caches/polymux-lanes/gobuild" "$T/codex.rec" && [ -d "$HOME/Library/Caches/polymux-lanes/gomod" ] && [ -d "$HOME/Library/Caches/polymux-lanes/gobuild" ]'
 check "codex lane: scratch HOME is ignored, worktree git status stays clean" '[ -z "$(git -C "$CWT" status --porcelain)" ] && { [ -e "$CWT/.build/lanehome/.local" ] || [ -L "$CWT/.build/lanehome/.local" ]; }'
-check "codex lane: scratch HOME links shared state back (ops/lanes) and .local to the real home" '[ -L "$CWT/.build/lanehome/ops/lanes" ] && [ -L "$CWT/.build/lanehome/.local" ] && [ "$(cd "$CWT/.build/lanehome/ops/lanes" && pwd -P)" = "$(cd "$LANES_HOME" && pwd -P)" ]'
+check "codex lane: scratch HOME links shared state back (ops/lanes, keychains) and .local to the real home" '[ -L "$CWT/.build/lanehome/ops/lanes" ] && [ -L "$CWT/.build/lanehome/.local" ] && [ -L "$CWT/.build/lanehome/Library/Keychains" ] && [ "$(cd "$CWT/.build/lanehome/ops/lanes" && pwd -P)" = "$(cd "$LANES_HOME" && pwd -P)" ]'
 # 23 main-account key guard up front (#72 round 3): exit 5 before claim/worktree/vault, case-insensitive
 cat >> "$T/gate.toml" <<TOML
 [lane6]

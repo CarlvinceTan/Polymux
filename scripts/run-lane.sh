@@ -95,17 +95,24 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
     # CODEX_HOME, gh/git config stay reachable through GH_CONFIG_DIR/GIT_CONFIG_GLOBAL, and the
     # links keep the shared state $HOME-relative paths point at: .local (go toolchain for verify.sh)
     # and ops/lanes (build slots, sim-warm markers; OPS).
+    # The Go caches stay shared too (GOMODCACHE/GOCACHE below): under a scratch HOME every lane would
+    # build its own ~1.8 GB module+build cache, and the read-only module cache survives a plain rm.
     # workspace-write re-tested 14 Oct (codex 0.162.1, network on): the agent still cannot commit
     # ("index.lock: Operation not permitted" under the worktree gitdir, with -c
     # sandbox_workspace_write.writable_roots=[git common dir, ~/ops/lanes] or --add-dir), and
     # simctl/CoreSimulator XPC is refused, so verify.sh cannot pass in the sandbox; keep
     # danger-full-access. Re-test before tightening. (--full-auto no longer exists in codex exec.)
     codex) local LH="$2/.build/lanehome" RH=$HOME
-      mkdir -p "$LH" "$LH/ops"
+      local GC="$RH/Library/Caches/polymux-lanes"
+      mkdir -p "$LH" "$LH/ops" "$GC/gomod" "$GC/gobuild"
       [ -e "$LH/.local" ] || [ -L "$LH/.local" ] || ln -s "$RH/.local" "$LH/.local"
       [ -e "$LH/ops/lanes" ] || [ -L "$LH/ops/lanes" ] || ln -s "$OPS" "$LH/ops/lanes"
+      # gh keeps its token in the login keychain (hosts.yml has none); with HOME=$LH the keychain is
+      # not found and every gh call 401s (14 Oct 02:14-02:48). Keychains is not TCC-protected.
+      mkdir -p "$LH/Library"; [ -e "$LH/Library/Keychains" ] || [ -L "$LH/Library/Keychains" ] || ln -s "$RH/Library/Keychains" "$LH/Library/Keychains"
       (cd "$2" && HOME="$LH" CODEX_HOME="${CODEX_HOME:-$RH/.codex}" \
         GH_CONFIG_DIR="${GH_CONFIG_DIR:-$RH/.config/gh}" GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$RH/.gitconfig}" \
+        GOMODCACHE="$GC/gomod" GOCACHE="$GC/gobuild" \
         "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
     opencode) (cd "$2" && "$cmd" run "$P") >> "$3" 2>&1;;
     *) echo "unknown agent $a" >> "$3"; return 99;;
