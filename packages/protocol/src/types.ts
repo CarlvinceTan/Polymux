@@ -2668,9 +2668,6 @@ export type DriveProviderId =
   | "all"
   | "local"
   | "network"
-  | "google-drive"
-  | "dropbox"
-  | "onedrive"
   | "s3";
 
 /**
@@ -2732,7 +2729,7 @@ export interface DriveSourceDto {
   id: string;
   provider: DriveProviderId;
   accountId: string;
-  /** The provider's own name — "Google Drive", "This Mac". */
+  /** The provider's own name — "S3 storage", "This Mac". */
   name: string;
   /** Which account, set only when the provider has more than one signed in.
    * The switcher reads as `<name> – <accountLabel>` when this is set, which is
@@ -2773,8 +2770,8 @@ export interface DriveEntryDto {
   path: string;
   mimeType: string | null;
   /**
-   * The provider's own token for *this* version of the entry — a Dropbox rev,
-   * an S3 or Graph ETag, mtime and size for a local file. Opaque: it is only
+   * The provider's own token for *this* version of the entry — an S3 ETag,
+   * mtime and size for a local file. Opaque: it is only
    * ever compared for equality, never parsed or ordered.
    *
    * It is what makes a write conditional. A run that read a file holds the
@@ -3018,29 +3015,6 @@ export interface TaskCardPatch {
 
 export interface PolymuxApi {
   devices: {request(value: import("./device-pairing.js").DevicePairingRequest): Promise<import("./device-pairing.js").DevicePairingState>};
-  account: {
-    /** Current optional-account state; safe to call when Supabase is not configured. */
-    get(): Promise<import("./account.js").AccountStatusDto>;
-    signInWithPassword(email: string, password: string): Promise<import("./account.js").AccountSignInResult>;
-    signUp(email: string, password: string): Promise<import("./account.js").AccountSignInResult>;
-    /** Re-sends the signup confirmation email after an unconfirmed sign-in. */
-    resendConfirmation(email: string): Promise<{ok: boolean; error?: string}>;
-    /** Sends a password-reset email; keep the app open so the reset link can return. */
-    requestPasswordReset(email: string): Promise<{ok: boolean; error?: string}>;
-    /** Sets a new password after the reset email's loopback redirect. */
-    updatePassword(password: string): Promise<import("./account.js").AccountSignInResult>;
-    /**
-     * Opens the provider's consent page in the user's browser and waits for
-     * the loopback redirect. Resolves on completion, cancellation, or error
-     * with the resulting state.
-     */
-    signInWithOAuth(provider: import("./account.js").AccountOAuthProvider): Promise<import("./account.js").AccountSignInResult>;
-    /** Restores another saved session on this machine. */
-    switchTo(userId: string): Promise<import("./account.js").AccountSignInResult>;
-    signOut(): Promise<import("./account.js").AccountStatusDto>;
-    /** Pushed on every sign-in, sign-out, and profile refresh. */
-    subscribe(listener: (status: import("./account.js").AccountStatusDto) => void): () => void;
-  };
   phone: {
     status(): Promise<PhoneStatusDto>;
     connect(): Promise<PhoneStatusDto>;
