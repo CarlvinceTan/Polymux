@@ -33,13 +33,15 @@ struct PolymuxApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            AppRoot()
-                .tint(Color("AccentColor"))
-                #if os(macOS)
-                .frame(minWidth: 780, minHeight: 500)
-                #else
-                .frame(minWidth: 360, minHeight: 500)
-                #endif
+            #if DEBUG
+            if CommandLine.arguments.contains("--verify-approval") {
+                ApprovalFixture()
+            } else {
+                root
+            }
+            #else
+            root
+            #endif
         }
         #if os(macOS)
         .defaultSize(width: 1060, height: 760)
@@ -47,6 +49,16 @@ struct PolymuxApp: App {
             CommandGroup(replacing: .sidebar) {}
         }
         #endif
+    }
+
+    private var root: some View {
+            AppRoot()
+                .tint(Color("AccentColor"))
+                #if os(macOS)
+                .frame(minWidth: 780, minHeight: 500)
+                #else
+                .frame(minWidth: 360, minHeight: 500)
+                #endif
     }
 }
 

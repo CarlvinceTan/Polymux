@@ -13,6 +13,32 @@ final class ReadinessTests: XCTestCase {
                             "grp-trip", "t-media", "t-activity", "t-fern", "grp-empty"]
     var waits: [String: Int] = [:]
 
+    func testApprovalStates() {
+        for theme in ["light", "dark"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["--verify-approval"] + (theme == "dark" ? ["--approval-dark"] : [])
+            app.launch()
+            let option = app.buttons["A. Plan my day"]
+            XCTAssertTrue(option.waitForExistence(timeout: 10))
+            capture(app, theme: theme, state: "unanswered")
+            option.tap()
+            XCTAssertTrue(app.staticTexts["Plan my day"].waitForExistence(timeout: 2))
+            XCTAssertFalse(option.exists)
+            capture(app, theme: theme, state: "optimistic")
+            XCTAssertTrue(app.staticTexts["Couldn’t record that choice."].waitForExistence(timeout: 10))
+            XCTAssertTrue(option.exists)
+            capture(app, theme: theme, state: "rollback")
+            app.terminate()
+        }
+    }
+
+    private func capture(_ app: XCUIApplication, theme: String, state: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "focus-\(theme)-\(state)"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     func timed(_ name: String, timeout: TimeInterval = 30, _ ok: () -> Bool) {
         let t0 = Date()
         while !ok() {

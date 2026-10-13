@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import SwiftUI
 import PolymuxKit
 
 // Only the explicit UI-test launch uses this isolated, deterministic transport.
@@ -33,6 +34,13 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        if request.url?.lastPathComponent == "answer" {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard let self else { return }
+                self.client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            }
+            return
+        }
         do {
             let data: Data
             switch request.url?.lastPathComponent {
@@ -49,5 +57,23 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
     override func stopLoading() {}
+}
+
+struct ApprovalFixture: View {
+    @Environment(\.colorScheme) private var scheme
+    private let part = Part(kind: "focus", question: "What should we focus on today?", options: [
+        ChoiceOption(id: "day", label: "Plan my day"),
+        ChoiceOption(id: "code", label: "Build something")
+    ])
+    private let client = APIClient(baseURL: URL(string: "http://approval.invalid")!, session: VerifyFixture.session())
+
+    var body: some View {
+        FocusCard(part: part, client: client, agentID: "t-approval", bubble: BubbleStyle.incoming(scheme))
+            .frame(maxWidth: 340)
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .neutralBackground()
+            .preferredColorScheme(CommandLine.arguments.contains("--approval-dark") ? .dark : .light)
+    }
 }
 #endif
