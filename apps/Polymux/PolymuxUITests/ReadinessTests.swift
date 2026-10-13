@@ -23,6 +23,9 @@ final class ReadinessTests: XCTestCase {
             let app = XCUIApplication()
             app.launchArguments = ["--verify-approval"] + (theme == "dark" ? ["--approval-dark"] : [])
             app.launch()
+            #if os(macOS)
+            XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), "Approval launch opens a window")
+            #endif
             capture(app, theme: theme, state: "launch")
             let option = app.buttons["A. Plan my day"]
             XCTAssertTrue(option.waitForExistence(timeout: 10))
@@ -69,6 +72,9 @@ final class ReadinessTests: XCTestCase {
             }
         }
         app.launch()
+        #if os(macOS)
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), "Sidebar launch opens a window")
+        #endif
         timed("foreground") { app.wait(for: .runningForeground, timeout: 1) }
         capture(app, theme: "system", state: "sidebar-launch")
         let any = app.descendants(matching: .any)

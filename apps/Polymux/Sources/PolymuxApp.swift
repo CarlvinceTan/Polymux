@@ -33,15 +33,17 @@ struct PolymuxApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            #if DEBUG
-            if CommandLine.arguments.contains("--verify-approval") {
-                ApprovalFixture()
-            } else {
+            Group {
+                #if DEBUG
+                if CommandLine.arguments.contains("--verify-approval") {
+                    ApprovalFixture()
+                } else {
+                    root
+                }
+                #else
                 root
+                #endif
             }
-            #else
-            root
-            #endif
         }
         #if os(macOS)
         .defaultSize(width: 1060, height: 760)
