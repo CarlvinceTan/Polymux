@@ -39,4 +39,8 @@ for mode in release debug; do
     "$ROOT/scripts/ServerAddressTest.swift" -o "$T/address"
   "$T/address"
 done
-echo 'PASS: runner timeout, readiness cap, real failures, Release and Debug addresses'
+# gui-run.sh: passes the exit code and output through, and verify.sh routes macos-test via it.
+rc=0; out=$(GUI_RUN_FORCE_EXEC=1 bash "$ROOT/scripts/gui-run.sh" sh -c "echo hi; exit 7") || rc=$?
+[ "$rc" = 7 ] && [ "$out" = hi ] || { echo "FAIL: gui-run.sh rc=$rc out=$out"; exit 1; }
+grep -q "step macos-test bash \"\$ROOT/scripts/gui-run.sh\" xcodebuild test" "$ROOT/scripts/verify.sh" || { echo "FAIL: macos-test not run via gui-run.sh"; exit 1; }
+echo 'PASS: runner timeout, readiness cap, real failures, Release and Debug addresses, gui-run'

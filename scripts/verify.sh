@@ -122,7 +122,8 @@ step macos-build xcodebuild build -project apps/Polymux/Polymux.xcodeproj -schem
 # App scheme gains a test action later (UI tests); until then build it and rely on package tests.
 ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme && ACT=test
 if [ $ACT = test ]; then
-  step macos-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+  # XCUITest needs the GUI (Aqua) session; gui-run.sh runs it there when verify.sh came from ssh.
+  step macos-test bash "$ROOT/scripts/gui-run.sh" xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
     -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
 fi
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1
