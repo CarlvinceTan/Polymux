@@ -25,6 +25,7 @@ echo base > README; git add -A; git commit -qm base; git remote add origin "$T/o
 export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" LANE_SKIP_SETUP=1 LANE_TARGET=testmac
 export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
+export LANE_BREAKER_N=99   # global breaker off except in its own test (19e); many cases fail fast on purpose
 task() { printf 'needs: none\nexpected_min: 5\n%s\n' "$1" > "$T/$2.task"; echo "$T/$2.task"; }
 STUB_OK='echo $RANDOM >> f.txt && git add f.txt && git commit -qm "stub change" -m "Lane: $LANE/$AGENT"'
 RL="bash scripts/run-lane.sh"
@@ -34,12 +35,14 @@ check "dry happy path exits 0" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK lan
 check "lane trailer present" 'git -C "$LANES_WT/laneA-happy-path" log -1 --format=%B | grep -q "^Lane: laneA/opencode"'
 check "committer names lane" 'git -C "$LANES_WT/laneA-happy-path" log -1 --format=%cn | grep -q "(laneA/opencode)"'
 check "unit + branch locks released" '! ls -d "$LANES_HOME"/units/*.lock "$LANES_HOME"/branches/*.lock 2>/dev/null | grep -q .'
-# 2 forced failure on both lanes -> failover -> NEEDS_CODY + failures.tsv
-OUT=$(LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Always fails' t2)" 2>&1); RC=$?
-check "forced failure exits 1 after failover" '[ $RC = 1 ] && echo "$OUT" | grep -q "FAILED after: laneA laneB"'
-check "NEEDS_CODY + failures.tsv written" 'grep -q "Always fails" "$LANES_HOME/NEEDS_CODY" && grep -q "Always fails" "$LANES_HOME/failures.tsv"'
+# 2 first failure -> brief back to queue/ as attempt 2 (no in-process failover); attempt 2 fails -> NEEDS_CODY
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Always fails' t2)" 2>&1); RC=$?
+RQ=$(ls "$LANES_HOME"/queue/*-always-fails-retry.task 2>/dev/null | head -1)
+check "first failure: exit 1, re-queued as attempt 2, laneB not tried, no NEEDS_CODY" '[ $RC = 1 ] && echo "$OUT" | grep -q "REQUEUED after: laneA" && grep -qx "Always fails (attempt 2)" "$RQ" && grep -qx "needs: none" "$RQ" && ! grep -q "always-fails	running	laneB" "$LANES_HOME/events.tsv" && [ ! -f "$LANES_HOME/NEEDS_CODY" ]'
+mv "$RQ" "$T/t2b.task"; OUT=$(LANE_FORCE_FAIL="laneA laneB" $RL laneB "$T/t2b.task" 2>&1); RC=$?
+check "attempt 2 fails -> exit 1, NEEDS_CODY + failures.tsv, nothing re-queued" '[ $RC = 1 ] && echo "$OUT" | grep -q "FAILED after: laneB" && grep -q "Always fails" "$LANES_HOME/NEEDS_CODY" && grep -q "Always fails (attempt 2)" "$LANES_HOME/failures.tsv" && ! ls "$LANES_HOME"/queue/*.task >/dev/null 2>&1'
 # 3 stop rule
-$RL laneA "$(task 'Always fails' t3)" >/dev/null 2>&1; RC=$?
+cp "$T/t2b.task" "$T/t3.task"; $RL laneA "$T/t3.task" >/dev/null 2>&1; RC=$?
 check "stop rule refuses a twice-failed brief (exit 2)" '[ $RC = 2 ]'
 # 4 unit lock contention (live holder) and stale reclaim (dead holder)
 mkdir -p "$LANES_HOME/units/unit-busy.lock"; echo $$ > "$LANES_HOME/units/unit-busy.lock/pid"
@@ -48,12 +51,12 @@ check "unit lock contention exits 3" '[ $RC = 3 ]'
 echo 999999 > "$LANES_HOME/units/unit-busy.lock/pid"
 OUT=$(LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Unit busy' t5)" 2>&1); RC=$?
 check "stale unit lock is reclaimed" '[ $RC = 0 ]'
-# 5 branch lock: same branch, different title -> laneA refused on the branch, laneB uses its own branch
+# 5 branch lock: same branch, different title -> refused on the branch, re-queued (no second writer)
 BL="$LANES_HOME/branches/test%shared.lock"; mkdir -p "$BL"; echo $$ > "$BL/pid"
-OUT=$(LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Other title' t6)" --branch test/shared 2>&1); RC=$?
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Other title' t6)" --branch test/shared 2>&1); RC=$?
 check "branch lock blocks a second writer" 'grep -q "branch test/shared has another writer" "$LANES_HOME/events.tsv"'
-check "failover lane writes its own branch" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneB"'
-rm -rf "$BL"
+check "branch-locked unit is re-queued with its branch, not run" '[ $RC = 1 ] && grep -qx "branch: test/shared" "$LANES_HOME"/queue/*-other-title-retry.task'
+rm -rf "$BL" "$LANES_HOME"/queue/*.task
 # 6 missing trailer is flagged
 OUT=$(LANE_DRY=1 LANE_STUB_CMD='echo n >> g.txt && git add g.txt && git commit -qm "no trailer"' $RL laneA "$(task 'No trailer' t7)" 2>&1)
 check "missing Lane trailer warned" 'echo "$OUT" | grep -q "without a .Lane:. trailer"'
@@ -110,10 +113,51 @@ mkguard() { printf '#!/bin/sh\n[ "$1" = --help ] && { echo "usage: %s"; exit 2; 
 waitfor() { local k; for k in $(seq 1 50); do grep -q -- "$2" "$1" 2>/dev/null && return 0; sleep 0.1; done; return 1; }   # ~5 s
 ndisp() { cat "$1" 2>/dev/null | grep -c -- '^--dispatch'; }
 FG="$T/fake-guard"; mkguard "$FG" "lane-guard --dispatch [lane]"; FGF="$T/fake-guard-fl"; mkguard "$FGF" "supports --free-lane"; CL="$LANES_HOME/logs/dispatch-chain.log"
-# 17 failover: no --dispatch while the unit runs, exactly one at its end
+# 17 failed unit: brief re-queued and the freed lane refilled at once (one --dispatch, after lock release)
 export GLOG="$T/g17"
-OUT=$(LANE_GUARD="$FG" LANE_FORCE_FAIL=laneA LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Failover guard' t8)" 2>&1); waitfor "$GLOG" dispatch
-check "failover ran laneB with preflight, no --dispatch before unit end, one at end" 'echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "^--preflight" "$GLOG.all" && [ "$(ndisp "$GLOG")" = 1 ] && ! grep -q "lock=yes" "$GLOG"'
+OUT=$(LANE_GUARD="$FG" LANE_FORCE_FAIL=laneA LANE_CHAIN_MIN_S=0 $RL laneA "$(task 'Failover guard' t8)" 2>&1); waitfor "$GLOG" dispatch
+check "failure: preflight ran, re-queued, laneB not run, exactly one dispatch after lock release" 'echo "$OUT" | grep -q "REQUEUED after: laneA" && grep -q "^--preflight" "$GLOG.all" && [ "$(ndisp "$GLOG")" = 1 ] && grep -q "lock=no" "$GLOG" && ! grep -q "failover-guard	running	laneB" "$LANES_HOME/events.tsv"'
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done; rm -f "$LANES_HOME"/queue/*.task
+export GLOG="$T/g17b"
+OUT=$(LANE_GUARD="$FGF" LANE_FORCE_FAIL=laneA LANE_CHAIN_MIN_S=0 $RL laneA "$(task 'Failover refill' t8b)" 2>&1); waitfor "$GLOG" "free-lane"
+check "lane freed by a failure is refilled immediately (--free-lane laneA), retry left in queue for it" 'grep -q "^--dispatch --free-lane laneA lock=no" "$GLOG" && ls "$LANES_HOME"/queue/*-failover-refill-retry.task >/dev/null'
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done; rm -f "$LANES_HOME"/queue/*.task
+# 17d missing toolchain: verify.sh preflight -> infra (exit 10), not a task failure, no --task-end (PAUSE), no chain
+export GLOG="$T/g17d"; mkdir -p "$T/emptybin"; printf 'needs: go\nexpected_min: 5\nInfra tool\n' > "$T/t8d.task"
+OUT=$(VERIFY_PATH="$T/emptybin" LANE_GUARD="$FGF" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/t8d.task" 2>&1); RC=$?; sleep 1
+check "missing toolchain: infra error (exit 10), failures.tsv infra row, NEEDS_CODY names the tool" '[ $RC = 10 ] && echo "$OUT" | grep -q "INFRA: missing toolchain: go" && grep -q "	infra	laneA	missing toolchain: go" "$LANES_HOME/failures.tsv" && grep -q "INFRA missing toolchain.*: go" "$LANES_HOME/NEEDS_CODY"'
+check "missing toolchain: no --task-end (PAUSE), no fail streak, no failover, task held not failed" '! grep -q "^--task-end" "$GLOG.all" && [ ! -e "$LANES_HOME/chain-fails/infra-tool" ] && ! grep -q "infra-tool	running	laneB" "$LANES_HOME/events.tsv" && ls "$LANES_HOME"/queue-hold/*-infra-tool-infra.task >/dev/null && ! grep -q "	Infra tool	" "$LANES_HOME/failures.tsv"'
+# 20 continuing an existing PR: size measured from the branch head at unit start; open PR -> comment, no new PR
+GB="$T/ghbin"; mkdir -p "$GB"; printf '#!/bin/sh\necho "$*" >> "%s/gh.log"\ncase "$1 $2" in\n"pr list") cat "%s/openpr" 2>/dev/null;;\n"pr create") echo https://github.com/o/r/pull/100;;\nesac\nexit 0\n' "$T" "$T" > "$GB/gh"; chmod +x "$GB/gh"
+git checkout -q -b test/big main; seq 1 400 > big.txt; git add big.txt; git commit -qm "big earlier work" -m "Lane: laneA/opencode"; git checkout -q main
+OUT=$(LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Continue big' t20)" --branch test/big 2>&1); RC=$?
+check "size cap counts only this unit's work, not the whole branch" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneA" && ! echo "$OUT" | grep -q "changed lines >"'
+git push -q origin test/big:refs/heads/test/open; echo https://github.com/o/r/pull/55 > "$T/openpr"; : > "$T/gh.log"
+VC2='mkdir -p .build/proof && echo "## ok" > .build/proof/summary.md && echo unit-test-verified > .build/proof/level'
+OUT=$(PATH="$GB:$PATH" LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Continue open' t21)" --branch test/open 2>&1); RC=$?
+NH=$(git ls-remote origin refs/heads/test/open | cut -f1)
+check "open PR: pushed, commented new head, no new PR, success recorded" '[ $RC = 0 ] && ! grep -q "^pr create" "$T/gh.log" && grep -q "^pr comment https://github.com/o/r/pull/55 .*new head $NH" "$T/gh.log" && [ "$NH" != "$(git rev-parse test/big)" ] && grep -q "continue-open	https://github.com/o/r/pull/55	$NH" "$LANES_HOME/results.tsv" && [ -f "$LANES_HOME/cards/continue-open.wt" ]'
+# 21 PR body footer, build-only existing PR -> draft, gh pr list error, local branch behind origin
+G2="$T/ghbin2"; mkdir -p "$G2"; cat > "$G2/gh" <<GH
+#!/bin/bash
+echo "\$1 \$2 \$3" >> "$T/gh2.log"; k="\$1-\$2"; b=""; while [ \$# -gt 0 ]; do [ "\$1" = --body ] && b=\$2; shift; done
+[ -n "\$b" ] && printf '%s' "\$b" > "$T/body-\$k"
+case \$k in pr-list) [ -f "$T/listfail" ] && exit 1; cat "$T/openpr2" 2>/dev/null;; pr-create) echo https://github.com/o/r/pull/101;; esac; exit 0
+GH
+chmod +x "$G2/gh"; VC3='mkdir -p .build/proof && echo "## ok" > .build/proof/summary.md && echo build-only > .build/proof/level'
+endsrn() { python3 -c 'import sys; sys.exit(not open(sys.argv[1]).read().endswith("Release Notes:\n\n- N/A"))' "$1"; }
+: > "$T/gh2.log"; OUT=$(PATH="$G2:$PATH" LANE_VERIFY_CMD="$VC3" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Footer new' t22)" --branch test/footer-new 2>&1); RC=$?
+check "new PR body ends in Release Notes / blank line / - N/A (build-only -> draft create)" '[ $RC = 0 ] && endsrn "$T/body-pr-create" && grep -q "Release Notes:" "$T/body-pr-create"'
+git push -q origin main:refs/heads/test/footer-open; echo https://github.com/o/r/pull/56 > "$T/openpr2"; : > "$T/gh2.log"
+OUT=$(PATH="$G2:$PATH" LANE_VERIFY_CMD="$VC3" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Footer open' t23)" --branch test/footer-open 2>&1); RC=$?
+check "existing PR: comment ends in the Release Notes footer" '[ $RC = 0 ] && endsrn "$T/body-pr-comment"'
+check "existing PR at build-only is marked draft (pr ready --undo)" 'grep -q "^pr ready --undo" "$T/gh2.log" && ! grep -q "^pr create" "$T/gh2.log"'
+git push -q origin main:refs/heads/test/listfail; touch "$T/listfail"; : > "$T/gh2.log"
+OUT=$(PATH="$G2:$PATH" LANE_FORCE_FAIL=laneB LANE_VERIFY_CMD="$VC3" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'List fails' t24)" --branch test/listfail 2>&1); RC=$?; rm -f "$T/listfail" "$T/openpr2"
+check "gh pr list error: explicit failure, no PR created or commented" '[ $RC != 0 ] && grep -q "gh pr list failed" "$LANES_HOME/events.tsv" && ! grep -qE "^pr (create|comment)" "$T/gh2.log"'
+git branch -q test/behind main; git checkout -q -b tmp-ahead main; echo ahead > ahead.txt; git add ahead.txt; git commit -qm ahead; git push -q origin tmp-ahead:refs/heads/test/behind; AH=$(git rev-parse HEAD); git checkout -q main; git fetch -q origin
+OUT=$(LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Behind origin' t25)" --branch test/behind 2>&1); RC=$?
+check "local branch behind origin is fast-forwarded before the agent runs" '[ $RC = 0 ] && git -C "$LANES_WT/laneA-behind-origin" merge-base --is-ancestor "$AH" HEAD'
 # 8 cleanup dry run: dirty and unpushed kept, merged removable, nothing deleted
 git worktree add -q -b c/dirty "$HOME/code/wt/dirty" main && echo x > "$HOME/code/wt/dirty/README"
 git worktree add -q -b c/unpushed "$HOME/code/wt/unpushed" main && (cd "$HOME/code/wt/unpushed" && echo y > u && git add u && git commit -qm u)
@@ -128,9 +172,17 @@ check "dry run kept the old proof branch" 'git ls-remote --exit-code origin refs
 check "cleanup would remove merged" 'echo "$OUT" | grep -q "remove: $HOME/code/wt/merged (merged=1"'
 check "cleanup dry run deleted nothing" '[ -d "$HOME/code/wt/merged" ] && echo "$OUT" | grep -q "dry run"'
 PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1
+# 8b cleanup never deletes a shut-down sim whose verify is still running (live verify.lock or fresh marker)
+SB="$T/simbin"; mkdir -p "$SB" "$LANES_HOME/locks/active"; git worktree add -q --detach "$HOME/code/wt/vlive" main
+mkdir -p "$HOME/code/wt/vlive/.build/verify.lock"; echo $$ > "$HOME/code/wt/vlive/.build/verify.lock/pid"
+touch "$LANES_HOME/locks/active/polymux-prv-fresh"; touch -t 202001010000 "$LANES_HOME/locks/active/polymux-old-gone"
+printf '#!/bin/sh\necho "$*" >> "%s/simctl.log"\n[ "$3" = devices ] && echo "{\\"devices\\":{\\"r\\":[{\\"udid\\":\\"U1\\",\\"name\\":\\"polymux-vlive\\",\\"state\\":\\"Shutdown\\"},{\\"udid\\":\\"U2\\",\\"name\\":\\"polymux-prv-fresh\\",\\"state\\":\\"Shutdown\\"},{\\"udid\\":\\"U3\\",\\"name\\":\\"polymux-old-gone\\",\\"state\\":\\"Shutdown\\"}]}}"\nexit 0\n' "$T" > "$SB/xcrun"; chmod +x "$SB/xcrun"; : > "$T/simctl.log"
+OUT=$(PATH="$SB:$T/bin:$PATH" bash scripts/cleanup.sh --apply 2>&1)
+check "cleanup keeps worktree + sim with a live verify.lock and a sim with a fresh marker; deletes the stale one" 'echo "$OUT" | grep -q "keep: $HOME/code/wt/vlive (in use" && ! grep -q "delete U1" "$T/simctl.log" && ! grep -q "delete U2" "$T/simctl.log" && grep -q "simctl delete U3" "$T/simctl.log" && echo "$OUT" | grep -q "keep: polymux-prv-fresh (verify running"'
+rm -rf "$HOME/code/wt/vlive/.build"; git worktree remove "$HOME/code/wt/vlive"
 check "--apply prunes old proof branch, keeps recent" '! git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null && [ "$(git ls-remote origin "refs/heads/proof-media/verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
 # 18 continuous dispatch: once, after the unit lock is released, background, non-fatal
-export GLOG="$T/g18"; rm -f "$LANES_HOME/chain-fails"
+export GLOG="$T/g18"; rm -rf "$LANES_HOME/chain-fails"
 OUT=$(LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain next' t16)" 2>&1); waitfor "$GLOG" dispatch
 check "unit end dispatches next exactly once" '[ "$(ndisp "$GLOG")" = 1 ]'
 check "dispatch called after unit lock release" 'grep -q "lock=no" "$GLOG" && ! grep -q "lock=yes" "$GLOG"'
@@ -144,17 +196,40 @@ check "freed lane passed as --free-lane when lane-guard supports it" 'grep -q "^
 export GLOG="$T/g18d"
 OUT=$(LANE_NO_CHAIN=1 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain off' t17)" 2>&1)
 check "LANE_NO_CHAIN disables dispatch" '[ "$(ndisp "$GLOG")" = 0 ]'
-# 19 no chain on SIGTERM, on a short failure, or after 2 failed ends in a row
+# 19 no chain on SIGTERM; a failing task never blocks refilling the lane, but its own queued retries are held
 export GLOG="$T/g19"
 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD='sleep 5' $RL laneA "$(task 'Chain term' t19)" >/dev/null 2>&1 & P=$!
 for k in $(seq 1 50); do [ -d "$LANES_HOME/units/chain-term.lock" ] && break; sleep 0.1; done; kill -TERM $P; wait $P
 check "SIGTERM: no dispatch" 'grep -q "chain-term rc=143: not chaining" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
-OUT=$(LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain short fail' t19b)" 2>&1)
-check "failed unit shorter than LANE_CHAIN_MIN_S: no dispatch" 'grep -q "chain-short-fail rc=1: not chaining" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
-rm -f "$LANES_HOME/chain-fails"; export GLOG="$T/g19c"
-LANE_CHAIN_MIN_S=0 LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain fail one' t19c)" >/dev/null 2>&1; waitfor "$GLOG" dispatch
-LANE_CHAIN_MIN_S=0 LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain fail two' t19d)" >/dev/null 2>&1
-check "2nd failed end in a row stops chaining" '[ "$(ndisp "$GLOG")" = 1 ] && grep -q "chain-fail-two rc=1: not chaining" "$CL" && [ "$(cat "$LANES_HOME/chain-fails")" = 2 ]'
+mkdir -p "$LANES_HOME/queue"; printf 'needs: none\nChain short fail (attempt 2)\n' > "$LANES_HOME/queue/r1.task"; printf 'needs: none\nOther card\n' > "$LANES_HOME/queue/r2.task"
+OUT=$(LANE_GUARD="$FGF" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain short fail' t19b)" 2>&1); waitfor "$GLOG" "free-lane laneA"
+check "short failure: lane still refilled, same task's retry held, other card kept" 'grep -q "^--dispatch --free-lane laneA" "$GLOG" && [ -f "$LANES_HOME/queue-hold/r1.task" ] && [ -f "$LANES_HOME/queue/r2.task" ]'
+rm -f "$LANES_HOME"/queue/*.task; for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
+export GLOG="$T/g19c"
+LANE_CHAIN_MIN_S=0 LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain fail one' t19c)" >/dev/null 2>&1; waitfor "$GLOG" "lock=no"
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
+R3=$(ls "$LANES_HOME"/queue/*-chain-fail-one-retry.task 2>/dev/null | head -1)
+check "1st (long) failure: retry stays queued, lane refilled" '[ -n "$R3" ] && [ "$(ndisp "$GLOG")" = 1 ]'
+cp "$R3" "$T/t19d.task"; mkdir -p "$LANES_HOME/queue"; printf 'needs: none\nChain fail one (attempt 3)\n' > "$LANES_HOME/queue/r3.task"; rm -f "$R3"
+LANE_CHAIN_MIN_S=0 LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$T/t19d.task" > "$T/o19d" 2>&1; sleep 1; [ -n "${TL_DEBUG:-}" ] && { cat "$T/o19d" "$T/t19d.task"; ls "$LANES_HOME/chain-fails"; }
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
+check "2nd failure of the same task: its retries held, lane still refilled (no global streak)" '[ "$(ndisp "$GLOG")" = 2 ] && [ -f "$LANES_HOME/queue-hold/r3.task" ] && [ "$(cat "$LANES_HOME/chain-fails/chain-fail-one")" = 2 ]'
+rm -f "$LANES_HOME"/queue/*.task
+# 19e global breaker: fast failures of 3 distinct tasks within the window -> PAUSE + NEEDS_CODY, no chain;
+# repeats of one task and entries older than the window don't count
+export GLOG="$T/g19e"; rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY"; printf '1000\told-task\n' > "$LANES_HOME/fast-fails.tsv"
+bfail() { LANE_BREAKER_N=3 LANE_GUARD="$FG" LANE_FORCE_FAIL=laneA $RL laneA "$(task "$1" "$2")" >/dev/null 2>&1; sleep 0.3
+  for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done; rm -f "$LANES_HOME"/queue/*.task; }
+bfail 'Brk one' tb1; bfail 'Brk one' tb1b; bfail 'Brk two' tb2
+check "breaker: 2 distinct fast-failing tasks (one repeated, one stale entry) -> no PAUSE, still chaining" '[ ! -f "$LANES_HOME/PAUSE" ] && [ "$(ndisp "$GLOG")" = 3 ] && ! grep -q old-task "$LANES_HOME/fast-fails.tsv"'
+bfail 'Brk three' tb3
+check "breaker: 3rd distinct fast failure -> PAUSE + NEEDS_CODY BREAKER, no dispatch" '[ -f "$LANES_HOME/PAUSE" ] && grep -q "BREAKER: 3 distinct tasks failed fast" "$LANES_HOME/NEEDS_CODY" && [ "$(ndisp "$GLOG")" = 3 ] && grep -q "brk-three rc=1: not chaining (PAUSE set)" "$CL"'
+rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY" "$LANES_HOME/fast-fails.tsv"
+# 19f refill skipped after the ~10 s dispatch-chain lock wait is logged, not silent
+export GLOG="$T/g19f"; mkdir -p "$LANES_HOME/dispatch-chain.lock"; echo $$ > "$LANES_HOME/dispatch-chain.lock/pid"
+LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain busy' t19f)" >/dev/null 2>&1
+for k in $(seq 1 150); do grep -q "chain-busy: refill of lane laneA skipped" "$CL" && break; sleep 0.1; done; rm -rf "$LANES_HOME/dispatch-chain.lock"
+check "chain lock busy ~10 s: refill skipped and logged, no dispatch" 'grep -q "chain-busy: refill of lane laneA skipped: .*dispatch-chain.lock busy" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
 # 9 lanes.py per-host override
 printf '[l]\nkey = "neutral"\nkey@hostx = "special"\n' > "$T/o.toml"
 check "lanes.py host override" '[ "$(LANES_TOML=$T/o.toml LANES_HOST=hostx python3 scripts/lanes.py lane l key)" = special ] && [ "$(LANES_TOML=$T/o.toml LANES_HOST=y python3 scripts/lanes.py lane l key)" = neutral ]'
