@@ -114,8 +114,16 @@ step macos-build xcodebuild build -project apps/Polymux/Polymux.xcodeproj -schem
   -destination platform=macOS "${XC[@]}"
 # App scheme gains a test action later (UI tests); until then build it and rely on package tests.
 ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme && ACT=test
-[ $ACT = test ] && step macos-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
-  -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
+# cvmini macOS XCUITest runner hangs before connecting when PolymuxUITests is a TestableReference.
+# Readiness proof is ios-ready (-only-testing on the simulator); skip launching macos-test in that case.
+if [ $ACT = test ]; then
+  if [ -f apps/Polymux/PolymuxUITests/ReadinessTests.swift ]; then
+    echo "verify: skipping macos-test (cvmini macOS XCUITest runner hangs; ios-ready covers readiness)"
+  else
+    step macos-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+      -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
+  fi
+fi
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1
 step ios-$ACT xcodebuild $ACT -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination "id=$SIM_UDID" $([ $ACT = test ] && echo -resultBundlePath "$R/ios.xcresult") "${XC[@]}"
