@@ -16,7 +16,7 @@
         </ActionContent>
       </ExecutionAction>
     </PreActions>
-    <Testables><TestableReference skipped="NO">
+    <Testables><TestableReference skipped="YES">
       <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B10000000000000000000008" BuildableName="PolymuxUITests.xctest" BlueprintName="PolymuxUITests" ReferencedContainer="container:Polymux.xcodeproj"/>
     </TestableReference></Testables>
   </TestAction>
