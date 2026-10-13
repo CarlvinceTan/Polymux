@@ -226,7 +226,7 @@ git -C "$REPO" fetch -q origin; TRIED=""
 # process has its cwd in it (lsof; missing/failing lsof = in use, fail closed) and lanelib in_use (cleanup.sh's
 # rule: live verify lock / fresh marker, build slot, live unit lock, pgrep) says free, it is stale (.build/proof is
 # archived to $OPS/proof-archive first): a clean one is removed, a dirty one is
-# detached (changes kept). A local branch that has diverged from origin/BRANCH is kept as
+# left attached. A local branch that has diverged from origin/BRANCH is kept as
 # cody-stale/<branch>-<sha7> and the local branch is moved to origin/BRANCH.
 free_branch() {
   local b=$1 me=$2 p="" cur="" sha

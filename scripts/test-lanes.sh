@@ -21,7 +21,7 @@ cmd = "true"
 agent = "codex"
 cmd = "true"
 TOML
-echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
+echo .build/ > .gitignore; echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
 export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" LANE_SKIP_SETUP=1 LANE_TARGET=testmac
 export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
@@ -457,7 +457,7 @@ OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Sta
 check "clean stale worktree holding the branch is removed, run proceeds" '[ $RC = 0 ] && [ ! -d "$T/stalewt1" ] && grep -q "removed stale worktree $T/stalewt1" "$LANES_HOME"/logs/*stale-clean-laneA.log'
 mkbr test/stale2; git worktree add -q "$T/stalewt2" test/stale2; echo wip > "$T/stalewt2/wip.txt"
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale dirty' s2)" --branch test/stale2 2>&1); RC=$?
-check "dirty stale worktree is detached with its changes kept, run proceeds" '[ $RC = 0 ] && [ -f "$T/stalewt2/wip.txt" ] && [ -z "$(git -C "$T/stalewt2" branch --show-current)" ]'
+check "dirty stale worktree stays attached with its changes kept, run refuses" '[ $RC = 1 ] && [ "$(cat "$T/stalewt2/wip.txt")" = wip ] && [ "$(git -C "$T/stalewt2" branch --show-current)" = test/stale2 ] && grep -q "dirty worktree $T/stalewt2; leaving it" "$LANES_HOME"/logs/*stale-dirty-laneA.log'
 git worktree remove --force "$T/stalewt2"
 mkbr test/stale3; git worktree add -q "$T/stalewt3" test/stale3; (cd "$T/stalewt3" && exec sleep 60) & SP=$!; for k in $(seq 1 100); do lsof -d cwd -Fn 2>/dev/null | grep -q "^n$T/stalewt3$" && break; sleep 0.1; done   # wait until the live cwd is visible (load)
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale live' s3)" --branch test/stale3 2>&1); RC=$?
@@ -560,8 +560,10 @@ OA=$(LANE_NO_CHAIN=1 $RL --check laneA "$T/wdp.task" 2>&1); RA=$?; OB=$(LANE_NO_
 check "agent: header pins the retry: --check refuses the opencode lane (5), the codex lane is not refused for agent" '[ $RA = 5 ] && echo "$OA" | grep -q "wants agent .codex." && ! echo "$OB" | grep -q "wants agent"'
 rm -f "$QD"/*.task
 # 32 unit exit frees clean trees, while dirty trees and live locks survive.
+# A freed tree is detached; test 8's cleanup.sh --apply deletes a clean detached tree whose HEAD is on a
+# remote, so a tree that is gone counts as freed too. The unit log is the proof that the exit path ran.
 for name in happy-path always-fails oc-fastfail oc-killed wd-disabled; do
-  check "unit-free: $name exits detached" '! git -C "$LANES_WT/laneA-$name" symbolic-ref -q HEAD && [ -d "$LANES_WT/laneA-$name" ]'
+  check "unit-free: $name exits detached" 'grep -q "unit-free: $name wt=.* detached" "$LANES_HOME"/logs/*-$name-laneA.log && { [ ! -d "$LANES_WT/laneA-$name" ] || ! git -C "$LANES_WT/laneA-$name" symbolic-ref -q HEAD; }'
 done
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; sleep 300' $RL laneA "$(task 'Free watchdog' uf1)" 2>&1); RC=$?
 check "unit-free: clean watchdog exit detaches" '[ $RC = 1 ] && ! git -C "$LANES_WT/laneA-free-watchdog" symbolic-ref -q HEAD'
