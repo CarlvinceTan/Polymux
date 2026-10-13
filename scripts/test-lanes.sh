@@ -53,6 +53,14 @@ printf '# Parked dup (attempt 2)\nneeds: none\nexpected_min: 5\n' > "$LANES_HOME
 printf '# Parked dup\nneeds: none\nexpected_min: 5\n' > "$LANES_HOME/deferred/0011--parked-dup.task"
 OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Parked dup' t2f)" 2>&1); RC=$?
 check "deferred retry already written by lane-guard: no second retry (deferred/ or queue/)" '[ $RC = 1 ] && echo "$OUT" | grep -q "DEFERRED after: laneA" && [ "$(ls "$LANES_HOME"/deferred/ | grep -c parked-dup)" = 2 ] && ! ls "$LANES_HOME"/queue/*parked-dup* >/dev/null 2>&1 && grep -q "already re-queued (.*deferred/10131300-parked-dup.task)" "$LANES_HOME/events.tsv"'
+# 2g SIGPIPE: a match early in a long output must still count under pipefail (was rc 141 -> "no Size-reason")
+( . scripts/lanelib.sh; set -o pipefail
+  { echo "Size-reason: big refactor"; seq 1 400000; } | out_has '^Size-reason: *[^ ]' || exit 1
+  { echo "branch refs/heads/x"; seq 1 400000; } | out_has -x "branch refs/heads/x" || exit 2
+  { seq 1 400000; } | out_has '^Size-reason:' && exit 3
+  { echo "Size-reason: big"; seq 1 400000; } | grep -qE '^Size-reason:'; [ $? = 0 ] || echo "(note: bare grep -q gave a non-zero status here, the bug out_has avoids)" >&2
+  exit 0 ); RC=$?
+check "out_has: early match in a 400k-line pipe is found under pipefail (no SIGPIPE false negative)" '[ $RC = 0 ]'
 # 3 stop rule
 cp "$T/t2b.task" "$T/t3.task"; $RL laneA "$T/t3.task" >/dev/null 2>&1; RC=$?
 check "stop rule refuses a twice-failed brief (exit 2)" '[ $RC = 2 ]'
