@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -239,20 +240,39 @@ func TestBonjourTXT(t *testing.T) {
 	}
 }
 
-func TestDeviceAddress(t *testing.T) {
+func TestDeviceDefault(t *testing.T) {
+	// An explicit tailnet -listen with no -device-listen must not drag the device listener to loopback.
+	_, port, err := net.SplitHostPort("100.64.0.7:8787")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tt := range []struct {
-		name string
-		ip   string
-		port int
-		want string
+		name      string
+		tailscale bool
+		tailnet   string
+		port      int
+		want      string
 	}{
-		{name: "default", ip: "127.0.0.1", port: 7337, want: "127.0.0.1:7339"},
-		{name: "ephemeral", ip: "127.0.0.1", port: 0, want: "127.0.0.1:0"},
-		{name: "explicit tailnet", ip: "100.64.0.1", port: 7337, want: "100.64.0.1:7339"},
+		{name: "all interfaces", port: n, want: "0.0.0.0:8789"},
+		{name: "tailnet IP", tailscale: true, tailnet: "100.64.0.7", port: n, want: "100.64.0.7:8789"},
+		{name: "ephemeral", port: 0, want: "0.0.0.0:0"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := deviceAddress(tt.ip, tt.port); got != tt.want {
-				t.Fatalf("device address = %q, want %q", got, tt.want)
+			got := deviceDefault(tt.tailscale, tt.tailnet, tt.port)
+			if got != tt.want {
+				t.Fatalf("device listener = %q, want %q", got, tt.want)
+			}
+			host, _, err := net.SplitHostPort(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ip := net.ParseIP(host)
+			if ip == nil || ip.IsLoopback() {
+				t.Fatalf("device listener %q is loopback", got)
 			}
 		})
 	}
