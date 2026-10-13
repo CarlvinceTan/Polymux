@@ -202,7 +202,7 @@ free_branch() {
   git -C "$REPO" merge-base --is-ancestor "refs/heads/$b" "refs/remotes/origin/$b" && return 0   # behind or equal: fine
   git -C "$REPO" merge-base --is-ancestor "refs/remotes/origin/$b" "refs/heads/$b" && return 0   # only ahead: unpushed work, keep
   sha=$(git -C "$REPO" rev-parse --short=7 "refs/heads/$b")
-  git -C "$REPO" worktree list --porcelain | grep -x "branch refs/heads/$b" >/dev/null && { echo "branch $b diverged but is still checked out; leaving it" >> "$LOG"; return 0; }
+  git -C "$REPO" worktree list --porcelain | grep -qx "branch refs/heads/$b" && { echo "branch $b diverged but is still checked out; leaving it" >> "$LOG"; return 0; }
   git -C "$REPO" branch -q "cody-stale/$b-$sha" "refs/heads/$b" && git -C "$REPO" branch -q -f "$b" "refs/remotes/origin/$b" &&
     echo "local $b diverged from origin; kept as cody-stale/$b-$sha, $b now at origin/$b" >> "$LOG"; }
 IDLE_S=${LANE_IDLE_S:-$(( ${LANE_IDLE_MIN:-12} * 60 ))}; RS=${LANE_RETRY_SLEEP:-1}   # RS: retry backoff multiplier (tests: 0)
@@ -258,7 +258,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   [ "$NT" = 0 ] || echo "warn: $NT lane commit(s) without a 'Lane:' trailer (committer name still says $L)" | tee -a "$LOG"
   CH=$(git -C "$WT" diff --shortstat "$START"..HEAD | awk '{print $4+$6}')
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
-    git -C "$WT" log --format=%B "$START"..HEAD | grep -E '^Size-reason: *[^ ]' >/dev/null || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
+    git -C "$WT" log --format=%B "$START"..HEAD | grep -qE '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover

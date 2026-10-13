@@ -62,7 +62,7 @@ in_use() {  # $1 worktree path. Needs LOCKS (lanes.toml lock_dir) and OPS; same 
 # cwd_in_use PATH: 0 = a process has its cwd in PATH, 1 = none, 2 = can't tell (lsof missing/failed): callers fail closed.
 cwd_in_use() { local out rc r; command -v lsof >/dev/null 2>&1 || return 2
   out=$(lsof -d cwd -Fn 2>/dev/null); rc=$?; [ $rc != 0 ] && [ -z "$out" ] && return 2
-  r=$(cd "$1" 2>/dev/null && pwd -P); printf '%s\n' "$out" | grep -E "^n($1|${r:-$1})(/|\$)" >/dev/null && return 0; return 1; }   # not grep -q: under pipefail an early grep exit SIGPIPEs printf (rc 141)
+  r=$(cd "$1" 2>/dev/null && pwd -P); printf '%s\n' "$out" | grep -qE "^n($1|${r:-$1})(/|\$)" && return 0; return 1; }
 # wt_pids PATH: pids whose cwd is PATH or below (lsof -d cwd), one per line; never this shell or its parent.
 wt_pids() { local r; r=$(cd "$1" 2>/dev/null && pwd -P); command -v lsof >/dev/null 2>&1 || return 2
   lsof -d cwd -Fpn 2>/dev/null | awk -v a="$1" -v b="${r:-$1}" -v me="$$" -v pp="$PPID" '

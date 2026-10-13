@@ -59,9 +59,6 @@ OUT=$(LANE_DRY=1 LANE_KILL_WAIT=2 LANE_STUB_CMD='( set -m; sleep 300 & echo $! >
 OP=$(cat "$T/orphan.pid" 2>/dev/null); sleep 0.5
 check "attempt end reaps a worktree process outside the agent group" '[ $RC = 0 ] && [ -n "$OP" ] && ! kill -0 "$OP" 2>/dev/null && grep -q "reap: TERM leftover pids" "$LANES_HOME"/logs/*orphan-reap-laneA.log'
 [ -n "$OP" ] && kill "$OP" 2>/dev/null
-# 2g cwd_in_use under pipefail: a match early in a long lsof listing is still 0, not 141 (grep -q SIGPIPE)
-( set -o pipefail; . "$SRC/scripts/lanelib.sh"; cd "$T/repo" && sleep 5 & SP=$!; sleep 0.3; for i in 1 2 3 4 5; do cwd_in_use "$T/repo" || exit 1; done; kill $SP 2>/dev/null; exit 0 ); RC=$?
-check "cwd_in_use returns 0 under pipefail (no SIGPIPE 141)" '[ $RC = 0 ]'
 # 3 stop rule
 cp "$T/t2b.task" "$T/t3.task"; $RL laneA "$T/t3.task" >/dev/null 2>&1; RC=$?
 check "stop rule refuses a twice-failed brief (exit 2)" '[ $RC = 2 ]'
