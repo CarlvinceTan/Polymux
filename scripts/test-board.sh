@@ -91,11 +91,28 @@ check "approve-proof: merges into the existing approved list" '[ "$(cat "$AP/app
 PATH=$BP bash scripts/approve-proof.sh "$AW" sub/x.png >/dev/null 2>&1; A3=$?; PATH=$BP bash scripts/approve-proof.sh "$AW" .hid.png >/dev/null 2>&1; A4=$?
 check "approve-proof: refuses names with / or a leading ." '[ $A3 != 0 ] && [ $A4 != 0 ] && ! grep -q "sub/x.png\|.hid.png" "$AP/approved"'
 touch "$LANES_HOME/BOARD_LIVE"; echo Review > "$T/cur"; : > "$T/curl.log"; : > "$BLOG"; C=$LANES_HOME/cards
-echo 11111111-2222-3333-4444-555555555555 | tee "$C/board-done" > "$C/done"; echo laneA-board-done > "$C/board-done.wt"; echo other > "$C/done.wt"
+echo 11111111-2222-3333-4444-777777777777 > "$C/board-done"; echo 11111111-2222-3333-4444-888888888888 > "$C/done"; echo laneA-board-done > "$C/board-done.wt"; echo other > "$C/done.wt"
 printf '2026-10-13 11:00:00\t10131100-board-done\thttps://github.com/o/r/pull/7\tabc\tUI-verified\n' >> "$LANES_HOME/results.tsv"
 git worktree add -q --detach "$HOME/code/wt/laneA-board-done" main
 PATH=$BP bash scripts/cleanup.sh >/dev/null 2>&1
 check "cleanup dry run: no board write" '[ "$(NP .)" = 0 ] && ! grep -q merged "$BLOG"'
 PATH=$BP bash scripts/cleanup.sh --apply >/dev/null 2>&1
 check "cleanup --apply: exact worktree + gh mergedAt -> one Completed write" '[ "$(NP pages)" = 1 ] && grep -q "board-done merged: wrote Status: .Review. -> .Completed." "$BLOG" && ! grep -q " done merged" "$BLOG"'
+# shared card: two units on one card. start/pr write on the first unit; merged/verify wait for all,
+# Verification = weakest level across the units.
+SC=22222222-3333-4444-5555-666666666666; echo $SC | tee "$C/sa1-shared" > "$C/sa2-shared"; echo Backlog > "$T/cur"; : > "$T/prurl"; : > "$T/curl.log"; : > "$BLOG"
+PATH=$BP $BU start sa1-shared; PATH=$BP $BU pr sa1-shared https://github.com/o/r/pull/11
+check "shared card: start + pr written on the first unit" '[ "$(NP pages/$SC)" = 2 ] && grep -q "sa1-shared start: wrote Status" "$BLOG"'
+echo Review > "$T/cur"; : > "$T/curl.log"; PATH=$BP $BU merged sa1-shared; PATH=$BP $BU verify sa1-shared UI-verified
+check "shared card: first unit merged/verified -> no write, hold logged" '[ "$(NP .)" = 0 ] && grep -q "sa1-shared merged: hold: Status not written; card $SC waits for unit(s): sa2-shared" "$BLOG" && grep -q "sa1-shared verify: hold: Verification .* sa2-shared" "$BLOG"'
+PATH=$BP $BU merged sa2-shared; PATH=$BP $BU verify sa2-shared unit-test-verified
+check "shared card: last unit merged -> one Completed write" '[ "$(grep -c "X PATCH.*Completed.*pages/$SC" "$T/curl.log")" = 1 ] && grep -q "sa2-shared merged: wrote Status: .Review. -> .Completed." "$BLOG"'
+check "shared card: Verification = weakest level (unit-test < UI)" '[ "$(grep -c "X PATCH.*Verification.*pages/$SC" "$T/curl.log")" = 1 ] && grep -q "X PATCH.*\"name\":\"unit-test-verified\".*pages/$SC" "$T/curl.log"'
+: > "$T/curl.log"; PATH=$BP $BU verify sa1-shared failed; PATH=$BP $BU verify sa2-shared UI-verified
+check "shared card: one unit failed keeps the card at failed even when the other is UI-verified" '[ "$(grep -c "X PATCH.*\"name\":\"failed\".*pages/$SC" "$T/curl.log")" = 2 ] && ! grep -q "UI-verified.*pages/$SC" "$T/curl.log" && grep -q "sa2-shared verify: card $SC shared by 2 units: Verification .failed. (weakest)" "$BLOG"'
+check "shared card: ledger tracks both units" '[ "$(cut -f1,2 "$LANES_HOME/board/card-$SC.tsv" | sort -u | wc -l | tr -d " ")" = 4 ]'
+# unit name keeps its prefix: "# SA9: ..." -> sa9-..., never "-sa9-..."
+rm -f "$LANES_HOME/BOARD_LIVE"; printf 'needs: none\nexpected_min: 5\ncard: 33333333444455556666777777777777\n# SA9: Prefix kept\n' > "$T/pk.task"
+PATH=$BP LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/pk.task" >/dev/null 2>&1
+check "unit name keeps its number prefix (no leading -)" '[ -f "$C/sa9-prefix-kept" ] && ! ls "$C" | grep -q "^-" && grep -q "	[0-9]*-sa9-prefix-kept	queued" "$LANES_HOME/events.tsv" && [ -d "$LANES_WT/laneA-sa9-prefix-kept" ]'
 rm -f "$LANES_HOME/BOARD_LIVE"

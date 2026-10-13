@@ -124,6 +124,27 @@ VC2='mkdir -p .build/proof && echo "## ok" > .build/proof/summary.md && echo uni
 OUT=$(PATH="$GB:$PATH" LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Continue open' t21)" --branch test/open 2>&1); RC=$?
 NH=$(git ls-remote origin refs/heads/test/open | cut -f1)
 check "open PR: pushed, commented new head, no new PR, success recorded" '[ $RC = 0 ] && ! grep -q "^pr create" "$T/gh.log" && grep -q "^pr comment https://github.com/o/r/pull/55 .*new head $NH" "$T/gh.log" && [ "$NH" != "$(git rev-parse test/big)" ] && grep -q "continue-open	https://github.com/o/r/pull/55	$NH" "$LANES_HOME/results.tsv" && [ -f "$LANES_HOME/cards/continue-open.wt" ]'
+# 21 PR body footer, build-only existing PR -> draft, gh pr list error, local branch behind origin
+G2="$T/ghbin2"; mkdir -p "$G2"; cat > "$G2/gh" <<GH
+#!/bin/bash
+echo "\$1 \$2 \$3" >> "$T/gh2.log"; k="\$1-\$2"; b=""; while [ \$# -gt 0 ]; do [ "\$1" = --body ] && b=\$2; shift; done
+[ -n "\$b" ] && printf '%s' "\$b" > "$T/body-\$k"
+case \$k in pr-list) [ -f "$T/listfail" ] && exit 1; cat "$T/openpr2" 2>/dev/null;; pr-create) echo https://github.com/o/r/pull/101;; esac; exit 0
+GH
+chmod +x "$G2/gh"; VC3='mkdir -p .build/proof && echo "## ok" > .build/proof/summary.md && echo build-only > .build/proof/level'
+endsrn() { python3 -c 'import sys; sys.exit(not open(sys.argv[1]).read().endswith("Release Notes:\n\n- N/A"))' "$1"; }
+: > "$T/gh2.log"; OUT=$(PATH="$G2:$PATH" LANE_VERIFY_CMD="$VC3" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Footer new' t22)" --branch test/footer-new 2>&1); RC=$?
+check "new PR body ends in Release Notes / blank line / - N/A (build-only -> draft create)" '[ $RC = 0 ] && endsrn "$T/body-pr-create" && grep -q "Release Notes:" "$T/body-pr-create"'
+git push -q origin main:refs/heads/test/footer-open; echo https://github.com/o/r/pull/56 > "$T/openpr2"; : > "$T/gh2.log"
+OUT=$(PATH="$G2:$PATH" LANE_VERIFY_CMD="$VC3" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Footer open' t23)" --branch test/footer-open 2>&1); RC=$?
+check "existing PR: comment ends in the Release Notes footer" '[ $RC = 0 ] && endsrn "$T/body-pr-comment"'
+check "existing PR at build-only is marked draft (pr ready --undo)" 'grep -q "^pr ready --undo" "$T/gh2.log" && ! grep -q "^pr create" "$T/gh2.log"'
+git push -q origin main:refs/heads/test/listfail; touch "$T/listfail"; : > "$T/gh2.log"
+OUT=$(PATH="$G2:$PATH" LANE_FORCE_FAIL=laneB LANE_VERIFY_CMD="$VC3" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'List fails' t24)" --branch test/listfail 2>&1); RC=$?; rm -f "$T/listfail" "$T/openpr2"
+check "gh pr list error: explicit failure, no PR created or commented" '[ $RC != 0 ] && grep -q "gh pr list failed" "$LANES_HOME/events.tsv" && ! grep -qE "^pr (create|comment)" "$T/gh2.log"'
+git branch -q test/behind main; git checkout -q -b tmp-ahead main; echo ahead > ahead.txt; git add ahead.txt; git commit -qm ahead; git push -q origin tmp-ahead:refs/heads/test/behind; AH=$(git rev-parse HEAD); git checkout -q main; git fetch -q origin
+OUT=$(LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Behind origin' t25)" --branch test/behind 2>&1); RC=$?
+check "local branch behind origin is fast-forwarded before the agent runs" '[ $RC = 0 ] && git -C "$LANES_WT/laneA-behind-origin" merge-base --is-ancestor "$AH" HEAD'
 # 8 cleanup dry run: dirty and unpushed kept, merged removable, nothing deleted
 git worktree add -q -b c/dirty "$HOME/code/wt/dirty" main && echo x > "$HOME/code/wt/dirty/README"
 git worktree add -q -b c/unpushed "$HOME/code/wt/unpushed" main && (cd "$HOME/code/wt/unpushed" && echo y > u && git add u && git commit -qm u)
