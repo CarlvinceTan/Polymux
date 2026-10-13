@@ -5,7 +5,7 @@ import Testing
 @Suite @MainActor
 struct SidebarOffMainTests {
     @Test func incomingEventPatchesTheRowInsideTheStateBudget() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
         let beforeReads = rig.cache.threadReads
         let event = rig.event(seq: 2, threadID: "arlo", text: "Just in")
         rig.chat.onUpdate = { event, tap in
@@ -23,8 +23,8 @@ struct SidebarOffMainTests {
         #expect(span.withinBudget)
     }
 
-    @Test func stalledRowReportsAMiss() throws {
-        let rig = try Rig()
+    @Test func stalledRowReportsAMiss() async throws {
+        let rig = try await Rig()
         rig.sidebar.rowStall = .milliseconds(70)
         let event = rig.event(seq: 2, threadID: "arlo", text: "Slow")
         rig.sidebar.note(event, at: ContinuousClock().now)
@@ -36,7 +36,7 @@ struct SidebarOffMainTests {
     }
 
     @Test func liveSidebarWorkStaysOffTheMainQueue() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
         let beforeReads = rig.cache.threadReads
         rig.chat.onUpdate = { event, tap in rig.sidebar.note(event, at: tap) }
         for index in 1...50 {
@@ -54,12 +54,12 @@ struct SidebarOffMainTests {
         #expect(await rig.sidebar.cacheActor.saveCount <= 5)
         #expect(await rig.sidebar.cacheActor.saveCount >= 1)
         #expect(rig.cache.threadReads - beforeReads < 50)
-        #expect(try rig.cache.pins() == ["arlo"])
-        #expect(try rig.cache.threads().first { $0.id == "arlo" }?.title == "Renamed")
+        #expect(try await rig.cache.offMain { try $0.pins() } == ["arlo"])
+        #expect(try await rig.cache.offMain { try $0.threads() }.first { $0.id == "arlo" }?.title == "Renamed")
     }
 
     @Test func burstOfEventsSavesAtMostFiveTimes() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
         for index in 1...100 {
             let event = rig.event(seq: Int64(index + 1), threadID: "arlo", text: "Burst \(index)")
             rig.sidebar.note(event)
@@ -69,21 +69,21 @@ struct SidebarOffMainTests {
         let saves = await rig.sidebar.cacheActor.saveCount
         #expect(saves <= 5)
         #expect(saves >= 1)
-        #expect(try rig.cache.threads().first { $0.id == "arlo" }?.unreadCount == 100)
+        #expect(try await rig.cache.offMain { try $0.threads() }.first { $0.id == "arlo" }?.unreadCount == 100)
     }
 
     @Test func renameShowsTheNewTitleOnTheSameTurn() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
         rig.sidebar.rename("arlo", to: "Arlo West")
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
-        await rig.sidebar.settled()
+        await CacheWork.untilSaved(rig.sidebar)
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
         #expect(rig.sidebar.editIssues["arlo"] == nil)
-        #expect(try rig.cache.threads().first { $0.id == "arlo" }?.title == "Arlo West")
+        #expect(try await rig.cache.offMain { try $0.threads() }.first { $0.id == "arlo" }?.title == "Arlo West")
     }
 
     @Test func failedRenameRestoresThePreviousTitle() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
         await rig.sidebar.cacheActor.setFailing(true)
         rig.sidebar.rename("arlo", to: "Arlo West")
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
@@ -92,8 +92,23 @@ struct SidebarOffMainTests {
         #expect(rig.sidebar.editIssues["arlo"] == "Couldn’t save the new name. Retry")
     }
 
+    @Test func renameStaysVisibleWhileTheSaveIsStalled() async throws {
+        let rig = try await Rig()
+        await rig.sidebar.cacheActor.setStall(.milliseconds(70))
+        let started = ContinuousClock().now
+        rig.sidebar.rename("arlo", to: "Arlo West")
+        #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
+        #expect(started.duration(to: ContinuousClock().now) < InstantUI.feedbackBudget)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
+        await rig.sidebar.cacheActor.setFailing(true)
+        await CacheWork.untilSaved(rig.sidebar)
+        #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo")
+        #expect(rig.sidebar.editIssues["arlo"] == "Couldn’t save the new name. Retry")
+    }
+
     @Test func actorStallDoesNotBlockTheMainHeartbeat() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
         await rig.sidebar.cacheActor.setStall(.milliseconds(70))
         let clock = ContinuousClock()
         let gaps = GapLog()
@@ -130,27 +145,31 @@ private struct Rig {
     let sidebar: SidebarStore
     let chat: ChatStore
 
-    init() throws {
+    init() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("polymux-sidebar-\(UUID())")
         let url = folder.appendingPathComponent("cache.sqlite")
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let arlo = Agent(id: "arlo", name: "Arlo")
         let milo = Agent(id: "milo", name: "Milo")
         let older = Message(id: "old", threadID: "arlo", role: "assistant", parts: [Part(kind: "text", text: "Earlier")],
                             createdAt: WireDate.string(Date(timeIntervalSince1970: 1_700_000_000)), status: "done", seq: 1)
         let newer = Message(id: "new", threadID: "milo", role: "assistant", parts: [Part(kind: "text", text: "Later")],
                             createdAt: WireDate.string(Date(timeIntervalSince1970: 1_700_000_600)), status: "done", seq: 1)
-        try cache.save(agents: [arlo, milo], threads: [
-            Thread(id: "arlo", agentID: "arlo", lastReadSeq: 1, lastSeq: 1, lastMessage: older, title: "Arlo"),
-            Thread(id: "milo", agentID: "milo", lastReadSeq: 1, lastSeq: 1, lastMessage: newer, title: "Milo"),
-        ])
-        try cache.apply(Event(seq: 1, conversationID: "arlo", type: "message.start", message: older, createdAt: older.createdAt))
-        try cache.apply(Event(seq: 1, conversationID: "milo", type: "message.start", message: newer, createdAt: newer.createdAt))
+        try await cache.offMain { cache in
+            try cache.save(agents: [arlo, milo], threads: [
+                Thread(id: "arlo", agentID: "arlo", lastReadSeq: 1, lastSeq: 1, lastMessage: older, title: "Arlo"),
+                Thread(id: "milo", agentID: "milo", lastReadSeq: 1, lastSeq: 1, lastMessage: newer, title: "Milo"),
+            ])
+            try cache.apply(Event(seq: 1, conversationID: "arlo", type: "message.start", message: older, createdAt: older.createdAt))
+            try cache.apply(Event(seq: 1, conversationID: "milo", type: "message.start", message: newer, createdAt: newer.createdAt))
+        }
         let client = APIClient(baseURL: URL(string: "http://127.0.0.1:1")!)
         let sidebar = SidebarStore(client: client, cache: cache)
+        await sidebar.load()
         self.cache = cache
         self.sidebar = sidebar
         self.chat = ChatStore(client: client, cache: cache, threadID: "arlo", sidebar: sidebar)
+        await self.chat.ready()
     }
 
     func event(seq: Int64, threadID: String, text: String) -> Event {

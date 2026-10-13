@@ -309,58 +309,58 @@ import Testing
         #expect(store.view(conversationID: "group", agentID: "a").animation == "wide")
     }
 
-    @Test func cacheRestoresActivityAndRejectsStaleRegistry() throws {
+    @Test func cacheRestoresActivityAndRejectsStaleRegistry() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("db")
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let agent = Agent(id: "a", name: "A")
         let thread = Thread(id: "group", agentID: "a", title: "Group", agentIDs: ["a"])
-        try cache.save(agents: [agent], threads: [thread])
+        try await cache.offMain { try $0.save(agents: [agent], threads: [thread]) }
         let tool = run(activity: "tool", seq: 1)
         let event = Event(seq: 1, conversationID: "group", type: "tool.start", createdAt: tool.updatedAt, run: tool)
-        try cache.apply(event)
-        try cache.apply(event)
+        try await cache.offMain { try $0.apply(event) }
+        try await cache.offMain { try $0.apply(event) }
         var stale = thread
         stale.runs = [run(status: "queued", seq: 0)]
-        try cache.save(agents: [agent], threads: [stale])
-        let reopened = try LocalCache(url: url)
-        #expect(try reopened.runs(threadID: "group").first?.activity == "tool")
-        #expect(try reopened.cursor(threadID: "group") == 1)
-        #expect(try reopened.threads().first?.unreadCount == 0)
-        try reopened.save(agents: [], threads: [])
-        #expect(try reopened.runs(threadID: "group").isEmpty)
+        try await cache.offMain { try $0.save(agents: [agent], threads: [stale]) }
+        let reopened = try await CacheWork.open(url)
+        #expect(try await reopened.offMain { try $0.runs(threadID: "group") }.first?.activity == "tool")
+        #expect(try await reopened.offMain { try $0.cursor(threadID: "group") } == 1)
+        #expect(try await reopened.offMain { try $0.threads() }.first?.unreadCount == 0)
+        try await reopened.offMain { try $0.save(agents: [], threads: []) }
+        #expect(try await reopened.offMain { try $0.runs(threadID: "group") }.isEmpty)
     }
 
-    @Test func authoritativeSnapshotsRemoveStaleWorkButKeepNewerEvents() throws {
+    @Test func authoritativeSnapshotsRemoveStaleWorkButKeepNewerEvents() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("db")
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let agent = Agent(id: "a", name: "A")
         var thread = Thread(id: "group", agentID: "a", title: "Group", agentIDs: ["a"])
-        try cache.save(agents: [agent], threads: [thread])
+        try await cache.offMain { try $0.save(agents: [agent], threads: [thread]) }
         let activity = ActivityStore()
         let old = run("old", seq: 1)
-        try cache.apply(Event(seq: 1, conversationID: "group", type: "run.update", createdAt: old.updatedAt, run: old))
+        try await cache.offMain { try $0.apply(Event(seq: 1, conversationID: "group", type: "run.update", createdAt: old.updatedAt, run: old)) }
         activity.restore([old])
         let done = run("done", status: "completed", seq: 2, created: "2026-10-09T12:01:00Z")
         thread.lastSeq = 2
         thread.runs = [done]
-        try cache.reconcile(thread)
+        try await cache.offMain { try $0.reconcile(thread) }
         activity.reconcile(thread)
-        #expect(try cache.runs(threadID: "group").map(\.id) == ["done"])
+        #expect(try await cache.offMain { try $0.runs(threadID: "group") }.map(\.id) == ["done"])
         #expect(activity.view(conversationID: "group", agentID: "a").animation == "idle")
-        try cache.apply(Event(seq: 2, conversationID: "group", type: "run.done", createdAt: done.updatedAt, run: done))
+        try await cache.offMain { try $0.apply(Event(seq: 2, conversationID: "group", type: "run.done", createdAt: done.updatedAt, run: done)) }
         let next = run("next", activity: "tool", seq: 3, created: "2026-10-09T12:02:00Z")
         let live = Event(seq: 3, conversationID: "group", type: "run.update", createdAt: next.updatedAt, run: next)
-        try cache.apply(live)
+        try await cache.offMain { try $0.apply(live) }
         activity.receive(live, live: true)
-        try cache.reconcile(thread)
+        try await cache.offMain { try $0.reconcile(thread) }
         activity.reconcile(thread)
         #expect(activity.view(conversationID: "group", agentID: "a").animation == "swirl")
-        #expect(try cache.runs(threadID: "group").contains { $0.id == "next" })
+        #expect(try await cache.offMain { try $0.runs(threadID: "group") }.contains { $0.id == "next" })
         thread.lastSeq = 4
         thread.runs = []
-        try cache.reconcile(thread)
+        try await cache.offMain { try $0.reconcile(thread) }
         activity.reconcile(thread)
-        #expect(try cache.threads().first?.runs.isEmpty == true)
+        #expect(try await cache.offMain { try $0.threads() }.first?.runs.isEmpty == true)
         #expect(activity.view(conversationID: "group", agentID: "a").animation == "idle")
     }
 }

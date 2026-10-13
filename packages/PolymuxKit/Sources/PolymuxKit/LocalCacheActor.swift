@@ -25,10 +25,11 @@ public actor LocalCacheActor {
         try await enter()
     }
 
-    public func save(agents: [Agent], threads: [Thread], pins: [String]? = nil) async throws {
+    public func save(agents: [Agent], threads: [Thread], pins: [String]? = nil, edits: [Thread]? = nil) async throws {
         try await enter()
         saves += 1
         if failing { throw ClientError.cache("forced") }
+        if let edits { try cache.saveEdits(edits) }
         try cache.save(agents: agents, threads: threads, pins: pins)
     }
 

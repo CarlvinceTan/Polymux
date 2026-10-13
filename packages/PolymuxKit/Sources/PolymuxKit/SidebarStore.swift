@@ -13,7 +13,6 @@ public final class SidebarStore {
     /// Holds the row update so a budget test can prove a slow publish misses.
     var rowStall: Duration = .zero
     @ObservationIgnored private let client: APIClient
-    @ObservationIgnored private let cache: LocalCache
     @ObservationIgnored public let cacheActor: LocalCacheActor
     @ObservationIgnored private var isFlushing = false
     @ObservationIgnored private var pinned: [String] = []
@@ -21,6 +20,12 @@ public final class SidebarStore {
     @ObservationIgnored private var saving: Task<Void, Never>?
     @ObservationIgnored private var lastSaveAt: ContinuousClock.Instant?
     @ObservationIgnored private var renames: [String: String] = [:]
+    @ObservationIgnored private var committedAgents: [Agent] = []
+    @ObservationIgnored private var committedThreads: [Thread] = []
+    @ObservationIgnored private var committedPins: [String] = []
+    @ObservationIgnored private var committedEdits: [String: Thread] = [:]
+    @ObservationIgnored private var staged: [SaveFault] = []
+    @ObservationIgnored private var epoch: UInt64 = 0
     private let saveGap: Duration = .milliseconds(250)
     @ObservationIgnored private var revision: UInt64 = 0
     @ObservationIgnored private var generation: UInt64 = 0
@@ -33,16 +38,12 @@ public final class SidebarStore {
 
     public init(client: APIClient, cache: LocalCache) {
         self.client = client
-        self.cache = cache
         cacheActor = LocalCacheActor(cache)
-        agents = (try? cache.agents()) ?? []
-        threads = (try? cache.threads()) ?? []
-        pinned = (try? cache.pins()) ?? []
-        for thread in (try? cache.threadEdits()) ?? [] {
-            pendingThreads[thread.id] = thread
-            acceptedThreads[thread.id] = thread
-            merge(thread, into: &threads)
-        }
+    }
+
+    /// Fills the sidebar from disk. The read runs on `cacheActor`.
+    public func load() async {
+        await reload()
     }
 
     public func thread(for agent: Agent) -> Thread? {
@@ -65,40 +66,48 @@ public final class SidebarStore {
         }
     }
 
-    public func accept(_ thread: Thread) {
+    public func accept(_ thread: Thread) async {
         revision &+= 1
+        epoch &+= 1
         acceptedThreads[thread.id] = thread
         merge(thread, into: &threads)
-        persist()
+        isConnected = true
+        error = nil
+        staged.append(.chat)
+        scheduleSave()
+        await settled()
     }
 
-    public func accept(_ agent: Agent) {
+    public func accept(_ agent: Agent) async {
         revision &+= 1
+        epoch &+= 1
         acceptedAgents[agent.id] = agent
         merge(agent, into: &agents)
         if !threads.contains(where: { $0.id == agent.id }) {
-            let cached = try? cache.threads().first { $0.id == agent.id }
-            let thread = cached ?? Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
+            let thread = Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
             acceptedThreads[thread.id] = thread
             merge(thread, into: &threads)
         }
-        persist()
+        isConnected = true
+        error = nil
+        staged.append(.agent)
+        scheduleSave()
+        await settled()
     }
 
-    public func edit(_ thread: Thread, delay: Duration = .milliseconds(550)) {
+    public func edit(_ thread: Thread, delay: Duration = .milliseconds(550)) async {
         var thread = thread
         thread.runs = []
         revision &+= 1
+        epoch &+= 1
         pendingThreads[thread.id] = thread
         acceptedThreads[thread.id] = thread
         editIssues[thread.id] = nil
         merge(thread, into: &threads)
-        do {
-            try persistEdits()
-        } catch {
-            editIssues[thread.id] = "Changes couldn’t be saved on this device."
-        }
+        staged.append(.edit(thread.id))
         scheduleEdit(thread.id, delay: delay)
+        scheduleSave()
+        await settled()
     }
 
     public func retryEdit(_ id: String) { scheduleEdit(id, delay: .zero) }
@@ -148,7 +157,9 @@ public final class SidebarStore {
                     editIssues[id] = nil
                     acceptedThreads[id] = updated
                     merge(updated, into: &threads)
-                    try persistEdits()
+                    staged.append(.edit(id))
+                    await persistEdits()
+                    if editIssues[id] != nil { return false }
                 }
             } catch {
                 editIssues[id] = "Changes haven’t synced yet."
@@ -158,25 +169,13 @@ public final class SidebarStore {
         return true
     }
 
-    private func persistEdits() throws {
-        try cache.saveEdits(Array(pendingThreads.values))
-        var cached = try cache.threads()
-        for thread in acceptedThreads.values { merge(thread, into: &cached) }
-        try cache.save(agents: try cache.agents(), threads: cached)
-        reload()
+    private func persistEdits() async {
+        scheduleSave()
+        await settled()
     }
 
-    private func persist() {
-        isConnected = true
-        error = nil
-        do {
-            var agents = try cache.agents()
-            var threads = try cache.threads()
-            for agent in acceptedAgents.values { merge(agent, into: &agents) }
-            for thread in acceptedThreads.values { merge(thread, into: &threads) }
-            try cache.save(agents: agents, threads: threads)
-            reload()
-        } catch { self.error = error.localizedDescription }
+    private func persist(agents: [Agent], threads: [Thread], pins: [String], edits: [Thread]) async throws {
+        try await cacheActor.save(agents: agents, threads: threads, pins: pins, edits: edits)
     }
 
     private func merge(_ agent: Agent, into agents: inout [Agent]) {
@@ -202,6 +201,7 @@ public final class SidebarStore {
     }
 
     public func refresh() async {
+        await settled()
         generation &+= 1
         let generation = generation
         let revision = revision
@@ -218,11 +218,21 @@ public final class SidebarStore {
             self.threads = savedThreads
             activity.retain(Set(self.threads.map(\.id)))
             for thread in self.threads { activity.reconcile(thread) }
-            try await cacheActor.save(agents: savedAgents, threads: savedThreads, pins: pinned)
+            do {
+                try await cacheActor.save(agents: savedAgents, threads: savedThreads, pins: pinned, edits: Array(pendingThreads.values))
+            } catch {
+                self.agents = committedAgents
+                self.threads = committedThreads
+                self.pinned = committedPins
+                self.error = "Couldn’t save this conversation. Retry"
+                return
+            }
+            remember()
             for thread in snapshots {
                 try await cacheActor.call { try $0.reconcile(thread) }
             }
             self.threads = try await cacheActor.call { try $0.threads() }
+            remember()
             activity.retain(Set(self.threads.map(\.id)))
             for thread in self.threads { activity.reconcile(thread) }
             acceptedAgents.removeAll()
@@ -281,14 +291,27 @@ public final class SidebarStore {
         } catch { self.error = error.localizedDescription }
     }
 
-    public func reload() {
-        var agents = (try? cache.agents()) ?? agents
-        var threads = (try? cache.threads()) ?? threads
-        for agent in acceptedAgents.values { merge(agent, into: &agents) }
-        for thread in acceptedThreads.values { merge(thread, into: &threads) }
-        self.agents = agents
-        self.threads = threads
-        for thread in threads { activity.reconcile(thread) }
+    public func reload() async {
+        await settled()
+        do {
+            let nextAgents = try await cacheActor.call { try $0.agents() }
+            let nextThreads = try await cacheActor.call { try $0.threads() }
+            let nextPins = try await cacheActor.call { try $0.pins() }
+            let edits = try await cacheActor.call { try $0.threadEdits() }
+            epoch &+= 1
+            agents = nextAgents
+            threads = nextThreads
+            pinned = nextPins
+            pendingThreads = Dictionary(uniqueKeysWithValues: edits.map { ($0.id, $0) })
+            for thread in edits {
+                acceptedThreads[thread.id] = thread
+                merge(thread, into: &threads)
+            }
+            for thread in threads { activity.reconcile(thread) }
+            remember()
+        } catch {
+            self.error = "Couldn’t reload conversations. Retry"
+        }
     }
 
     /// Patches one sidebar row from an event already in hand. Disk follows later.
@@ -298,7 +321,10 @@ public final class SidebarStore {
             if rowStall > .zero { pause(rowStall) }
             return patch(event)
         }
-        if changed { scheduleSave() }
+        if changed {
+            epoch &+= 1
+            scheduleSave()
+        }
         return changed
     }
 
@@ -308,8 +334,10 @@ public final class SidebarStore {
         let previous = threads[index].title
         guard previous != title else { return }
         if renames[id] == nil { renames[id] = previous }
+        epoch &+= 1
         threads[index].title = title
         editIssues[id] = nil
+        staged.append(.rename(id))
         scheduleSave()
     }
 
@@ -320,6 +348,7 @@ public final class SidebarStore {
         pinned.insert(id, at: 0)
         let thread = threads.remove(at: index)
         threads.insert(thread, at: 0)
+        epoch &+= 1
         scheduleSave()
     }
 
@@ -421,27 +450,79 @@ public final class SidebarStore {
             let agents = self.agents
             let threads = self.threads
             let pins = self.pinned
+            let savedEpoch = epoch
             let pending = renames
+            let faults = staged
+            staged.removeAll()
+            let edits = Array(pendingThreads.values)
             do {
-                try await cacheActor.save(agents: agents, threads: threads, pins: pins)
+                try await persist(agents: agents, threads: threads, pins: pins, edits: edits)
                 lastSaveAt = ContinuousClock().now
+                if epoch == savedEpoch {
+                    remember()
+                } else {
+                    committedAgents = agents
+                    committedThreads = threads
+                    committedPins = pins
+                    committedEdits = Dictionary(uniqueKeysWithValues: edits.map { ($0.id, $0) })
+                }
                 for (id, previous) in pending where renames[id] == previous {
                     if self.threads.first(where: { $0.id == id })?.title != previous {
                         renames[id] = nil
                     }
                 }
             } catch {
-                for (id, previous) in pending where renames[id] == previous {
-                    if let index = self.threads.firstIndex(where: { $0.id == id }) {
-                        self.threads[index].title = previous
-                    }
-                    editIssues[id] = "Couldn’t save the new name. Retry"
-                    renames[id] = nil
-                }
+                guard epoch == savedEpoch else { continue }
+                restore()
+                report(faults)
             }
         }
         saving = nil
         if dirty { scheduleSave() }
+    }
+
+    private enum SaveFault {
+        case rename(String)
+        case agent
+        case chat
+        case edit(String)
+    }
+
+    private func remember() {
+        committedAgents = agents
+        committedThreads = threads
+        committedPins = pinned
+        committedEdits = pendingThreads
+    }
+
+    private func restore() {
+        agents = committedAgents
+        threads = committedThreads
+        pinned = committedPins
+        pendingThreads = committedEdits
+        acceptedAgents = Dictionary(uniqueKeysWithValues: committedAgents.map { ($0.id, $0) })
+        acceptedThreads = Dictionary(uniqueKeysWithValues: committedThreads.map { ($0.id, $0) })
+        for edit in committedEdits.values { merge(edit, into: &threads) }
+        renames.removeAll()
+    }
+
+    private func report(_ faults: [SaveFault]) {
+        if faults.isEmpty {
+            error = "Couldn’t save this conversation. Retry"
+            return
+        }
+        for fault in faults {
+            switch fault {
+            case .rename(let id):
+                editIssues[id] = "Couldn’t save the new name. Retry"
+            case .agent:
+                error = "Couldn’t save this agent. Retry"
+            case .chat:
+                error = "Couldn’t save this chat. Retry"
+            case .edit(let id):
+                editIssues[id] = "Changes couldn’t be saved on this device."
+            }
+        }
     }
 
     private func pause(_ duration: Duration) {

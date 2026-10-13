@@ -9,13 +9,13 @@ public final class SearchStore {
     public private(set) var isSearching = false
     public private(set) var error: String?
     @ObservationIgnored private let client: APIClient
-    @ObservationIgnored private let cache: LocalCache
+    @ObservationIgnored private let cacheActor: LocalCacheActor
     @ObservationIgnored private let threadID: String
     @ObservationIgnored private var generation = 0
 
-    public init(client: APIClient, cache: LocalCache, threadID: String) {
+    public init(client: APIClient, cache: LocalCache, actor: LocalCacheActor? = nil, threadID: String) {
         self.client = client
-        self.cache = cache
+        self.cacheActor = actor ?? LocalCacheActor(cache)
         self.threadID = threadID
     }
 
@@ -35,7 +35,7 @@ public final class SearchStore {
         } catch {
             guard current == generation else { return }
             do {
-                results = try cache.search(threadID: threadID, query: query)
+                results = try await cacheActor.call { try $0.search(threadID: threadID, query: query) }
                 isOffline = true
                 self.error = nil
             } catch { self.error = error.localizedDescription }

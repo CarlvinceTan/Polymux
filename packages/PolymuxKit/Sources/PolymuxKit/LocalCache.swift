@@ -1,4 +1,5 @@
 import CSQLite
+import Dispatch
 import Foundation
 
 private final class Connection: @unchecked Sendable {
@@ -410,6 +411,10 @@ public final class LocalCache: @unchecked Sendable {
     }
 
     private func query(_ sql: String, _ values: [Value] = []) throws -> [[String]] {
+        #if DEBUG
+        // Every SQLite call enters here. Debug builds, including tests, trap on the main queue.
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        #endif
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
             throw ClientError.cache(String(cString: sqlite3_errmsg(db)))

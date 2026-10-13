@@ -14,10 +14,10 @@ public final class ChatStore {
     public private(set) var hasEarlier = true
     @ObservationIgnored public var onUpdate: (@MainActor (Event, ContinuousClock.Instant) -> Void)?
     @ObservationIgnored private let client: APIClient
-    @ObservationIgnored private let cache: LocalCache
     @ObservationIgnored private let cacheActor: LocalCacheActor
     @ObservationIgnored private weak var sidebar: SidebarStore?
     @ObservationIgnored private var streamTask: Task<Void, Never>?
+    @ObservationIgnored private var loading: Task<Void, Never>?
     @ObservationIgnored private var isFlushing = false
     @ObservationIgnored private var voices: [UUID: VoiceReply] = [:]
 
@@ -31,19 +31,28 @@ public final class ChatStore {
 
     public init(client: APIClient, cache: LocalCache, threadID: String, sidebar: SidebarStore? = nil) {
         self.client = client
-        self.cache = cache
         self.cacheActor = sidebar?.cacheActor ?? LocalCacheActor(cache)
         self.threadID = threadID
         self.sidebar = sidebar
         activity = sidebar?.activity ?? ActivityStore()
-        runs = (try? cache.runs(threadID: threadID)) ?? []
-        activity.restore(runs)
-        messages = (try? cache.messages(threadID: threadID, limit: 100)) ?? []
+        loading = Task { [weak self] in await self?.prepare() }
+    }
+
+    /// Waits for the opening cache read. Later reads go through the same actor.
+    public func ready() async {
+        await loading?.value
+    }
+
+    private func prepare() async {
+        let stored = (try? await cacheActor.call { try $0.runs(threadID: threadID) }) ?? []
+        runs = stored
+        activity.restore(stored)
+        messages = (try? await cacheActor.call { try $0.messages(threadID: threadID, limit: 100) }) ?? []
     }
 
     public func start() async {
         guard streamTask == nil else { return }
-        messages = (try? await cacheActor.call { try $0.messages(threadID: threadID, limit: 100) }) ?? messages
+        await ready()
         streamTask = Task { [weak self] in await self?.connect() }
     }
 
@@ -60,6 +69,7 @@ public final class ChatStore {
     }
 
     public func retry(messageID: String) async {
+        await ready()
         guard !isFlushing, let message = messages.first(where: { $0.id == messageID }), message.role == "user",
               ["pending", "failed", "error"].contains(message.status) else { return }
         if (try? await cacheActor.call({ try $0.accepted(id: messageID) })) == true { return }
