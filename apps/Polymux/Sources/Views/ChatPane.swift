@@ -322,7 +322,7 @@ struct ChatPane: View {
                             ChatStatus(date: message.date)
                         }
                         MessageBubble(message: message, client: session.client, agentName: author(message),
-                                      showAuthor: thread.isGroup && message.role == "assistant",
+                                      showAuthor: thread.isGroup && message.startsRun(after: index > 0 ? store.messages[index - 1] : nil),
                                       replyName: message.reply.flatMap { quote in session.sidebar.agents.first { $0.id == quote.agentID }?.name } ?? agent.name,
                                       sending: store.isSending, retry: { await store.retry(messageID: message.id) },
                                       respond: { reply = $0 }, jump: { jump(to: $0.messageID, part: $0.partIndex) },
