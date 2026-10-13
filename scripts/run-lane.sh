@@ -38,7 +38,8 @@ ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}; ev queued "$LANE" "
 PROMPT="Task: $TASK
 Rules: work only in this worktree. Keep the change small and scoped. Build and test ONLY via
 'bash scripts/verify.sh' and iterate until it exits 0. Commit your work with a clear message.
-Do not push and do not open a PR. If you cannot make verify.sh pass, say why and stop."
+Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
+needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it under ~300 changed lines. If you cannot make verify.sh pass, say why and stop."
 run_agent() {  # $1 lane, $2 worktree, $3 log
   local a cmd; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd)
   case " ${LANE_FORCE_FAIL:-} " in *" $1 "*) echo "forced failure (LANE_FORCE_FAIL test)" >> "$3"; return 97;; esac
@@ -50,6 +51,13 @@ run_agent() {  # $1 lane, $2 worktree, $3 log
     *) echo "unknown agent $a" >> "$3"; return 99;;
   esac
 }
+# Stop rule: a brief that already failed twice goes to Cody, never straight back to an agent.
+grep -qF "	$TASK	" "$OPS/failures.tsv" 2>/dev/null && { echo "refusing: '$TASK' already failed twice (see $OPS/failures.tsv); fix the brief"; exit 2; }
+# One writer per unit: a second lane cannot start the same unit while this one holds it.
+UL="$OPS/units/$SLUG.lock"; mkdir -p "$OPS/units"
+if ! mkdir "$UL" 2>/dev/null; then kill -0 "$(cat "$UL/pid" 2>/dev/null)" 2>/dev/null && \
+  { echo "unit '$SLUG' already has a writer (pid $(cat "$UL/pid")); not starting"; exit 3; }; rm -rf "$UL"; mkdir "$UL"; fi
+echo $$ > "$UL/pid"; trap 'rm -rf "$UL"' EXIT
 git -C "$REPO" fetch -q origin; TRIED=""; N=0
 for L in $(cfg order "$LANE"); do
   N=$((N+1)); [ $N -gt 2 ] && break
@@ -62,7 +70,10 @@ for L in $(cfg order "$LANE"); do
   run_agent "$L" "$WT" "$LOG"; rc=$?
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
   [ -n "$(git -C "$WT" log --oneline "$BASE"..HEAD)" ] || { echo "agent made no commit" >> "$LOG"; ev failed "$L" "no commit"; continue; }
-  (cd "$WT" && bash scripts/verify.sh) >> "$LOG" 2>&1 || { ev failed "$L" "verify failed"; continue; }
+  CH=$(git -C "$WT" diff --shortstat "$BASE"...HEAD | awk '{print $4+$6}')
+  if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
+    git -C "$WT" log --format=%B "$BASE"..HEAD | grep -qE '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
+  (cd "$WT" && TI_BASE=$BASE bash scripts/verify.sh) >> "$LOG" 2>&1 || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
   BODY="Task: $TASK"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
   BODY+="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID")"

@@ -35,9 +35,11 @@ step() {  # step NAME cmd...
   local n=$1; shift; local t=$SECONDS
   perl -e 'alarm shift; exec @ARGV' 2400 "$@" > "$L/$n.log" 2>&1; local rc=$?
   local res=PASS; [ $rc -ne 0 ] && { res=FAIL; FAIL=1; }
-  local tests=$({ grep -Eo "Executed [0-9]+ tests?, with [0-9]+ failures?" "$L/$n.log"; grep -Eo "Test run with [0-9]+ tests.*(passed|failed)" "$L/$n.log"; } | tr "\n" ";")
+  local tests=$(awk '/^Test Case .* passed/||/^. Test .* passed after/{p++} /^Test Case .* failed/||/^. Test .* failed after/{f++}
+    END{if(p+f) printf "%d passed, %d failed", p, f}' "$L/$n.log")
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
+step test-integrity bash scripts/test-integrity.sh "${TI_BASE:-origin/main}"
 python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "fetch_cua failed"; FAIL=1; }
 XC=(-derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
