@@ -385,6 +385,7 @@ CWT="$LANES_WT/laneC-codex-home"
 check "codex lane: HOME is the worktree scratch dir, cwd is the worktree, sandbox unchanged" '[ $RC = 0 ] && grep -qx "HOME=$CWT/.build/lanehome" "$T/codex.rec" && grep -qx "PWD=$CWT" "$T/codex.rec" && grep -q -- "-s danger-full-access" "$T/codex.rec"'
 check "codex lane: CODEX_HOME/GH_CONFIG_DIR/GIT_CONFIG_GLOBAL point at the real home" 'grep -qx "CODEX_HOME=$HOME/.codex" "$T/codex.rec" && grep -qx "GH_CONFIG_DIR=$HOME/.config/gh" "$T/codex.rec" && grep -qx "GIT_CONFIG_GLOBAL=$HOME/.gitconfig" "$T/codex.rec"'
 check "codex lane: scratch HOME is ignored, worktree git status stays clean" '[ -z "$(git -C "$CWT" status --porcelain)" ] && { [ -e "$CWT/.build/lanehome/.local" ] || [ -L "$CWT/.build/lanehome/.local" ]; }'
+check "codex lane: scratch HOME links shared state back (ops/lanes) and .local to the real home" '[ -L "$CWT/.build/lanehome/ops/lanes" ] && [ -L "$CWT/.build/lanehome/.local" ] && [ "$(cd "$CWT/.build/lanehome/ops/lanes" && pwd -P)" = "$(cd "$LANES_HOME" && pwd -P)" ]'
 # 23 main-account key guard up front (#72 round 3): exit 5 before claim/worktree/vault, case-insensitive
 cat >> "$T/gate.toml" <<TOML
 [lane6]
