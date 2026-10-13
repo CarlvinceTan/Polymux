@@ -302,7 +302,7 @@ private actor SettingsProbe {
 
 @Suite @MainActor
 struct TransportTests {
-    @Test func avatarsAreConnectionScopedAndNeverBackfillServerDefaults() throws {
+    @Test func avatarsAreConnectionScopedAndNeverBackfillServerDefaults() async throws {
         let host = ProbeProtocol.routes.add { _ in (200, Data("[]".utf8)) }
         defer { ProbeProtocol.routes.remove(host) }
         let firstURL = cacheURL()
