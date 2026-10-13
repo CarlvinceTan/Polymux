@@ -71,3 +71,10 @@ Review round
 - verify.sh PASS at 177758c (run 20261013-225352-177758c); the table, build-log excerpts and this
   evidence summary were posted on PR #42 (issue comment 6148410187) and the PR body was rewritten
   for the current diff (release-note block unchanged).
+
+Attempt 6 (lane4, 14 Oct 02:32 SGT)
+- verify.sh PASS at cd679ca (run 20261014-023243-cd679ca); level UI-verified. The table and evidence
+  path were posted on PR #42 (issue comment 6152525133); branch pushed fast-forward d9ac506..cd679ca.
+- cd679ca serializes InstantSendTests and InstantUINewChat under the shared InstantTiming parent.
+- Attempt 5 was killed by the lane watchdog on an unrelated TransportTests timing flake
+  (catchupFetchesEveryPageBeforeLiveDelivery, cursor expectation); it did not recur in this run.
