@@ -90,21 +90,25 @@ func (t *mergeTool) Execute(ctx context.Context, call string, raw json.RawMessag
 			return result, fmt.Errorf("PR #%d checks failing or pending", args.PR)
 		}
 	}
-	script := filepath.Join(t.dir, "scripts", "merge-queue.sh")
-	name, argv := "gh", []string{"pr", "merge", strconv.Itoa(args.PR), "--squash", "--match-head-commit", args.HeadSHA}
-	if _, statErr := os.Stat(script); statErr == nil {
-		enabled, probeErr := repoOutput(ctx, t.dir, "python3", filepath.Join(filepath.Dir(script), "lanes.py"), "lane", "merge", "enabled")
-		if probeErr != nil {
-			return result, fmt.Errorf("could not read merge lane configuration: %w", probeErr)
-		}
-		if strings.TrimSpace(string(enabled)) == "True" {
-			name, argv = "bash", []string{script, "enqueue", strconv.Itoa(args.PR)}
-			status = "Queued for merge"
-		}
-	} else if !os.IsNotExist(statErr) {
-		return result, statErr
+	if !filepath.IsAbs(state.mergeLane) {
+		return result, fmt.Errorf("merge requires an absolute merge-lane path in server configuration")
 	}
-	_, err = repoOutput(ctx, t.dir, name, argv...)
+	script := filepath.Join(state.mergeLane, "scripts", "merge-queue.sh")
+	name, argv := "gh", []string{"pr", "merge", strconv.Itoa(args.PR), "--squash", "--match-head-commit", args.HeadSHA}
+	for _, path := range []string{script, filepath.Join(state.mergeLane, "scripts", "lanes.py")} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			return result, fmt.Errorf("merge lane tooling unavailable: %w", statErr)
+		}
+	}
+	enabled, probeErr := repoOutput(ctx, state.mergeLane, "python3", filepath.Join(state.mergeLane, "scripts", "lanes.py"), "lane", "merge", "enabled")
+	if probeErr != nil {
+		return result, fmt.Errorf("could not read merge lane configuration: %w", probeErr)
+	}
+	if strings.TrimSpace(string(enabled)) == "True" {
+		name, argv = "bash", []string{script, "enqueue", strconv.Itoa(args.PR)}
+		status = "Queued for merge"
+	}
+	_, err = repoOutput(ctx, state.mergeLane, name, argv...)
 	if err != nil {
 		return result, fmt.Errorf("merge refused: %w", err)
 	}
