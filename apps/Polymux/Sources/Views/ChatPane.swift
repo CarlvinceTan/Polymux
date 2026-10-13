@@ -320,6 +320,7 @@ struct ChatPane: View {
                         if startsGroup(index) {
                             ChatStatus(date: message.date)
                         }
+                        toolRows(for: message)
                         MessageBubble(message: message, client: session.client, agentName: author(message),
                                       showAuthor: thread.isGroup && message.role == "assistant",
                                       replyName: message.reply.flatMap { quote in session.sidebar.agents.first { $0.id == quote.agentID }?.name } ?? agent.name,
@@ -432,6 +433,15 @@ struct ChatPane: View {
     private func bubbleActivity(_ message: Message) -> ActivityView? {
         guard let runID = message.runID, let run = store.runs.first(where: { $0.id == runID }) else { return nil }
         return ActivityStore.present(runs: [run], conversationID: thread.id, agentID: run.agentID, connected: store.isConnected)
+    }
+
+    /// Tool call rows for an assistant turn, drawn between the user's message and the reply.
+    @ViewBuilder private func toolRows(for message: Message) -> some View {
+        if message.role != "user", let runID = message.runID, !store.activity.toolRows(for: runID).isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(store.activity.toolRows(for: runID)) { ToolRowView(row: $0) }
+            }
+        }
     }
 
     private func updateDate() {

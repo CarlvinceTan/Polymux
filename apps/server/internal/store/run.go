@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -397,12 +398,8 @@ func (s *Store) recoverRuns(ctx context.Context) error {
 			run.Tools = []contract.ToolActivity{{ID: *run.ToolID, RunID: run.ID, Name: "tool", Status: "running"}}
 		}
 		for i := range run.Tools {
-			if run.Tools[i].Status != "running" {
-				continue
-			}
-			run.Tools[i].Status = "interrupted"
-			if _, err := s.Append(ctx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &run.Tools[i]}, nil); err != nil {
-				return err
+			if run.Tools[i].Status == "running" {
+				run.Tools[i].Status = "interrupted"
 			}
 		}
 		run.ToolID = nil
@@ -873,12 +870,7 @@ func (s *Store) ResumeReady(ctx context.Context, run contract.Run) bool {
 // runningTool reports an in-flight call. Finished rows stay on the run, so history alone
 // must not block a resume.
 func runningTool(tools []contract.ToolActivity) bool {
-	for _, tool := range tools {
-		if tool.Status == "running" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tools, func(tool contract.ToolActivity) bool { return tool.Status == "running" })
 }
 
 func resumeReady(ctx context.Context, q rowQuery, run contract.Run) bool {

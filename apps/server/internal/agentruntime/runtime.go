@@ -51,14 +51,15 @@ func (d Definition) SystemPrompt() string {
 }
 
 type Delta struct {
-	Text    string
-	Tool    string
-	Args    string
-	Kind    string
-	ToolID  string
-	Failed  bool
-	Summary string
-	Output  string
+	Text   string
+	Tool   string
+	Args   string
+	Kind   string
+	ToolID string
+	Failed bool
+	// Brief and Output feed the chat tool rows: the argument summary and result excerpt.
+	Brief  string
+	Output string
 }
 type Result struct {
 	Text  string
@@ -328,7 +329,7 @@ func (s *pigSession) Send(ctx context.Context, m contract.Message, emit func(Del
 			d.Kind = "tool.start"
 			d.ToolID = e.ToolCallID
 			d.Tool = e.ToolName
-			d.Summary = toolSummary(e.ToolName, e.Args)
+			d.Brief = toolSummary(e.ToolName, e.Args)
 		case agent.ToolExecutionEndEvent:
 			d.Kind = "tool.done"
 			d.ToolID, d.Tool, d.Failed = e.ToolCallID, e.ToolName, e.IsError
@@ -403,20 +404,10 @@ func (s *pigSession) Send(ctx context.Context, m contract.Message, emit func(Del
 	return result, errors.Join(err, writeErr)
 }
 
-// Chat tool rows show a bounded argument summary and result excerpt, never whole payloads.
-const (
-	toolSummaryLimit = 200
-	toolOutputLimit  = 2048
-)
+// redact and clip bound what chat rows show; a payload is never sent whole.
+var secrets = regexp.MustCompile(`(?i)(api[_-]?key|token|secret|password|passwd|authorization)\S*=\S+|bearer\s+\S+`)
 
-var secretValues = regexp.MustCompile(`(?i)(bearer\s+)[^\s"']+`)
-var secretFields = regexp.MustCompile(`(?i)((?:api[_-]?key|token|secret|password|passwd|authorization)[a-z_-]*\s*["']?\s*[=:]\s*["']?)[^\s"',]+`)
-
-// redact hides credential-looking values before a call or result reaches chat.
-func redact(text string) string {
-	text = secretValues.ReplaceAllString(text, "${1}[redacted]")
-	return secretFields.ReplaceAllString(text, "${1}[redacted]")
-}
+func redact(text string) string { return secrets.ReplaceAllString(text, "[redacted]") }
 
 func clip(text string, limit int) string {
 	if len(text) <= limit {
@@ -425,62 +416,36 @@ func clip(text string, limit int) string {
 	return strings.ToValidUTF8(text[:limit-3], "") + "…"
 }
 
-// toolSummary names a call for its chat row: the command for bash, the path for file tools.
+// toolSummary names a call its chat row shows: the command for bash, the path for file tools.
 func toolSummary(name string, args json.RawMessage) string {
 	var fields map[string]any
 	if len(args) == 0 || json.Unmarshal(args, &fields) != nil {
 		return ""
 	}
-	var text string
-	switch name {
-	case "bash", "shell":
-		text = argField(fields, "command", "cmd")
-	case "read", "write", "edit", "ls":
-		text = argField(fields, "path", "file_path")
-	case "find":
-		if text = argField(fields, "path", "file_path"); text == "" {
-			text = argField(fields, "pattern")
-		}
-	}
-	if text == "" {
-		return ""
-	}
-	return clip(redact(text), toolSummaryLimit)
-}
-
-func argField(fields map[string]any, names ...string) string {
-	for _, name := range names {
-		if value, ok := fields[name].(string); ok {
-			return value
+	keys := map[string][]string{"bash": {"command"}, "shell": {"command"}, "read": {"path"}, "write": {"path"},
+		"edit": {"path"}, "ls": {"path"}, "find": {"path", "pattern"}}[name]
+	for _, key := range keys {
+		if value, ok := fields[key].(string); ok && value != "" {
+			return clip(redact(value), 200)
 		}
 	}
 	return ""
 }
 
-// toolExcerpt keeps the start of a tool result for the expandable chat row.
 func toolExcerpt(content []ai.ToolResultMessageContent) string {
 	var parts []string
 	size := 0
 	for _, block := range content {
-		var text string
-		switch content := block.(type) {
-		case ai.TextContent:
-			text = content.Text
-		case *ai.TextContent:
-			text = content.Text
-		}
-		if text == "" {
+		text, ok := block.(ai.TextContent)
+		if !ok || text.Text == "" {
 			continue
 		}
-		parts = append(parts, text)
-		if size += len(text); size >= toolOutputLimit {
+		parts = append(parts, text.Text)
+		if size += len(text.Text); size >= 2048 {
 			break
 		}
 	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return clip(redact(strings.Join(parts, "\n")), toolOutputLimit)
+	return clip(redact(strings.Join(parts, "\n")), 2048)
 }
 
 func quoteText(reply *contract.ReplyContext) (string, error) {

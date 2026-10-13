@@ -297,7 +297,7 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 					}
 					return &harness.BeforeToolResult{Block: &reason}, nil
 				}
-				s.report(Delta{Kind: "tool.start", ToolID: call.ID, Tool: call.Name, Summary: toolSummary(call.Name, raw)})
+				s.report(Delta{Kind: "tool.start", ToolID: call.ID, Tool: call.Name, Brief: toolSummary(call.Name, raw)})
 				if len(decision.Args) == 0 {
 					return nil, nil
 				}

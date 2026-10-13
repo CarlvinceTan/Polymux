@@ -1036,12 +1036,10 @@
           ]
         },
         "summary": {
-          "type": "string",
-          "description": "Short display summary of the call arguments: command for bash, path for file tools."
+          "type": "string"
         },
         "output": {
-          "type": "string",
-          "description": "Bounded excerpt of the tool result, present once the call finishes."
+          "type": "string"
         }
       },
       "required": [
