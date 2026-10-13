@@ -801,7 +801,7 @@ private final class HeaderProbe: UIView {
         guard originY.isFinite, let bar = navigationBar() else { return nil }
         let bottom = bar.convert(bar.bounds, to: window).maxY
         guard bottom.isFinite, bottom > originY else { return nil }
-        return Reading(span: bottom - originY + ChatsHeader.depth, alphas: backgroundViews(of: bar).map(\.alpha))
+        return Reading(span: bottom - originY + ChatsHeader.depth, alphas: backgroundViews(of: bar).map { effectiveAlpha($0, in: bar) })
     }
 
     private func navigationBar() -> UINavigationBar? {
@@ -840,6 +840,18 @@ private final class HeaderProbe: UIView {
         }
         walk(bar)
         return found
+    }
+
+    private func effectiveAlpha(_ view: UIView, in bar: UINavigationBar) -> CGFloat {
+        var alpha: CGFloat = 1
+        var current: UIView? = view
+        while let node = current {
+            if node.isHidden { return 0 }
+            alpha *= node.alpha
+            if node === bar { break }
+            current = node.superview
+        }
+        return alpha
     }
 
     private static func alphaText(_ alphas: [CGFloat]) -> String {
