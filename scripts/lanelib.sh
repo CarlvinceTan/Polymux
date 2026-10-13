@@ -1,19 +1,26 @@
 #!/bin/bash
 # Shared helpers for run-lane.sh / verify.sh (sourced, not run).
-# lock_take DIR: atomic writer lock. mkdir is atomic; a stale lock (dead pid) is reclaimed by
-# renaming it to a unique name, then checking the moved lock still holds the dead pid we saw.
-# If it doesn't, another reclaimer won and we moved ITS live lock: put it back and fail.
+# lock_take DIR: writer lock. mkdir is atomic. A stale lock (dead pid) is reclaimed only by the
+# holder of a short-lived gate DIR.reclaim, which re-checks the pid under the gate before replacing
+# it, so with any number of racing reclaimers at most one wins and no live lock is ever moved or
+# deleted. If anything changed, the reclaimer gives up (returns 1). A gate older than 60 s is a
+# dead reclaimer and is cleared (the next attempt can then proceed).
+# A lock with no pid file is being created; it counts as stale only after LOCK_GRACE seconds (10).
+_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }   # GNU first: GNU 'stat -f %m' prints '?'
+_age() { echo $(( $(date +%s) - $(_mtime "$1") )); }
 lock_take() {
-  local d=$1 op
+  local d=$1 op cur g="$1.reclaim" rc=1
   mkdir -p "$(dirname "$d")"
   if mkdir "$d" 2>/dev/null; then echo $$ > "$d/pid"; return 0; fi
-  op=$(cat "$d/pid" 2>/dev/null); [ -z "$op" ] && { sleep 2; op=$(cat "$d/pid" 2>/dev/null); }
-  if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then return 1; fi
-  local t="$d.stale.$$.$RANDOM"
-  mv "$d" "$t" 2>/dev/null || return 1                    # lost the race: someone else moved it
-  if [ "$(cat "$t/pid" 2>/dev/null)" != "$op" ]; then      # not the stale lock we judged dead
-    [ -e "$d" ] || mv "$t" "$d" 2>/dev/null; rm -rf "$t" 2>/dev/null; return 1; fi
-  rm -rf "$t"; mkdir "$d" 2>/dev/null || return 1; echo $$ > "$d/pid"
+  op=$(cat "$d/pid" 2>/dev/null)
+  if [ -z "$op" ]; then [ "$(_age "$d")" -lt "${LOCK_GRACE:-10}" ] && return 1
+  elif kill -0 "$op" 2>/dev/null; then return 1; fi
+  if ! mkdir "$g" 2>/dev/null; then
+    [ "$(_age "$g")" -gt 60 ] && rm -rf "$g"; return 1; fi
+  cur=$(cat "$d/pid" 2>/dev/null)
+  if [ -d "$d" ] && [ "$cur" = "$op" ] && ! { [ -n "$cur" ] && kill -0 "$cur" 2>/dev/null; }; then
+    rm -rf "$d" && mkdir "$d" 2>/dev/null && echo $$ > "$d/pid" && rc=0; fi
+  rmdir "$g" 2>/dev/null; return $rc
 }
 # scope_check BASE "glob,glob": every changed (incl. deleted, nested) file must match one glob.
 # set -f so patterns never expand against real files; case patterns match '/' with '*'.
@@ -28,6 +35,10 @@ scope_check() {
 }
 lock_holder() { cat "$1/pid" 2>/dev/null; }
 lock_drop() { [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] && rm -rf "$1"; return 0; }
+# Lane scripts changed between BASE and HEAD in the current repo?
+lane_files_changed() { git diff --name-only "$1"...HEAD | grep -qE '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac)\.sh|scripts/lanes\.py|agents/lanes\.toml)$'; }
+# test-lanes.sh to run: the checkout under test (a PR's own worktree in --verify-only), else ours.
+lane_tests_path() { if [ -f "$1/scripts/test-lanes.sh" ]; then echo "$1/scripts/test-lanes.sh"; else echo "$2/test-lanes.sh"; fi; }
 branch_lock_dir() { echo "${LANES_HOME:-$HOME/ops/lanes}/branches/$(echo "$1" | tr '/' '%').lock"; }
 # owner/repo from origin (git@github.com:o/r.git | https://github.com/o/r[.git])
 repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##'; }

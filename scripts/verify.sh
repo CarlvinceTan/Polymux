@@ -54,8 +54,8 @@ step() {  # step NAME cmd...
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 [ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"
 # Lane scripts changed -> run their hermetic tests too.
-git diff --name-only "${TI_BASE:-origin/main}"...HEAD | grep -qE '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac)\.sh|scripts/lanes\.py|agents/lanes\.toml)$' && \
-  step lane-tests bash "$SD/test-lanes.sh"
+# From the worktree under test, so --verify-only checks the PR's own scripts and tests.
+lane_files_changed "${TI_BASE:-origin/main}" && step lane-tests bash "$(lane_tests_path "$ROOT" "$SD")"
 [ -d apps/server ] && { step go-vet sh -c 'cd apps/server && go vet -tags sqlite_fts5 ./...'
   step go-test sh -c 'cd apps/server && go test -tags sqlite_fts5 -count=1 ./...'; }
 python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }

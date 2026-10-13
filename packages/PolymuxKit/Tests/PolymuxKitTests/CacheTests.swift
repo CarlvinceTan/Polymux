@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
-@Suite @MainActor
+@Suite
 struct CacheTests {
     private func location() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("polymux-tests-\(UUID())/cache.sqlite")

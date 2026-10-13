@@ -3,9 +3,9 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
-@Suite @MainActor
+@Suite
 struct GroupTests {
-    @Test func groupRegistryKeepsIndividualLookupAndOfflineMentions() throws {
+    @Test func groupRegistryKeepsIndividualLookupAndOfflineMentions() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("polymux-group-\(UUID())")
         defer { try? FileManager.default.removeItem(at: folder) }
         let url = folder.appendingPathComponent("cache.sqlite")
@@ -15,10 +15,14 @@ struct GroupTests {
         let group = Thread(id: "group", agentID: a.id, title: "Trip", agentIDs: [a.id, b.id])
         let individual = Thread(id: a.id, agentID: a.id, title: a.name, agentIDs: [a.id])
         try cache.save(agents: [a, b], threads: [group, individual])
-        let sidebar = SidebarStore(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!), cache: cache)
-        #expect(sidebar.thread(for: a) == individual)
-        #expect(sidebar.groups == [group])
-        #expect(sidebar.participants(in: group) == [a, b])
+        let sidebar = await SidebarStore(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!), cache: cache)
+        await sidebar.load()
+        let direct = await sidebar.thread(for: a)
+        let groups = await sidebar.groups
+        let people = await sidebar.participants(in: group)
+        #expect(direct == individual)
+        #expect(groups == [group])
+        #expect(people == [a, b])
         let request = SendRequest(id: "offline", text: "@Éditeur check this", mentions: [b.id])
         let pending = try cache.enqueue(threadID: group.id, request: request, attachments: [])
         #expect(pending.mentions == [b.id])
