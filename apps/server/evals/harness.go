@@ -38,6 +38,8 @@ type Harness struct {
 	defs         []agentruntime.Definition
 	effects      map[string]*atomic.Int32
 	extras       map[string][]agent.AgentTool
+
+	backgroundTimeout time.Duration
 }
 
 // Options configures a harness start.
@@ -45,6 +47,8 @@ type Options struct {
 	ID     string // scenario EVAL id (required)
 	Steps  []Step
 	Agents []agentruntime.Definition
+
+	BackgroundTimeout time.Duration
 	// Effects maps agent ID to a shared side-effect counter installed as side_effect.
 	Effects map[string]*atomic.Int32
 	// Extras maps agent ID to additional ExtraTools (typed_tool, error_tool, …).
@@ -79,6 +83,8 @@ func Start(t *testing.T, opts Options) *Harness {
 		defs:    append([]agentruntime.Definition(nil), opts.Agents...),
 		effects: opts.Effects,
 		extras:  opts.Extras,
+
+		backgroundTimeout: opts.BackgroundTimeout,
 	}
 	if h.effects == nil {
 		h.effects = map[string]*atomic.Int32{}
@@ -142,6 +148,8 @@ func (h *Harness) open() {
 		Definitions: h.definitions(),
 		Factory:     runtime,
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+
+		BackgroundTimeout: h.backgroundTimeout,
 	})
 	if err != nil {
 		runtime.Close()

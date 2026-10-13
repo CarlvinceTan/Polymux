@@ -1,4 +1,5 @@
 import CSQLite
+import Dispatch
 import Foundation
 
 private final class Connection: @unchecked Sendable {
@@ -17,12 +18,14 @@ private final class Connection: @unchecked Sendable {
     deinit { sqlite3_close(db) }
 }
 
-@MainActor
-public final class LocalCache {
+public final class LocalCache: @unchecked Sendable {
     private let connection: Connection
     private var db: OpaquePointer { connection.db }
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let lock = NSRecursiveLock()
+    /// Counts `threads()` calls, including the one inside `save`.
+    public private(set) var threadReads = 0
 
     public init(url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -148,7 +151,11 @@ public final class LocalCache {
     }
 
     public func agents() throws -> [Agent] { try metadata("agents") ?? [] }
+    public func pins() throws -> [String] { try metadata("pins") ?? [] }
     public func threads() throws -> [Thread] {
+        lock.lock()
+        threadReads += 1
+        lock.unlock()
         var threads: [Thread] = try metadata("threads") ?? []
         for index in threads.indices { threads[index].runs = try runs(threadID: threads[index].id) }
         return threads
@@ -186,13 +193,14 @@ public final class LocalCache {
     public func threadEdits() throws -> [Thread] { try metadata("threadEdits") ?? [] }
     public func saveEdits(_ threads: [Thread]) throws { try setMetadata("threadEdits", value: threads) }
 
-    public func save(agents: [Agent], threads: [Thread]) throws {
+    public func save(agents: [Agent], threads: [Thread], pins: [String]? = nil) throws {
         try transaction {
             let deleted = Set(try self.threads().map(\.id)).subtracting(threads.map(\.id))
             try prune(deleted)
             for thread in threads { for run in thread.runs { try write(run) } }
             try setMetadata("agents", value: agents)
             try setMetadata("threads", value: threads)
+            if let pins { try setMetadata("pins", value: pins) }
         }
     }
 
@@ -238,7 +246,7 @@ public final class LocalCache {
     }
 
     @discardableResult
-    public func apply(_ event: Event) throws -> Message? {
+    public func apply(_ event: Event, touchThreads: Bool = true) throws -> Message? {
         let cursor = try cursor(threadID: event.conversationID)
         guard event.seq > cursor else { return nil }
         guard event.seq == cursor + 1 else { throw ClientError.gap(expected: cursor + 1, actual: event.seq) }
@@ -281,27 +289,29 @@ public final class LocalCache {
                     try setMetadata("agents", value: agents)
                 }
             }
-            var threads = try threads()
-            if let index = threads.firstIndex(where: { $0.id == event.conversationID }) {
-                let isNew = event.seq > threads[index].lastSeq
-                threads[index].lastSeq = max(threads[index].lastSeq, event.seq)
-                if let message = changed,
-                   message.seq >= (threads[index].lastMessage?.seq ?? 0) { threads[index].lastMessage = message }
-                if isNew, event.seq > threads[index].lastReadSeq {
-                    if event.type == "message.start", let changed, changed.role == "assistant",
-                       try !isHidden(changed.id, threadID: event.conversationID) {
-                        threads[index].unreadCount += 1
-                    }
-                    if event.type == "activity", let payload = event.payload {
-                        var removed = 0
-                        for id in Set(payload.messageIDs ?? []) where try !isHidden(id, threadID: event.conversationID) {
-                            if let message = try message(id: id), message.role == "assistant", message.seq > threads[index].lastReadSeq { removed += 1 }
+            if touchThreads {
+                var threads = try threads()
+                if let index = threads.firstIndex(where: { $0.id == event.conversationID }) {
+                    let isNew = event.seq > threads[index].lastSeq
+                    threads[index].lastSeq = max(threads[index].lastSeq, event.seq)
+                    if let message = changed,
+                       message.seq >= (threads[index].lastMessage?.seq ?? 0) { threads[index].lastMessage = message }
+                    if isNew, event.seq > threads[index].lastReadSeq {
+                        if event.type == "message.start", let changed, changed.role == "assistant",
+                           try !isHidden(changed.id, threadID: event.conversationID) {
+                            threads[index].unreadCount += 1
                         }
-                        threads[index].unreadCount = max(0, threads[index].unreadCount - Int64(removed))
-                        if payload.countsUnread { threads[index].unreadCount += 1 }
+                        if event.type == "activity", let payload = event.payload {
+                            var removed = 0
+                            for id in Set(payload.messageIDs ?? []) where try !isHidden(id, threadID: event.conversationID) {
+                                if let message = try message(id: id), message.role == "assistant", message.seq > threads[index].lastReadSeq { removed += 1 }
+                            }
+                            threads[index].unreadCount = max(0, threads[index].unreadCount - Int64(removed))
+                            if payload.countsUnread { threads[index].unreadCount += 1 }
+                        }
                     }
+                    try setMetadata("threads", value: threads)
                 }
-                try setMetadata("threads", value: threads)
             }
             if event.type == "activity" {
                 for id in Set(event.payload?.messageIDs ?? []) {
@@ -412,9 +422,12 @@ public final class LocalCache {
     }
 
     private func transaction(_ body: () throws -> Void) throws {
-        try execute("BEGIN IMMEDIATE")
-        do { try body(); try execute("COMMIT") }
-        catch { try? execute("ROLLBACK"); throw error }
+        // Held across the whole transaction so a main-thread reader cannot slip between statements.
+        lock.lock()
+        defer { lock.unlock() }
+        try executeUnlocked("BEGIN IMMEDIATE")
+        do { try body(); try executeUnlocked("COMMIT") }
+        catch { try? executeUnlocked("ROLLBACK"); throw error }
     }
 
     private enum Value {
@@ -426,7 +439,21 @@ public final class LocalCache {
         _ = try rows(sql, values)
     }
 
+    private func executeUnlocked(_ sql: String, _ values: [Value] = []) throws {
+        _ = try query(sql, values)
+    }
+
     private func rows(_ sql: String, _ values: [Value] = []) throws -> [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return try query(sql, values)
+    }
+
+    private func query(_ sql: String, _ values: [Value] = []) throws -> [[String]] {
+        #if DEBUG
+        // Every SQLite call enters here. Debug builds, including tests, trap on the main queue.
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        #endif
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
             throw ClientError.cache(String(cString: sqlite3_errmsg(db)))

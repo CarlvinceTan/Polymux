@@ -607,12 +607,150 @@ func textPointer(text string) *string { return &text }
 // NoticeWindow bounds how many recent review notices are remembered.
 const NoticeWindow = 8
 
+func routineNoticeID(runID string) string { return "routine-failed:" + runID }
+
+func routineTitle(prompt string) string {
+	if title := boundedText(strings.Join(strings.Fields(prompt), " "), 80); title != "" {
+		return title
+	}
+	return "Routine"
+}
+
+func routineReason(err *contract.Error) string {
+	if err == nil || err.Code == "" || err.Code == "provider" {
+		return "model error"
+	}
+	if err.Code == "timeout" {
+		return "timed out"
+	}
+	if reason := boundedText(strings.Trim(strings.Join(strings.Fields(err.Message), " "), "."), 80); reason != "" {
+		return reason
+	}
+	return "model error"
+}
+
+// routineNotice commits one failure notice before the run row is sealed.
+func (s *Store) routineNotice(ctx context.Context, run *contract.Run) error {
+	if run.RoutineID == nil || *run.RoutineID == "" {
+		return nil
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var status, data string
+	if err := tx.QueryRowContext(ctx, `SELECT status,data FROM runs WHERE id=?`, run.ID).Scan(&status, &data); err != nil {
+		return err
+	}
+	if Terminal(status) {
+		return nil
+	}
+	fresh, err := claimRunNotice(ctx, tx, run.AgentID, run.ID)
+	if err != nil {
+		return err
+	}
+	if fresh {
+		if err := appendRoutineNotice(ctx, tx, run); err != nil {
+			return err
+		}
+	}
+	var stored contract.Run
+	if err := json.Unmarshal([]byte(data), &stored); err != nil {
+		return err
+	}
+	if run.Error != nil {
+		stored.Error = run.Error
+	} else if stored.Error == nil {
+		stored.Error = &contract.Error{Code: "provider", Message: "The agent could not complete this reply."}
+	}
+	encoded, err := json.Marshal(stored)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET data=? WHERE id=? AND status=?`, string(encoded), run.ID, status); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func appendRoutineNotice(ctx context.Context, tx *sql.Tx, run *contract.Run) error {
+	title := "Routine"
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT data FROM routines WHERE agent_id=? AND id=?`, run.AgentID, *run.RoutineID).Scan(&raw)
+	if err == nil {
+		var routine contract.Routine
+		if json.Unmarshal([]byte(raw), &routine) != nil {
+			return errors.New("routine data")
+		}
+		title = routineTitle(routine.Prompt)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	reason := routineReason(run.Error)
+	text := fmt.Sprintf("Routine \u201c%s\u201d failed: %s. Retry", title, reason)
+	id, agent := *run.RoutineID, run.AgentID
+	args, err := json.Marshal(map[string]string{"routineID": id, "title": title, "reason": reason})
+	if err != nil {
+		return err
+	}
+	encoded := string(args)
+	m := contract.Message{
+		ID: routineNoticeID(run.ID), ThreadID: agent, Role: "system", Status: "done", AgentID: &agent, RunID: &run.ID, CreatedAt: Now(),
+		Parts: []contract.Part{{Kind: "routine_failed", Text: &text, Name: &id, Args: &encoded}},
+	}
+	if _, err := appendTx(ctx, tx, contract.Event{ConversationID: agent, Type: "message.start", MessageID: &m.ID, AgentID: &agent, RunID: &run.ID}, &m); err != nil {
+		return err
+	}
+	// Chat row stays system. Push still uses the assistant notice path.
+	pushed := m
+	pushed.Role = "assistant"
+	return noticeTx(ctx, tx, &pushed, contract.Event{Type: "message.start"})
+}
+
+// sealRoutineFailure finishes a routine whose notice was committed but whose run
+// was still open, without writing another notice.
+func (s *Store) sealRoutineFailure(ctx context.Context, run *contract.Run) (bool, error) {
+	if run.Trigger != "routine" {
+		return false, nil
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM messages WHERE id=?`, routineNoticeID(run.ID)).Scan(&n); err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	now := Now()
+	if run.Error == nil {
+		run.Error = &contract.Error{Code: "provider", Message: "The agent could not complete this reply."}
+	}
+	run.Status, run.Activity, run.Summary, run.FinishedAt = "failed", "", "Routine failed", &now
+	run.Tools, run.ToolID = nil, nil
+	return true, s.RunEvent(ctx, "run.done", run, nil)
+}
+
+func claimRunNotice(ctx context.Context, tx *sql.Tx, agent, runID string) (bool, error) {
+	const disabled = `{"enabled":false,"intervalSeconds":14400}`
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO proactivity(agent_id,data) VALUES(?,?)`, agent, disabled); err != nil {
+		return false, err
+	}
+	return claimWindow(ctx, tx, agent, "routine:"+runID, false)
+}
+
 // claimNotice reports whether a notice is new within the bounded recent window, so an
 // older finding cannot re-notify just because a different one was reported in between.
 func claimNotice(ctx context.Context, tx *sql.Tx, agent, hash string) (bool, error) {
+	return claimWindow(ctx, tx, agent, hash, true)
+}
+
+func claimWindow(ctx context.Context, tx *sql.Tx, agent, hash string, enabledOnly bool) (bool, error) {
+	query := `SELECT recent_notices FROM proactivity WHERE agent_id=?`
+	if enabledOnly {
+		query += ` AND json_extract(data,'$.enabled')=1`
+	}
 	var raw string
-	err := tx.QueryRowContext(ctx, `SELECT recent_notices FROM proactivity
-WHERE agent_id=? AND json_extract(data,'$.enabled')=1`, agent).Scan(&raw)
+	err := tx.QueryRowContext(ctx, query, agent).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

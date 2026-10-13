@@ -22,6 +22,7 @@ import (
 	envnode "github.com/MichaelKinsy/PiG/durable/env/node"
 	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/MichaelKinsy/PiG/durable/tools"
+	"github.com/MichaelKinsy/PiG/mcp"
 )
 
 // DurableRuntime runs Polymux conversations on PiG's durable harness instead of the coding
@@ -32,6 +33,7 @@ type DurableRuntime struct {
 	model    string
 	dir      string
 	client   Client
+	sessions sync.Map
 }
 
 // NewDurable opens a durable harness over the given storage. Conversations, generations,
@@ -41,8 +43,13 @@ func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Cli
 		return nil, err
 	}
 	registry := harness.CreateRegistry()
-	opened, err := harness.OpenHarness(ctx, storage, harness.HarnessOptions{
-		Models:   durableModels(baseURL, key, model, client),
+	opened, err := harness.OpenHarness(ctx, cacheHistory(storage), harness.HarnessOptions{
+		Models: durableModels(baseURL, key, model, client),
+		Settings: func() *harness.HarnessSettings {
+			return &harness.HarnessSettings{Compaction: &harness.CompactionPolicyPatch{
+				ReserveTokens: new(4096), KeepRecentTokens: new(4096), BackgroundTokens: new(0),
+			}}
+		},
 		Registry: registry,
 		Env: func(_ context.Context, target harness.EnvTarget) (env.ExecutionEnv, error) {
 			cwd := dir
@@ -75,7 +82,12 @@ func builtinTool(name string) *durable.ToolRegistration {
 }
 
 func (r *DurableRuntime) Close() error {
-	return r.harness.Close(context.WithoutCancel(context.Background()))
+	err := r.harness.Close(context.WithoutCancel(context.Background()))
+	r.sessions.Range(func(key, _ any) bool {
+		err = errors.Join(err, key.(*durableSession).Close())
+		return true
+	})
+	return err
 }
 
 // Open resumes the conversation Polymux recorded, or starts one. An ephemeral definition never
@@ -88,8 +100,30 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	if err != nil {
 		return nil, err
 	}
-	session := &durableSession{conversation: conversation, definition: d, attachments: filepath.Join(r.dir, "attachments")}
-	tools := Tools(d, conversation.Id())
+	cwd := filepath.Join(r.dir, d.Agent.ID)
+	if err := os.MkdirAll(cwd, 0700); err != nil {
+		return nil, err
+	}
+	servers := d.MCP
+	if d.Intro {
+		servers = nil
+	}
+	connected, clients, mcpErr := connectMCP(ctx, servers, cwd)
+	session := &durableSession{conversation: conversation, definition: d, attachments: filepath.Join(r.dir, "attachments"), clients: clients, runtime: r, degraded: mcpErr != nil}
+	opened := false
+	defer func() {
+		if !opened {
+			_ = session.Close()
+		}
+	}()
+	registration := d
+	registration.ExtraTools = append(append([]agent.AgentTool{}, d.ExtraTools...), connected...)
+	if d.TurnContext != nil {
+		registration.TurnContext = func() (context.Context, bool) {
+			return session.turnContext(conversation.Id(), ctx)
+		}
+	}
+	tools := Tools(registration, conversation.Id())
 	for _, name := range d.Tools {
 		if registration := builtinTool(name); registration != nil {
 			tools = append(tools, registration)
@@ -99,11 +133,10 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	for _, registration := range tools {
 		names = append(names, registration.ToolSchema.Name)
 	}
-	prompt, err := buildPrompt(d, names, len(d.MCP) > 0)
+	prompt, err := buildPrompt(d, names, mcpErr != nil || d.Intro && len(d.MCP) > 0)
 	if err != nil {
 		return nil, err
 	}
-	cwd := filepath.Join(r.dir, d.Agent.ID)
 	change := harness.AgentChange{
 		Instructions: harness.SetTo(prompt),
 		Model:        harness.SetTo(durable.ModelRef{Provider: DurableProvider, ModelId: modelID(d, r.model)}),
@@ -113,10 +146,11 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	// selects which of them this conversation offers. Each tool gets its own extension so a
 	// later turn's install cannot replace an earlier one's.
 	for _, registration := range tools {
-		extension := &durable.Extension{Name: "polymux:" + registration.ToolSchema.Name, Tools: []*durable.ToolRegistration{registration}}
+		extension := &durable.Extension{Name: "polymux:" + strconv.FormatInt(int64(conversation.Id()), 10) + ":" + registration.ToolSchema.Name, Tools: []*durable.ToolRegistration{registration}}
 		if err := r.registry.Install(extension); err != nil {
 			return nil, err
 		}
+		session.extensions = append(session.extensions, extension)
 	}
 	// An explicit selection, even an empty one: a conversation without a filter would
 	// otherwise inherit every tool ever installed.
@@ -126,10 +160,14 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 		if err := r.registry.Install(extension); err != nil {
 			return nil, err
 		}
+		session.extensions = append(session.extensions, extension)
 	}
+	change.Extensions = harness.SetTo(harness.ExtensionChange{Exact: true, List: session.extensions})
 	if err := conversation.Configure(ctx, change); err != nil {
 		return nil, err
 	}
+	r.sessions.Store(session, struct{}{})
+	opened = true
 	return session, nil
 }
 
@@ -149,6 +187,9 @@ func (r *DurableRuntime) conversation(ctx context.Context, d Definition, path st
 // DurableProvider is the models-runtime provider ID Polymux registers its endpoint under.
 const DurableProvider = "polymux"
 
+// MaxRequestBytes is the observed request bound for compaction evals.
+const MaxRequestBytes = 128 << 10
+
 // durableModels registers Polymux's OpenAI-compatible endpoint with the durable models runtime.
 func durableModels(baseURL, key, model string, client Client) *ai.Models {
 	provider := ai.NewOpenAIProvider(ai.OpenAIConfig{BaseURL: baseURL, APIKey: key, Model: model, ProviderID: DurableProvider, ExtraHeaders: client.Headers})
@@ -156,7 +197,7 @@ func durableModels(baseURL, key, model string, client Client) *ai.Models {
 	models.SetProvider(&ai.ModelsProvider{
 		ID: DurableProvider, Name: DurableProvider, BaseURL: baseURL,
 		GetModels: func() ([]*ai.Model, error) {
-			return []*ai.Model{{ID: model, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: baseURL}}}, nil
+			return []*ai.Model{{ID: model, Capabilities: ai.ModelCapabilities{ContextWindow: 16384}, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: baseURL}}}, nil
 		},
 		Stream:       passthrough(provider),
 		StreamSimple: passthrough(provider),
@@ -194,7 +235,13 @@ type durableSession struct {
 	emitMu sync.Mutex
 	emit   func(Delta) error
 	// park is set when BeforeTool requests Terminate; AfterTools aborts the in-flight turn.
-	park atomic.Bool
+	park       atomic.Bool
+	clients    []*mcp.Client
+	extensions []*durable.Extension
+	runtime    *DurableRuntime
+	degraded   bool
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // turnContext restores the context this conversation's tool calls and hooks run under.
@@ -286,7 +333,7 @@ var errApprovalPause = errors.New("waiting for approval")
 
 func (s *durableSession) Path() string { return durablePath(s.conversation.Id()) }
 func (s *durableSession) Reusable() bool {
-	return true
+	return !s.degraded
 }
 func (s *durableSession) Abort(ctx context.Context) error { return s.conversation.Abort(ctx, nil) }
 
@@ -298,8 +345,23 @@ func (s *durableSession) BindTurn(before agent.BeforeToolCallHook, turn func() (
 	s.definition.TurnContext = turn
 }
 
-// Close releases nothing: the conversation is durable and belongs to the harness.
-func (s *durableSession) Close() error { return nil }
+// The conversation persists; its live clients and registrations are released.
+func (s *durableSession) Close() error {
+	s.closeOnce.Do(func() {
+		s.closeErr = closeMCP(s.clients)
+		if s.runtime != nil {
+			for _, extension := range s.extensions {
+				// A reopened conversation may have replaced this registration.
+				if s.runtime.registry.Snapshot().Extension(extension.Name) == extension {
+					s.runtime.registry.Uninstall(extension)
+				}
+			}
+			s.extensions = nil
+			s.runtime.sessions.Delete(s)
+		}
+	})
+	return s.closeErr
+}
 
 func durablePath(id durable.ConversationId) string {
 	return "durable:" + strconv.FormatInt(int64(id), 10)
@@ -339,6 +401,11 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 	if err != nil {
 		return Result{}, err
 	}
+	if emit != nil {
+		if err := emit(Delta{Kind: "submission", ToolID: strconv.FormatInt(int64(submission.Id()), 10)}); err != nil {
+			return Result{}, err
+		}
+	}
 	settled, err := submission.Wait(ctx)
 	if err != nil {
 		if s.park.Swap(false) {
@@ -346,6 +413,107 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 		}
 		return Result{}, err
 	}
+	return s.outcome(ctx, settled)
+}
+
+// Resume continues one submission. A placed submission is the crash window; any other
+// queued message stays queued. Otherwise a new generation replays the stored context.
+func (s *durableSession) Resume(ctx context.Context, submissionID int64, emit func(Delta) error) (Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emitMu.Lock()
+	s.emit = emit
+	s.emitMu.Unlock()
+	defer func() {
+		s.emitMu.Lock()
+		s.emit = nil
+		s.emitMu.Unlock()
+	}()
+	if s.runtime == nil {
+		return Result{}, errors.New("no turn to resume")
+	}
+	stop := s.stream(ctx, emit)
+	defer stop()
+	if submission, ok := s.owned(ctx, submissionID); ok {
+		settled, err := submission.Wait(ctx)
+		if err != nil {
+			return Result{}, err
+		}
+		return s.outcome(ctx, settled)
+	}
+	return s.replay(ctx)
+}
+
+func (s *durableSession) owned(ctx context.Context, id int64) (durable.Submission, bool) {
+	if id == 0 || s.runtime == nil {
+		return nil, false
+	}
+	submission, err := s.runtime.harness.Submission(ctx, durable.SubmissionId(id))
+	if err != nil || submission == nil {
+		return nil, false
+	}
+	record, err := submission.Status(ctx)
+	if err != nil || record.ConversationId != s.conversation.Id() || record.Type != durable.SubmissionTypeInput {
+		return nil, false
+	}
+	if record.Status != durable.SubmissionQueued && record.Status != durable.SubmissionPlaced {
+		return nil, false
+	}
+	return submission, true
+}
+
+func (s *durableSession) replay(ctx context.Context) (Result, error) {
+	conversation := s.conversation.Id()
+	value, err := s.conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
+		return durable.CreateTask(tx, harness.GenerationTask, harness.GenerationInput{}, durable.TaskOptions{
+			Ownership:      durable.TaskOwnership{Kind: durable.TaskOwnedByConversation},
+			ConversationId: &conversation,
+		})
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	taskID, ok := value.(durable.TaskId)
+	if !ok {
+		return Result{}, errors.New("no turn to resume")
+	}
+	settled, err := s.runtime.harness.WaitForTask(ctx, taskID)
+	if err != nil {
+		return Result{}, err
+	}
+	if settled.State.Outcome == nil || settled.State.Outcome.Status != durable.OutcomeCompleted {
+		return Result{}, errors.New("resume did not finish")
+	}
+	view, err := s.conversation.Context(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	text := ""
+	usage := contract.Usage{}
+	for _, message := range view.Messages {
+		assistant, ok := message.(ai.AssistantMessage)
+		if !ok {
+			continue
+		}
+		current := ""
+		for _, block := range assistant.Content {
+			if content, ok := block.(ai.TextContent); ok {
+				current += content.Text
+			}
+		}
+		if current == "" {
+			continue
+		}
+		text = current
+		usage = contract.Usage{InputTokens: int64(assistant.Usage.Input), OutputTokens: int64(assistant.Usage.Output)}
+	}
+	if text == "" {
+		return Result{}, errors.New("resume did not finish")
+	}
+	return Result{Text: text, Usage: usage}, nil
+}
+
+func (s *durableSession) outcome(ctx context.Context, settled durable.SettledSubmissionRecord) (Result, error) {
 	result := Result{}
 	if settled.Answer != nil {
 		text, usage, err := s.answer(ctx, *settled.Answer)
@@ -421,21 +589,32 @@ func (s *durableSession) stream(ctx context.Context, emit func(Delta) error) fun
 	var mu sync.Mutex
 	seen := ""
 	started := false
+	compactions := map[durable.EntryId]bool{}
 	watch.Start(func(_ context.Context, view harness.ConversationView, _ []durable.Op) error {
 		mu.Lock()
 		defer mu.Unlock()
+		for _, entry := range view.Entries {
+			if entry.Kind == durable.CompactionEntry.Kind && !compactions[entry.Id] {
+				compactions[entry.Id] = true
+				if started {
+					_ = emit(Delta{Kind: "context.compacted"})
+				}
+			}
+		}
 		if !started {
 			started = true
+			seen = lastAnswer(view)
 			if err := emit(Delta{Kind: "generating"}); err != nil {
 				return nil
 			}
+			return nil
 		}
 		text := lastAnswer(view)
-		if text == "" || text == seen || !strings.HasPrefix(text, seen) {
-			if text != seen {
-				seen = text
-			}
+		if text == "" || text == seen {
 			return nil
+		}
+		if !strings.HasPrefix(text, seen) {
+			seen = ""
 		}
 		delta := text[len(seen):]
 		seen = text

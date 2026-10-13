@@ -1,0 +1,42 @@
+# Polymux local agent lanes (read by scripts/run-lane.sh, verify.sh, bootstrap-mac.sh).
+# cvmini (13 Oct 2026): hw.memsize 17179869184 (16 GB), 12 CPU, Xcode 27.0 (27A266a),
+# macOS 27.0.1, / 228Gi size, 49Gi free.
+# 2 concurrent cold verify.sh (13 Oct): used 7.5 -> 11.0 GB peak, swap +0, pressure normal,
+# min free 59%. Recommendation: 3 lanes, 2 build slots; lane-gate still gates each start.
+# Secrets are NEVER stored here: `key` is a vault entry title read at run time.
+# Any lane field may have a per-host override `field@<hostname -s>` (e.g. key@cvmini).
+
+max_builds = 2          # concurrent xcodebuild slots (verify.sh drops to 1 while ~/ops/pr-verify builds)
+lock_dir = "~/ops/lanes/locks"
+sim_device = "iPhone 17"
+sim_template = "polymux-template"
+mac_hosts = ["cvmini", "cvmac"]   # hosts allowed to run Xcode/Swift units (dispatch-guard.sh)
+# Pinned Cursor CLI installer (bootstrap-mac.sh). Update both together; never curl|bash.
+cursor_install_url = "https://cursor.com/install"
+cursor_install_sha256 = ""        # empty = refuse automatic install; install manually (README)
+
+[lane1]
+agent = "cursor"
+account = "ultra"
+key = "Cursor API key - lane1 (ultra)"
+key@cvmini = "Cursor API key (cvmini cursor-agent)"
+cmd = "~/.local/bin/cursor-agent"
+
+[lane2]
+agent = "cursor"
+account = "second"
+key = "Cursor API key - lane2 (second)"
+key@cvmini = "Cursor API key - UniMelb (second account)"
+cmd = "~/.local/bin/cursor-agent"
+enabled = false         # enable after lane1 is proven (rollout step 6)
+
+[lane3]
+agent = "codex"
+account = "chatgpt"
+cmd = "codex"
+until = "2026-10-30"    # Codex access ends 30 Oct 2026; lane auto-skipped after
+
+[lane4]
+agent = "opencode"
+account = "default"
+cmd = "opencode"

@@ -130,6 +130,19 @@ func (s *Store) Save(ctx context.Context, owner, scope string, input Document) (
 		if index < 0 && input.Revision != "" || index >= 0 && current.Entries[index].Revision != input.Revision {
 			return Document{}, ErrConflict
 		}
+		duplicate := slices.IndexFunc(current.Entries, func(d Document) bool { return d.Text == input.Text })
+		if duplicate >= 0 {
+			input = current.Entries[duplicate]
+			if index < 0 || index == duplicate {
+				return input, nil
+			}
+			current.Entries = slices.Delete(current.Entries, index, index+1)
+			entries, err := durable.ToJsonValue(current.Entries)
+			if err != nil {
+				return Document{}, err
+			}
+			return input, draft.Set("entries", entries)
+		}
 		if index < 0 && len(current.Entries) >= 64 {
 			return Document{}, errors.New("memory scope limit reached")
 		}

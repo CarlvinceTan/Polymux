@@ -39,19 +39,31 @@ extension FocusAnswer {
 }
 
 public enum WireDate {
-    public static func string(_ date: Date = .now) -> String {
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static let fractional: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = .gmt
-        return formatter.string(from: date)
+        return formatter
+    }()
+    private nonisolated(unsafe) static let plain: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = .gmt
+        return formatter
+    }()
+
+    public static func string(_ date: Date = .now) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return fractional.string(from: date)
     }
 
     public static func parse(_ value: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: value)
+        lock.lock()
+        defer { lock.unlock() }
+        if let date = fractional.date(from: value) { return date }
+        return plain.date(from: value)
     }
 }
 

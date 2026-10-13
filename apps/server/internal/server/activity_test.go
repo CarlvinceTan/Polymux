@@ -64,17 +64,45 @@ func TestStopPreparation(t *testing.T) {
 	if recorder.Code != 202 {
 		t.Fatal(recorder.Code, recorder.Body.String())
 	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 	select {
 	case <-started:
-	case <-time.After(3 * time.Second):
-		t.Fatal("preparation not started")
+	case <-ctx.Done():
+		t.Fatal("preparation not started:", ctx.Err())
+	}
+	runID := store.NewRun("prepare", "a", "a", "message").ID
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var active *execution
+	// The background indexer can start extraction before this run is registered.
+	for active == nil {
+		value, ok := api.turns.Load(runID)
+		run, err := db.Run(ctx, runID)
+		if ok && err == nil && run.Status == "running" && run.Activity == "preparing" {
+			active = value.(*execution)
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatalf("run did not start preparation: %+v %v: %v", run, err, ctx.Err())
+		}
 	}
 	recorder = httptest.NewRecorder()
 	api.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/threads/a/stop", strings.NewReader(`{}`)))
 	if recorder.Code != 200 {
 		t.Fatal(recorder.Code)
 	}
-	run := awaitRun(t, db, store.NewRun("prepare", "a", "a", "message").ID, "cancelled")
+	select {
+	case <-active.done:
+	case <-ctx.Done():
+		t.Fatal("preparation did not stop:", ctx.Err())
+	}
+	run, err := db.Run(t.Context(), runID)
+	if err != nil || run.Status != "cancelled" {
+		t.Fatalf("preparation stop: %+v %v", run, err)
+	}
 	if run.Error == nil || run.Error.Code != "stopped" {
 		t.Fatalf("stop result %+v", run)
 	}
@@ -232,6 +260,9 @@ type peerFactory struct {
 	received chan contract.Message
 	refused  chan bool
 	blocked  bool
+	hold     bool
+	abort    bool
+	stopped  chan string
 }
 
 func (f *peerFactory) Open(_ context.Context, d agentruntime.Definition, path string) (agentruntime.Session, error) {
@@ -245,16 +276,23 @@ func (f *peerFactory) Open(_ context.Context, d agentruntime.Definition, path st
 			}
 		}
 	}
-	return &peerSession{factory: f, definition: d}, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	return &peerSession{factory: f, definition: d, done: ctx.Done(), cancel: cancel}, nil
 }
 
 type peerSession struct {
 	factory    *peerFactory
 	definition agentruntime.Definition
+	done       <-chan struct{}
+	cancel     context.CancelFunc
 }
 
 func (s *peerSession) Send(ctx context.Context, m contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
 	text := "Peer result"
+	done := ctx.Done()
+	if s.factory.abort {
+		done = s.done
+	}
 	for _, tool := range s.definition.ExtraTools {
 		if tool.Name() != "message_agent" {
 			continue
@@ -264,12 +302,20 @@ func (s *peerSession) Send(ctx context.Context, m contract.Message, emit func(ag
 				return agentruntime.Result{}, err
 			}
 			text = "Queued peer work"
+			if s.factory.hold {
+				<-done
+				s.factory.stopped <- "a"
+				return agentruntime.Result{}, ctx.Err()
+			}
 		} else {
 			s.factory.received <- m
 			_, err := tool.Execute(ctx, "recursive", json.RawMessage(`{"agent_id":"a","message":"Loop back","intent":"request"}`), nil)
 			s.factory.refused <- (err != nil)
 			if s.factory.blocked {
-				<-ctx.Done()
+				<-done
+				if s.factory.stopped != nil {
+					s.factory.stopped <- "b"
+				}
 				return agentruntime.Result{}, ctx.Err()
 			}
 		}
@@ -279,9 +325,15 @@ func (s *peerSession) Send(ctx context.Context, m contract.Message, emit func(ag
 	}
 	return agentruntime.Result{Text: text}, nil
 }
-func (*peerSession) Abort(context.Context) error { return nil }
-func (*peerSession) Close() error                { return nil }
-func (s *peerSession) Path() string              { return s.definition.Agent.ID + ".jsonl" }
+func (s *peerSession) Abort(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.cancel()
+	return nil
+}
+func (s *peerSession) Close() error { s.cancel(); return nil }
+func (s *peerSession) Path() string { return s.definition.Agent.ID + ".jsonl" }
 
 func TestPeerIsolation(t *testing.T) {
 	dir := t.TempDir()
@@ -338,6 +390,66 @@ func TestPeerIsolation(t *testing.T) {
 	t.Fatal("correlated peer result not published to source")
 }
 
+func TestStopChildren(t *testing.T) {
+	for _, hold := range []bool{true, false} {
+		status := "waiting_peer"
+		if hold {
+			status = "running"
+		}
+		t.Run(status, func(t *testing.T) {
+			dir := t.TempDir()
+			db, err := store.Open(t.Context(), filepath.Join(dir, "db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			f := &peerFactory{received: make(chan contract.Message, 1), refused: make(chan bool, 1), blocked: true, hold: hold, abort: true, stopped: make(chan string, 2)}
+			definitions := []agentruntime.Definition{{Agent: contract.Agent{ID: "a", Name: "A"}}, {Agent: contract.Agent{ID: "b", Name: "B"}}}
+			api, err := New(t.Context(), db, Config{DataDir: dir, Definitions: definitions, Factory: f, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer api.Close()
+			r := httptest.NewRecorder()
+			api.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/threads/a/messages", strings.NewReader(`{"id":"origin","text":"Ask the peer","attachmentIDs":[]}`)))
+			if r.Code != http.StatusAccepted {
+				t.Fatal(r.Code, r.Body.String())
+			}
+			var child contract.Message
+			select {
+			case child = <-f.received:
+			case <-time.After(3 * time.Second):
+				t.Fatal("child never started")
+			}
+			parentID := store.NewRun("origin", "a", "a", "message").ID
+			awaitRun(t, db, parentID, status)
+			end := time.Now().Add(2 * time.Second)
+			r = httptest.NewRecorder()
+			api.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/threads/a/stop", strings.NewReader(`{}`)))
+			if r.Code != http.StatusOK {
+				t.Fatal(r.Code, r.Body.String())
+			}
+			count := 1
+			if hold {
+				count++
+			}
+			for range count {
+				select {
+				case <-f.stopped:
+				case <-time.After(time.Until(end)):
+					t.Fatal("parent stop left a stream running for 2 seconds")
+				}
+			}
+			for _, id := range []string{parentID, store.NewRun(child.ID, "b", "b", "peer").ID} {
+				run, err := db.Run(t.Context(), id)
+				if err != nil || run.Status != "cancelled" || run.Error == nil || run.Error.Code != "stopped" {
+					t.Fatalf("run not stopped: %+v %v", run, err)
+				}
+			}
+		})
+	}
+}
+
 func TestDeletePeerSource(t *testing.T) {
 	dir := t.TempDir()
 	db, err := store.Open(t.Context(), filepath.Join(dir, "db"))
@@ -386,7 +498,17 @@ func (f *openingFactory) Open(ctx context.Context, _ agentruntime.Definition, _ 
 
 func TestStopOpening(t *testing.T) {
 	f := &openingFactory{started: make(chan struct{})}
-	api, _ := startTest(t, f)
+	dir := t.TempDir()
+	db, err := store.Open(t.Context(), filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	api, err := New(t.Context(), db, Config{DataDir: dir, Definitions: []agentruntime.Definition{{Agent: contract.Agent{ID: "assistant", Name: "Assistant"}}}, Factory: f, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer api.Close()
 	r := httptest.NewRecorder()
 	api.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/threads/assistant/messages", strings.NewReader(`{"id":"opening","text":"Hello","attachmentIDs":[]}`)))
 	if r.Code != 202 {
@@ -402,7 +524,14 @@ func TestStopOpening(t *testing.T) {
 	if r.Code != 200 {
 		t.Fatal(r.Code)
 	}
-	awaitRun(t, api.Store, store.NewRun("opening", "assistant", "assistant", "message").ID, "cancelled")
+	run := awaitRun(t, api.Store, store.NewRun("opening", "assistant", "assistant", "message").ID, "cancelled")
+	if run.MessageID == nil {
+		t.Fatal("stopped run has no message")
+	}
+	message, err := api.Store.Message(t.Context(), *run.MessageID)
+	if err != nil || message.Status != "error" {
+		t.Fatalf("stopped message remains streaming: %+v %v", message, err)
+	}
 }
 
 func TestPersistenceCleanup(t *testing.T) {

@@ -107,6 +107,11 @@ func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition
 		return fmt.Errorf("invalid agent definition")
 	}
 	a.Active = false
+	if a.Avatar == nil {
+		if avatar := contract.GrokBotAvatarFromDefinition(definition); avatar != nil {
+			a.Avatar = avatar
+		}
+	}
 	data, err := json.Marshal(a)
 	if err != nil {
 		return err
@@ -306,6 +311,16 @@ func (s *Store) UpdateDefinition(ctx context.Context, a contract.Agent, definiti
 	if err := json.Unmarshal([]byte(data), &a); err != nil {
 		return a, err
 	}
+	if avatar := contract.GrokBotAvatarFromDefinition(definition); avatar != nil {
+		a.Avatar = avatar
+		agentData, err := json.Marshal(a)
+		if err != nil {
+			return a, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET data=? WHERE id=?`, string(agentData), a.ID); err != nil {
+			return a, err
+		}
+	}
 	return a, tx.Commit()
 }
 
@@ -480,6 +495,16 @@ func (s *Store) Read(ctx context.Context, id string, seq int64) error {
 
 func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *contract.Message) (contract.Event, error) {
 	newRun := false
+	if message != nil && message.Status == "streaming" && event.RunID != nil {
+		var status string
+		err := tx.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, *event.RunID).Scan(&status)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return event, err
+		}
+		if Terminal(status) {
+			return event, context.Canceled
+		}
+	}
 	if event.Run != nil {
 		var data string
 		err := tx.QueryRowContext(ctx, `SELECT data FROM runs WHERE id=?`, event.Run.ID).Scan(&data)
@@ -563,6 +588,9 @@ func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *co
 	}
 	if err == nil && event.Run != nil && event.Run.ParentRunID != nil && (event.Type == "run.start" && newRun || event.Type == "run.done") {
 		err = childActivity(ctx, tx, event)
+	}
+	if err == nil && event.Run != nil && endsChildren(event.Run.Status) {
+		err = cancelDescendants(ctx, tx, event.Run.ID)
 	}
 	return event, err
 }

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
-@Suite @MainActor struct ActivityRowsTests {
+@Suite struct ActivityRowsTests {
     private func event(_ seq: Int64, kind: String = "memory.saved", seconds: Double = 0,
                        thread: String = "chief", agents: [String]? = nil) -> Event {
         let date = Date(timeIntervalSince1970: 1_760_000_000 + seconds)
@@ -86,7 +86,7 @@ import Testing
         #expect(TranscriptRow.ordered(messages: [message], events: [activity]).first?.id == "peer")
     }
 
-    @Test func peerRepliesCollapseWithoutBubblesAfterReload() throws {
+    @Test func peerRepliesCollapseWithoutBubblesAfterReload() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let cache = try LocalCache(url: directory.appendingPathComponent("cache.sqlite"))
@@ -104,9 +104,10 @@ import Testing
             _ = try cache.apply(input)
         }
         let client = APIClient(baseURL: URL(string: "http://localhost")!)
-        let store = ChatStore(client: client, cache: cache, threadID: "chief")
-        #expect(store.transcript.count == 1)
-        if case .activity(let row) = store.transcript.first {
+        let store = await ChatStore(client: client, actor: LocalCacheActor(cache), threadID: "chief")
+        await store.ready()
+        #expect(await store.transcript.count == 1)
+        if case .activity(let row) = await store.transcript.first {
             #expect(row.label == "2 messages with")
             #expect(row.agents == ["chief", "aria"])
         } else { Issue.record("Peer reply rendered as a bubble after reload") }
@@ -199,7 +200,7 @@ import Testing
         #expect(ChatTime.startsGroup(midnight, after: nil))
     }
 
-    @Test func boundsRetentionWithoutRevivingPeerBubbles() throws {
+    @Test func boundsRetentionWithoutRevivingPeerBubbles() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let cache = try LocalCache(url: directory.appendingPathComponent("cache.sqlite"))
@@ -216,8 +217,46 @@ import Testing
         try cache.apply(Event(seq: 1004, conversationID: "chief", type: "message.start", message: future))
         #expect(try cache.threads().first?.unreadCount == 1)
         let client = APIClient(baseURL: URL(string: "http://localhost")!)
-        let store = ChatStore(client: client, cache: cache, threadID: "chief")
-        #expect(store.messages.isEmpty)
+        let store = await ChatStore(client: client, actor: LocalCacheActor(cache), threadID: "chief")
+        await store.ready()
+        #expect(await store.messages.isEmpty)
+    }
+
+    @Test func liveActivitiesSurviveReplayAndHideLateReplies() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = try LocalCache(url: directory.appendingPathComponent("cache.sqlite"))
+        let client = APIClient(baseURL: URL(string: "http://localhost")!)
+        let store = await ChatStore(client: client, actor: LocalCacheActor(cache), threadID: "chief")
+        await store.ready()
+        var sent = event(1, kind: "agent.messaged", agents: ["chief", "aria"])
+        sent.payload?.messageIDs = ["late"]
+        try await store.receive(sent)
+        try await store.receive(sent)
+        let reply = Message(id: "late", threadID: "chief", role: "assistant", parts: [],
+                            createdAt: WireDate.string(), status: "done", seq: 2)
+        try await store.receive(Event(seq: 2, conversationID: "chief", type: "message.done", message: reply))
+        #expect(await store.activityEvents.count == 1)
+        #expect(await store.messages.isEmpty)
+        #expect(await store.transcript.count == 1)
+    }
+
+    @Test @MainActor func sidebarCountsPeerActivityOnce() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = try await CacheWork.open(directory.appendingPathComponent("cache.sqlite"))
+        let client = APIClient(baseURL: URL(string: "http://localhost")!)
+        let sidebar = SidebarStore(client: client, cache: cache)
+        try await sidebar.cacheActor.call { try $0.save(agents: [], threads: [Thread(id: "chief", agentID: "chief")]) }
+        await sidebar.load()
+        let sent = event(1, kind: "agent.messaged", agents: ["chief", "aria"])
+        sidebar.note(sent)
+        sidebar.note(sent)
+        #expect(sidebar.threads.first?.unreadCount == 1)
+        sidebar.note(event(2))
+        #expect(sidebar.threads.first?.unreadCount == 1)
+        await sidebar.settled()
+        #expect(try await sidebar.cacheActor.call { try $0.threads().first?.unreadCount } == 1)
     }
 
 }

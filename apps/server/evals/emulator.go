@@ -17,6 +17,7 @@ const evalKey = "test-key"
 
 // ChatRequest is one OpenAI-compatible chat completion body.
 type ChatRequest struct {
+	Bytes    int             `json:"-"`
 	Model    string          `json:"model"`
 	Stream   bool            `json:"stream"`
 	Messages []ChatMessage   `json:"messages"`
@@ -185,6 +186,7 @@ func (e *Emulator) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.mu.Lock()
+	req.Bytes = len(body)
 	e.requests = append(e.requests, &req)
 	e.times = append(e.times, time.Now())
 	if req.Model != e.model {
