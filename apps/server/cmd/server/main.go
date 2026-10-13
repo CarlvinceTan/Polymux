@@ -203,7 +203,7 @@ func run() error {
 			return err
 		}
 	}
-	api, err := server.New(ctx, s, server.Config{DataDir: *dir, Model: model, Definitions: definitions, Factory: runtime, Index: index, Log: log, Push: sender, Devices: devices})
+	api, err := server.New(ctx, s, server.Config{MergeLane: strings.TrimSpace(os.Getenv("POLYMUX_MERGE_LANE")), DataDir: *dir, Model: model, Definitions: definitions, Factory: runtime, Index: index, Log: log, Push: sender, Devices: devices})
 	if err != nil {
 		return err
 	}
