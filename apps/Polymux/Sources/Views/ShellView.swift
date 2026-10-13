@@ -190,10 +190,10 @@ struct ShellView: View {
             }
             .toolbar(removing: .sidebarToggle)
         } detail: {
-            if let thread = session.sidebar.threads.first(where: { $0.id == selection }),
+            if let thread = session.sidebar.displayed(selection),
                let agent = participants(thread).first {
                 ChatPane(agent: agent, thread: thread, session: session, drops: $dropped)
-                    .id(thread.id)
+                    .id(selection)
             } else if let notice = session.sidebar.notice {
                 ContentUnavailableView(notice, systemImage: "exclamationmark.bubble")
             } else {

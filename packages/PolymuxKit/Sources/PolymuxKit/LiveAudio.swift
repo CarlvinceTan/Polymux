@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
 /// Mono, signed 16-bit little-endian PCM without a container header.
 public struct LivePCM: Sendable, Equatable {

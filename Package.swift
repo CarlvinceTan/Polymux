@@ -1,23 +1,6 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-#if os(Linux)
-// Apple-only targets (SwiftUI, AVFoundation, CoreGraphics) cannot build here.
-// The macOS manifest below is unchanged.
-let package = Package(
-    name: "Polymux",
-    platforms: [.iOS("27.0"), .macOS("27.0")],
-    products: [
-        .library(name: "PolymuxKit", targets: ["PolymuxKit"]),
-    ],
-    targets: [
-        .systemLibrary(name: "CSQLite", path: "packages/CSQLite"),
-        .target(name: "PolymuxKit", dependencies: ["CSQLite"], path: "packages/PolymuxKit/Sources/PolymuxKit"),
-        .testTarget(name: "PolymuxKitTests", dependencies: ["PolymuxKit"], path: "packages/PolymuxKit/Tests/PolymuxKitTests",
-                    exclude: ["ActivityTests.swift", "TransportTests.swift"]),
-    ]
-)
-#else
 let package = Package(
     name: "Polymux",
     platforms: [.iOS("27.0"), .macOS("27.0")],
@@ -47,4 +30,3 @@ let package = Package(
         .testTarget(name: "AvatarKitTests", dependencies: ["AvatarKit"], path: "packages/AvatarKit/Tests/AvatarKitTests", resources: [.copy("Fixtures")])
     ]
 )
-#endif

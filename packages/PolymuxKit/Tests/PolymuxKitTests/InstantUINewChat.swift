@@ -8,7 +8,7 @@ import Testing
 @Suite("InstantUINewChat") @MainActor
 struct InstantUINewChat {
     @Test func directChatMeetsBudgetWithoutWaiting() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
         defer { rig.close() }
         let trace = SignpostTrace()
         let launch = InstantChat.start(agents: [rig.arlo], title: nil, sidebar: rig.sidebar, client: rig.client, trace: trace)
@@ -26,11 +26,11 @@ struct InstantUINewChat {
     }
 
     @Test func missingDirectChatReportsUnavailable() async throws {
-        let rig = try Rig(seedThreads: false)
+        let rig = try await Rig(seedThreads: false)
         defer { rig.close() }
         let trace = SignpostTrace()
         let launch = InstantChat.start(agents: [rig.arlo], title: nil, sidebar: rig.sidebar, client: rig.client, trace: trace)
-        #expect(launch.thread == nil)
+        #expect(launch.thread?.id.hasPrefix("local-") == true)
         #expect(launch.feedback.withinBudget)
         #expect(launch.mark.withinBudget)
         #expect(trace.meetsBudgets)
@@ -41,7 +41,7 @@ struct InstantUINewChat {
     }
 
     @Test func forcedFailureRollsBackGroupInsideBudget() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
         defer { rig.close() }
         let beforeAgents = try rig.cache.agents()
         let beforeThreads = try rig.cache.threads()
@@ -60,7 +60,7 @@ struct InstantUINewChat {
         await rig.sidebar.refresh()
         #expect(rig.sidebar.threads.contains { $0.id == local })
         let message = await failure
-        #expect(message == "Couldn’t create this chat. forced failure")
+        #expect(message == "Couldn’t create this chat. Check your connection and try again.")
         #expect(rig.sidebar.notice == message)
         #expect(launch.thread == nil)
         #expect(!rig.sidebar.threads.contains { $0.id == local })
@@ -70,7 +70,7 @@ struct InstantUINewChat {
     }
 
     @Test func forcedFailureRollsBackAgentInsideBudget() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
         defer { rig.close() }
         let beforeAgents = try rig.cache.agents()
         let beforeThreads = try rig.cache.threads().map(\.id).sorted()
@@ -93,7 +93,7 @@ struct InstantUINewChat {
         await rig.probe.waitUntilEntered()
         #expect(rig.sidebar.agents.contains { $0.id == launch.agent.id })
         let message = await failure
-        #expect(message == "Couldn’t create this agent. forced failure")
+        #expect(message == "Couldn’t create this agent. Check your connection and try again.")
         #expect(rig.sidebar.notice == message)
         #expect(launch.saved == nil)
         #expect(!rig.sidebar.agents.contains { $0.id == launch.agent.id })
@@ -103,7 +103,7 @@ struct InstantUINewChat {
     }
 
     @Test func slowCreateMeetsBudgetAndKeepsServerChat() async throws {
-        let rig = try Rig(failCreates: false)
+        let rig = try await Rig(failCreates: false)
         defer { rig.close() }
         let trace = SignpostTrace()
         let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: "Trip", sidebar: rig.sidebar, client: rig.client, trace: trace)
@@ -121,8 +121,8 @@ struct InstantUINewChat {
         #expect(try !rig.cache.threads().contains { $0.id == local })
     }
 
-    @Test func slowCreateExceedsBudget() throws {
-        let rig = try Rig()
+    @Test func slowCreateExceedsBudget() async throws {
+        let rig = try await Rig()
         defer { rig.close() }
         let trace = SignpostTrace()
         let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: "Trip", sidebar: rig.sidebar, client: rig.client, trace: trace, stall: {
@@ -140,19 +140,21 @@ struct InstantUINewChat {
         #expect(!trace.meetsBudgets)
     }
 
-    @Test func newChatViewHasNoBlockingSpinner() throws {
-        var root = URL(fileURLWithPath: #filePath)
-        while root.path != "/" {
-            root.deleteLastPathComponent()
-            if FileManager.default.fileExists(atPath: root.appendingPathComponent("Package.swift").path) { break }
-        }
-        let source = try String(contentsOf: root.appendingPathComponent("apps/Polymux/Sources/Views/NewChatView.swift"), encoding: .utf8)
-        #expect(!source.contains("ProgressView"))
-        #expect(!source.contains("starting"))
-        #expect(!source.contains("creating"))
-        let shell = try String(contentsOf: root.appendingPathComponent("apps/Polymux/Sources/Views/ShellView.swift"), encoding: .utf8)
-        #expect(shell.contains("sidebar.notice"))
+    @Test func publishesBeforeSuspending() async throws {
+        let rig = try await Rig(failCreates: false)
+        defer { rig.close() }
+        let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: nil,
+                                       sidebar: rig.sidebar, client: rig.client)
+        let local = try #require(launch.thread?.id)
+        #expect(rig.sidebar.threads.contains { $0.id == local })
+        async let result = launch.finish()
+        await rig.probe.waitUntilEntered()
+        #expect(rig.sidebar.threads.contains { $0.id == local })
+        #expect(await result == nil)
+        #expect(rig.sidebar.aliases[local] == "server-group")
+        #expect(rig.sidebar.displayed(local)?.id == "server-group")
     }
+
 }
 
 @MainActor
@@ -165,7 +167,7 @@ private struct Rig {
     let arlo = Agent(id: "arlo", name: "Arlo")
     let milo = Agent(id: "milo", name: "Milo")
 
-    init(seedThreads: Bool = true, failCreates: Bool = true) throws {
+    init(seedThreads: Bool = true, failCreates: Bool = true) async throws {
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("polymux-instant-\(UUID())")
         cache = try LocalCache(url: folder.appendingPathComponent("cache.sqlite"))
         let threads = seedThreads ? [
@@ -178,6 +180,7 @@ private struct Rig {
         let host = InstantProtocol.routes.add { try await created.handle($0) }
         client = Rig.client(host: host)
         sidebar = SidebarStore(client: client, cache: cache)
+        await sidebar.load()
     }
 
     func close() {

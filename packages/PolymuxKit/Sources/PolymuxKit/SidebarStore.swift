@@ -68,12 +68,10 @@ public final class SidebarStore {
         revision &+= 1
         acceptedAgents[id] = nil
         agents.removeAll { $0.id == id }
-        var omittingThreads: Set<String> = []
         if agentChats.remove(id) != nil {
             stagedThreads[id] = nil
             acceptedThreads[id] = nil
             threads.removeAll { $0.id == id }
-            omittingThreads.insert(id)
         }
         notice = message
         noticeTask?.cancel()
@@ -105,12 +103,10 @@ public final class SidebarStore {
         stagedAgents[id] = nil
         acceptedAgents[id] = nil
         agents.removeAll { $0.id == id }
-        var omittingThreads: Set<String> = []
         if agentChats.remove(id) != nil {
             stagedThreads[id] = nil
             acceptedThreads[id] = nil
             threads.removeAll { $0.id == id }
-            omittingThreads.insert(id)
         }
         acceptedAgents[agent.id] = agent
         merge(agent, into: &agents)
@@ -119,7 +115,6 @@ public final class SidebarStore {
             acceptedThreads[thread.id] = thread
             merge(thread, into: &threads)
         }
-        let omittingAgents: Set<String> = id == agent.id ? [] : [id]
         clearNotice()
         await accept(agent)
     }
