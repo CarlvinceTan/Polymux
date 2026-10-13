@@ -13,6 +13,42 @@ final class ReadinessTests: XCTestCase {
                             "grp-trip", "t-media", "t-activity", "t-fern", "grp-empty"]
     var waits: [String: Int] = [:]
 
+    func testInlineActivity() {
+        for theme in ["light", "dark"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["POLYMUX_DATA_DIR"] = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"]
+            app.launchArguments = ["--verify-fixture"] + (theme == "dark" ? ["--verify-dark"] : [])
+            app.launch()
+            let any = app.descendants(matching: .any)
+            timed("activity.sidebar.\(theme)") { any["chats.list"].exists }
+            let row = any["sidebar.row.t-activity"]
+            timed("activity.visible.\(theme)") {
+                if row.exists && row.isHittable { return true }
+                #if os(macOS)
+                any["chats.list"].scroll(byDeltaX: 0, deltaY: -300)
+                #else
+                any["chats.list"].swipeUp()
+                #endif
+                return false
+            }
+            row.tap()
+            let tool = any.matching(NSPredicate(format: "label CONTAINS 'release status'")).firstMatch
+            let peers = any.matching(NSPredicate(format: "label CONTAINS '1 message with'")).firstMatch
+            let repeats = any.matching(NSPredicate(format: "label CONTAINS 'Searched 3 activities'")).firstMatch
+            let memory = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Rollout plan'")).firstMatch
+            timed("activity.rows.\(theme)") { tool.exists && peers.exists && repeats.exists && memory.exists }
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "inline-activity-\(theme)"; shot.lifetime = .keepAlways; add(shot)
+            memory.tap()
+            timed("activity.object.\(theme)") {
+                any.matching(NSPredicate(format: "label CONTAINS 'verify the release before enabling'")).firstMatch.exists
+            }
+            let object = XCTAttachment(screenshot: app.screenshot())
+            object.name = "activity-object-\(theme)"; object.lifetime = .keepAlways; add(object)
+            app.terminate()
+        }
+    }
+
     func timed(_ name: String, timeout: TimeInterval = 30, _ ok: () -> Bool) {
         let t0 = Date()
         while !ok() {

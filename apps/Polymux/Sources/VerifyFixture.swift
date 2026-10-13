@@ -58,14 +58,19 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
             switch request.url?.lastPathComponent {
             case "agents": data = try JSONEncoder().encode(Self.agents)
             case "threads": data = try JSONEncoder().encode(Self.threads)
-            case "settings": data = try JSONEncoder().encode(Settings(appearance: "system", sidebarWidth: 360))
+            case "settings":
+                let theme = CommandLine.arguments.contains("--verify-dark") ? "dark" : "light"
+                data = try JSONEncoder().encode(Settings(appearance: theme, sidebarWidth: 360))
             case "messages": data = try JSONEncoder().encode([Message]())
             case "events":
                 let after = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
                     .first { $0.name == "after" }?.value.flatMap(Int64.init) ?? 0
                 let seeded = request.url?.path.contains("/t-activity/") == true ? Self.activity : []
                 data = try JSONEncoder().encode(seeded.filter { $0.seq > after })
-            default: data = Data("{}".utf8)
+            default:
+                data = request.url?.path.contains("/activity/") == true
+                    ? try JSONEncoder().encode(["text": "Rollout plan: verify the release before enabling the routine."])
+                    : Data("{}".utf8)
             }
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
                                            headerFields: ["Content-Type": "application/json"])!
