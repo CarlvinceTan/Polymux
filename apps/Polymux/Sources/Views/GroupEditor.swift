@@ -284,6 +284,6 @@ struct GroupEditor: View {
         updated.title = title
         updated.agentIDs = selected
         updated.leadAgentID = lead
-        session.sidebar.edit(updated, delay: delay)
+        Task { await session.sidebar.edit(updated, delay: delay) }
     }
 }

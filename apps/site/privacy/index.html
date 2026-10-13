@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f7f5" />
+    <title>Privacy — Polymux</title>
+    <meta name="description" content="How Polymux uses Google user data: what it accesses, where tokens are stored, and how to revoke access." />
+    <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1" />
+    <link rel="canonical" href="https://polymux.com/privacy" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Polymux" />
+    <meta property="og:title" content="Privacy — Polymux" />
+    <meta property="og:description" content="How Polymux uses Google user data." />
+    <meta property="og:url" content="https://polymux.com/privacy" />
+    <meta name="twitter:card" content="summary" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "@id": "https://polymux.com/privacy#webpage",
+        "url": "https://polymux.com/privacy",
+        "name": "Privacy — Polymux",
+        "description": "How Polymux uses Google user data.",
+        "dateModified": "2026-10-11",
+        "isPartOf": {"@id": "https://polymux.com/#website"},
+        "about": {"@id": "https://polymux.com/#software"}
+      }
+    </script>
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <style>
+  :root {
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #171717;
+    background: #f7f7f5;
+    font-synthesis: none;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; min-width: 320px; background: #f7f7f5; }
+  a { color: inherit; text-decoration: none; }
+  ::selection { color: #fff; background: #171717; }
+
+  header,
+  footer {
+    width: min(900px, calc(100% - 40px));
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  header { height: 68px; border-bottom: 1px solid #deded9; }
+  footer { min-height: 100px; border-top: 1px solid #deded9; color: #6f6f6b; font-size: 12px; }
+
+  .brand { display: inline-flex; align-items: center; gap: 4.875px; color: #171717; font-size: 19.5px; font-weight: 750; letter-spacing: -.045em; text-rendering: geometricPrecision; -webkit-font-smoothing: antialiased; }
+  .brand img { width: 26px; height: 26px; object-fit: contain; }
+  .home-link { color: #6f6f6b; font-size: 13px; }
+  .home-link:hover, article a:hover { color: #171717; }
+
+  main { width: min(900px, calc(100% - 40px)); margin: 0 auto; padding: 88px 0 112px; }
+  .title-block { padding-bottom: 48px; border-bottom: 1px solid #deded9; }
+  .eyebrow { margin: 0 0 18px; color: #6f6f6b; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+  h1 { margin: 0; font-size: clamp(46px, 7vw, 72px); line-height: 1; letter-spacing: -.055em; font-weight: 620; }
+  .effective { margin: 20px 0 0; color: #6f6f6b; font-size: 13px; }
+
+  article { max-width: 680px; padding-top: 18px; }
+  section { padding: 34px 0; border-bottom: 1px solid #deded9; }
+  section:last-child { border-bottom: 0; }
+  h2 { margin: 0 0 16px; font-size: 22px; line-height: 1.25; letter-spacing: -.025em; font-weight: 620; }
+  h3 { margin: 26px 0 8px; font-size: 15px; line-height: 1.4; font-weight: 650; }
+  p, li { color: #565652; font-size: 15px; line-height: 1.72; }
+  p { margin: 0; }
+  ul { margin: 12px 0 0; padding-left: 21px; }
+  li + li { margin-top: 7px; }
+  article a { color: #171717; text-decoration: underline; text-decoration-color: #b8b8b2; text-underline-offset: 3px; }
+
+  @media (max-width: 640px) {
+    header, footer, main { width: min(100% - 28px, 900px); }
+    main { padding: 64px 0 82px; }
+    .title-block { padding-bottom: 38px; }
+    section { padding: 28px 0; }
+  }
+</style>
+  </head>
+  <body>
+    <header>
+  <a class="brand" href="/" aria-label="Polymux home">
+    <img src="../../desktop/src/renderer/public/polymux.svg" alt="" />
+    <span>Polymux</span>
+  </a>
+  <a class="home-link" href="/">Back to home</a>
+</header>
+
+<main>
+  <div class="title-block">
+    <p class="eyebrow">Legal</p>
+    <h1>Privacy</h1>
+    <p class="effective">Last updated 11 October 2026</p>
+  </div>
+
+  <article>
+    <section>
+      <h2>Overview</h2>
+      <p>
+        Polymux is a personal app. It connects to a Google account only so
+        that the account owner's own agents can read that owner's data when
+        asked. This page explains what Google data Polymux accesses and how it
+        is handled. The general <a href="/privacy-policy/">Polymux Privacy Policy</a>
+        covers the rest of the product.
+      </p>
+    </section>
+
+    <section>
+      <h2>Google data Polymux accesses</h2>
+      <p>With your permission, Polymux requests access to:</p>
+      <ul>
+        <li>Google Drive</li>
+        <li>Google Docs</li>
+        <li>Google Sheets</li>
+        <li>Gmail (read-only)</li>
+        <li>Google Calendar</li>
+      </ul>
+      <p>
+        This access is used only to let your own agents read your data to
+        complete tasks you request. It is not used for anything else.
+      </p>
+    </section>
+
+    <section>
+      <h2>Storage</h2>
+      <p>
+        OAuth tokens are stored locally on your own machine. They are not
+        uploaded to a Polymux server.
+      </p>
+    </section>
+
+    <section>
+      <h2>Sharing and sale of data</h2>
+      <p>
+        Google user data is not sold, shared with third parties, or used for
+        advertising.
+      </p>
+    </section>
+
+    <section>
+      <h2>Google API Services User Data Policy</h2>
+      <p>
+        Polymux's use and transfer of information received from Google APIs
+        adheres to the
+        <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
+        including the Limited Use requirements.
+      </p>
+    </section>
+
+    <section>
+      <h2>Revoking access</h2>
+      <p>
+        You can revoke Polymux's access at any time from your Google Account at
+        <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.
+        Select Polymux and remove its access. You can also delete the locally
+        stored tokens from your machine.
+      </p>
+    </section>
+
+    <section>
+      <h2>Contact</h2>
+      <p>
+        Questions: <a href="mailto:team@polymux.com">team@polymux.com</a>.
+      </p>
+    </section>
+  </article>
+</main>
+
+<footer>
+  <a class="brand" href="/"><img src="../../desktop/src/renderer/public/polymux.svg" alt="" /><span>Polymux</span></a>
+  <span>Privacy</span>
+</footer>
+    <script type="module" src="/src/analytics.ts"></script>
+  </body>
+</html>

@@ -63,14 +63,24 @@ ORDER BY d.rowid LIMIT 32`, parent.ID)
 			rows.Close()
 			return err
 		}
-		var message contract.Message
+		text := ""
 		if messageData.Valid {
+			var message contract.Message
 			if err := json.Unmarshal([]byte(messageData.String), &message); err != nil {
 				rows.Close()
 				return err
 			}
+			text = Text(message)
+		} else if d.RunID != nil {
+			// Timeout skips the receipt, so the child error is the parent's context.
+			note, err := childNote(ctx, tx, *d.RunID)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			text = note
 		}
-		text := boundedText(Text(message), min(8192, budget))
+		text = boundedText(text, min(8192, budget))
 		budget -= len(text)
 		results = append(results, receipt{AgentID: d.TargetAgentID, Status: d.Status, Text: text})
 	}
@@ -92,4 +102,19 @@ ORDER BY d.rowid LIMIT 32`, parent.ID)
 		Parts: []contract.Part{{Kind: "text", Text: &text}},
 	}}
 	return queueTx(ctx, tx, work, parent.AgentID)
+}
+
+func childNote(ctx context.Context, tx *sql.Tx, id string) (string, error) {
+	var data string
+	if err := tx.QueryRowContext(ctx, `SELECT data FROM runs WHERE id=?`, id).Scan(&data); err != nil {
+		return "", err
+	}
+	var run contract.Run
+	if err := json.Unmarshal([]byte(data), &run); err != nil {
+		return "", err
+	}
+	if run.Error == nil {
+		return "", nil
+	}
+	return run.Error.Message, nil
 }

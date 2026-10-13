@@ -13,12 +13,19 @@ struct ComposerView: View {
     let client: APIClient
     let isVoiceActive: Bool
     let send: (String, [Attachment], ReplyContext?, [String]) async -> Void
-    let voice: () -> Void
     var reply: ReplyContext? = nil
     var agentName = ""
     var clearReply: () -> Void = {}
     var drops: Binding<[URL]> = .constant([])
     var members: [Agent] = []
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openURL) private var openURL
+    @State private var dictation = DictationInput()
+    @State private var dictationDraft = DictationDraft()
+    @State private var permissionBanner = false
+    @State private var sending = false
     @State private var mentions: [MentionToken] = []
     @State private var text = ""
     @State private var selection: TextSelection?
@@ -37,19 +44,36 @@ struct ComposerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             controls
+            if permissionBanner {
+                HStack {
+                    Text("Enable microphone & speech recognition in Settings")
+                    Button("Settings") { openSettings() }
+                }
+                .font(.caption).padding(.leading, controlSize + 12)
+            }
             if unsent {
                 Button("Unsent", systemImage: "arrow.clockwise", action: submit)
                     .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
                     .accessibilityLabel("Unsent. Resend message")
                     .padding(.leading, controlSize + 12)
             } else if let error {
-                Text(error).font(.caption2).foregroundStyle(.secondary).padding(.leading, controlSize + 12)
+                Text(error).font(.caption2).foregroundStyle(.primary).padding(.leading, controlSize + 12)
             }
         }
         .disabled(uploading || loadingPhotos)
+        .background {
+            if dictation.active {
+                Button("Stop dictation") { Task { await stopDictation() } }
+                    .keyboardShortcut(.cancelAction)
+                    .hidden().accessibilityHidden(true)
+            }
+        }
         .onChange(of: isVoiceActive) { _, active in
             focused = !active
-            if active { attachments = false }
+            if active {
+                attachments = false
+                Task { await stopDictation() }
+            }
         }
         .onChange(of: reply?.messageID) { _, value in
             if value != nil { focused = true }
@@ -63,6 +87,14 @@ struct ComposerView: View {
                 catch { self.error = error.localizedDescription }
             }
             focused = true
+        }
+        .onDisappear { Task { await stopDictation() } }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { Task { await stopDictation() } }
+            if phase == .active, !dictation.denied { permissionBanner = false }
+        }
+        .onChange(of: dictation.active) { _, active in
+            if !active { dictationDraft.stop() }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             do {
@@ -111,6 +143,7 @@ struct ComposerView: View {
         HStack(alignment: .bottom, spacing: 12) {
             Button { attachments.toggle() } label: {
                 Image(systemName: "plus").font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(controlInk)
                     .frame(width: controlSize, height: controlSize)
                     .contentShape(Circle())
             }
@@ -159,6 +192,11 @@ struct ComposerView: View {
                         if let first = mentionChoices.first { mention(first) }
                         else { submit() }
                     }
+                    .onKeyPress(.escape) {
+                        guard dictation.active else { return .ignored }
+                        Task { await stopDictation() }
+                        return .handled
+                    }
                     .accessibilityLabel("Message")
                     .anchorPreference(key: MentionAnchor.self, value: .bounds) { $0 }
             }
@@ -175,29 +213,39 @@ struct ComposerView: View {
                 }
             }
             .zIndex(1)
-            Group {
-                if uploading || loadingPhotos {
-                    ProgressView().controlSize(.small).frame(width: controlSize, height: controlSize)
-                } else {
-                    ZStack {
-                        Button { voice() } label: {
-                            Image(systemName: "mic.fill")
-                                .font(.system(size: 15)).frame(width: controlSize, height: controlSize)
+            if uploading || loadingPhotos {
+                ProgressView().controlSize(.small).frame(width: controlSize, height: controlSize)
+            } else {
+                Button { toggleDictation() } label: {
+                    Image(systemName: dictation.denied ? "mic.slash.fill" : "mic.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(dictation.active ? (colorScheme == .dark ? Color.black : Color.white) : controlInk)
+                        .frame(width: controlSize, height: controlSize)
+                        .background(dictation.active ? Color.accentColor : .clear, in: Circle())
+                        .overlay {
+                            if dictation.active {
+                                Circle().stroke(controlInk, lineWidth: 2)
+                                    .scaleEffect(reduceMotion ? 1 : 1 + CGFloat(dictation.level) * 0.18)
+                            }
                         }
-                        .opacity(hasContent ? 0 : 1).allowsHitTesting(!hasContent)
-                        .accessibilityHidden(hasContent).accessibilityLabel("Speech conversation")
-                        Button { submit() } label: {
-                            Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold))
-                                .frame(width: controlSize, height: controlSize)
-                        }
-                        .opacity(hasContent ? 1 : 0).allowsHitTesting(hasContent)
-                        .accessibilityHidden(!hasContent).accessibilityLabel("Send message")
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: Circle())
+                .accessibilityLabel(dictation.active ? "Stop dictation" : "Start dictation")
+                .accessibilityValue(dictation.denied ? "Permission denied" : dictation.active ? "Listening" : "")
+                .disabled(dictation.stopping || sending || isVoiceActive)
+                if hasContent {
+                    Button { submit() } label: {
+                        Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(controlInk)
+                            .frame(width: controlSize, height: controlSize)
                     }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .accessibilityLabel("Send message")
+                    .disabled(sending)
                 }
             }
-            .buttonStyle(.plain).frame(width: controlSize, height: controlSize)
-            .glassEffect(.regular.interactive(), in: Circle())
-            .animation(.easeInOut(duration: 0.15), value: hasContent)
         }
     }
 
@@ -293,6 +341,7 @@ struct ComposerView: View {
         let token = "@\(agent.name)"
         var updated = text
         updated.replaceSubrange(query.start..., with: token + " ")
+        dictationDraft.edit(from: text, to: updated)
         editText(updated, range: replaced)
         if agent.id != "everyone" {
             mentions.append(MentionToken(id: agent.id, text: token,
@@ -303,7 +352,10 @@ struct ComposerView: View {
     }
 
     private var draftText: Binding<String> {
-        Binding(get: { text }, set: { editText($0) })
+        Binding(get: { text }, set: {
+            dictationDraft.edit(from: text, to: $0)
+            editText($0)
+        })
     }
 
     private func editText(_ updated: String, range: NSRange? = nil) {
@@ -335,6 +387,7 @@ struct ComposerView: View {
 
     private var hasContent: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !files.isEmpty }
     private var isExpanded: Bool { !files.isEmpty || reply != nil }
+    private var controlInk: Color { colorScheme == .dark ? .white : .black }
 
     private var controlSize: CGFloat {
         #if os(macOS)
@@ -359,7 +412,60 @@ struct ComposerView: View {
         withAnimation { files.append(DraftFile(url: copy, kind: kind)) }
     }
 
+    private func toggleDictation() {
+        if dictation.active {
+            Task { await stopDictation() }
+            return
+        }
+        guard !dictation.denied else { permissionBanner = true; return }
+        permissionBanner = false
+        error = nil
+        focused = true
+        dictationDraft.stop()
+        dictation.start { value in
+            let range: NSRange
+            if case let .selection(bounds) = selection?.indices,
+               bounds.lowerBound >= text.startIndex, bounds.upperBound <= text.endIndex {
+                range = NSRange(bounds, in: text)
+            } else { range = NSRange(location: text.utf16.count, length: 0) }
+            if let result = dictationDraft.update(value.text, start: value.start, final: value.final,
+                                                  text: text, selection: range) {
+                editText(result.text, range: result.range)
+                let cursor = String.Index(utf16Offset: result.cursor, in: text)
+                selection = TextSelection(insertionPoint: cursor)
+            }
+        } failure: { failure in
+            if dictation.denied { permissionBanner = true }
+            else { error = failure.localizedDescription }
+        }
+    }
+
+    private func stopDictation() async {
+        await dictation.stop()
+        dictationDraft.stop()
+    }
+
+    private func openSettings() {
+        #if os(macOS)
+        let pane = dictation.microphoneDenied ? "Privacy_Microphone" : "Privacy_SpeechRecognition"
+        let path = "x-apple.systempreferences:com.apple.preference.security?\(pane)"
+        #else
+        let path = UIApplication.openSettingsURLString
+        #endif
+        if let url = URL(string: path) { openURL(url) }
+    }
+
     private func submit() {
+        guard !sending else { return }
+        sending = true
+        Task {
+            await stopDictation()
+            sendDraft()
+            sending = false
+        }
+    }
+
+    private func sendDraft() {
         guard hasContent, !uploading, !loadingPhotos else { return }
         let draft = text
         let pending = files
@@ -376,6 +482,7 @@ struct ComposerView: View {
                 var attachments: [Attachment] = []
                 for file in pending { attachments.append(try await client.upload(file: file.url)) }
                 text = ""
+                selection = nil
                 mentions = []
                 let submitted = Set(pending.map(\.id))
                 withAnimation { files.removeAll { submitted.contains($0.id) } }
@@ -385,6 +492,19 @@ struct ComposerView: View {
             focused = true
         }
     }
+
+    #if DICTATION_CHECK
+    static func fixture(input: DictationInput, text: String = "", banner: Bool = false,
+                        issue: String? = nil, focus: Bool = false) -> some View {
+        var view = ComposerView(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!),
+                                isVoiceActive: false, send: { _, _, _, _ in })
+        view._dictation = State(initialValue: input)
+        view._text = State(initialValue: text)
+        view._permissionBanner = State(initialValue: banner)
+        view._error = State(initialValue: issue)
+        return view.onAppear { view.focused = focus }
+    }
+    #endif
 }
 
 private struct MentionSize: Layout {

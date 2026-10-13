@@ -35,26 +35,27 @@ type handoffWork struct {
 }
 
 type turnState struct {
-	run        contract.Run
-	work       store.Work
-	mu         sync.Mutex
-	handoff    *store.Work
-	target     string
-	tools      int
-	notice     *string
-	external   map[string]bool
-	prefixes   []string
-	classes    map[string]ToolClass
-	known      map[string]bool
-	waits      map[string]bool
-	checkpoint *store.Checkpoint
-	store      *store.Store
-	hookErr    error
-	task       *store.Task
-	cancel     context.CancelFunc
-	approval   *store.Approval
-	claims     map[string]string // tool-call id → claimed approval id
-	noResume   bool              // voice turns gate but do not enqueue actor resume
+	run          contract.Run
+	work         store.Work
+	mu           sync.Mutex
+	handoff      *store.Work
+	target       string
+	tools        int
+	notice       *string
+	external     map[string]bool
+	prefixes     []string
+	readPrefixes []string
+	classes      map[string]ToolClass
+	known        map[string]bool
+	waits        map[string]bool
+	checkpoint   *store.Checkpoint
+	store        *store.Store
+	hookErr      error
+	task         *store.Task
+	cancel       context.CancelFunc
+	approval     *store.Approval
+	claims       map[string]string // tool-call id → claimed approval id
+	noResume     bool              // voice turns gate but do not enqueue actor resume
 }
 
 func beforeTool(ctx context.Context, call, name string, args json.RawMessage) agent.ToolCallHookResult {
@@ -80,6 +81,9 @@ func beforeTool(ctx context.Context, call, name string, args json.RawMessage) ag
 	}
 	if state.tools > limit {
 		return agent.ToolCallHookResult{Block: true, Terminate: true, Reason: "Turn tool budget exhausted"}
+	}
+	if state.work.Trigger == "child" && (name == "spawn_task" || name == "message_agent" || name == "handoff_agent" || name == "manage_tasks") {
+		return agent.ToolCallHookResult{Block: true, Reason: "Child tasks cannot delegate or schedule continuations"}
 	}
 	if chain, _ := ctx.Value(chainKey{}).(*chainState); chain != nil {
 		chain.mu.Lock()
@@ -123,6 +127,14 @@ func gateApproval(ctx context.Context, state *turnState, call, name string, args
 		return nil
 	}
 	declared := state.classes[name]
+	if declared == "" {
+		for _, prefix := range state.readPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				declared = ToolRead
+				break
+			}
+		}
+	}
 	class := classifyTool(name, declared, state.known[name], externalTool(state, name))
 	if class != ToolConsequential {
 		return nil
@@ -175,7 +187,7 @@ func gateApproval(ctx context.Context, state *turnState, call, name string, args
 		jobID = ""
 	}
 	created, isNew, err := state.store.CreateApproval(ctx, store.Approval{
-		ID: "approval:" + state.run.ID + ":" + fmt.Sprintf("%x", sha256Sum(key)),
+		ID:    "approval:" + state.run.ID + ":" + fmt.Sprintf("%x", sha256Sum(key)),
 		RunID: state.run.ID, AgentID: state.run.AgentID, ThreadID: state.run.ConversationID,
 		Tool: name, Args: args, Key: key, JobID: jobID,
 	})
@@ -368,6 +380,9 @@ func (s *Server) peerContext(ctx context.Context, work store.Work) (contract.Mes
 	}
 	if work.Trigger == "peer" {
 		text += fmt.Sprintf("\nPeer request %s, parent run %s. Answer only the explicit request; do not recursively delegate. Your result is delivered to its source automatically.", work.DeliveryID, value(work.ParentRunID))
+	}
+	if work.Trigger == "child" {
+		text += fmt.Sprintf("\nChild task, parent run %s. Complete only the explicit task in this fresh session; do not delegate or schedule continuations.", value(work.ParentRunID))
 	}
 	m.Parts = append([]contract.Part{{Kind: "text", Text: &text}}, m.Parts...)
 	return m, nil
