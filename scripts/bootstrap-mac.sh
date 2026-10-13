@@ -18,4 +18,7 @@ bash scripts/wt-setup.sh          # creates sim template + this checkout's clone
 GB=$(( $(sysctl -n hw.memsize) / 1073741824 ))
 if   [ $GB -le 16 ]; then N=2 B=1; elif [ $GB -le 24 ]; then N=3 B=2; else N=4 B=2; fi
 echo "RAM ${GB} GB -> recommend $N lanes, max_builds=$B (set in agents/lanes.toml)"
-echo "One-time manual: grant Screen Recording to Terminal/sshd-keygen-wrapper, enable auto-login."
+# An enabled Cursor lane without cursor-agent cannot run: fail the bootstrap.
+for l in $(python3 scripts/lanes.py order); do [ "$(python3 scripts/lanes.py lane "$l" agent)" = cursor ] || continue
+  c=$(python3 scripts/lanes.py lane "$l" cmd); [ -x "$c" ] || command -v "$c" >/dev/null || { echo "lane $l is cursor but $c is missing"; exit 1; }; done
+echo "One-time manual: enable auto-login."
