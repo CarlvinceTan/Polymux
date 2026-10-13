@@ -157,6 +157,13 @@ func (s *Store) Finalize(ctx context.Context, event contract.Event, message *con
 }
 
 func (s *Store) FinalizeTask(ctx context.Context, event contract.Event, message *contract.Message, run *contract.Run, tool *contract.ToolActivity, checkpoint *Checkpoint, tools, output int) error {
+	// Commit the chat notice before the run is sealed. A crash in between is
+	// finished by recovery without a second notice.
+	if run != nil && run.Trigger == "routine" && run.Status == "failed" {
+		if err := s.routineNotice(ctx, run); err != nil {
+			return err
+		}
+	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -327,6 +334,11 @@ func (s *Store) recoverRuns(ctx context.Context) error {
 			return err
 		}
 		if Terminal(status) {
+			continue
+		}
+		if sealed, err := s.sealRoutineFailure(ctx, &run); err != nil {
+			return err
+		} else if sealed {
 			continue
 		}
 		if run.Status == "waiting_peer" && run.MessageID != nil {
