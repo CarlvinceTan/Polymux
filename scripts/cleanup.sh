@@ -12,6 +12,12 @@ REPO=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel); MAIN=$(git -C "$R
 OPS=${LANES_HOME:-$HOME/ops/lanes}; LOCKS=$(python3 "$REPO/scripts/lanes.py" get lock_dir)
 do_() { if [ $APPLY = 1 ]; then echo "+ $*"; "$@"; else echo "would: $*"; fi; }
 keep() { echo "keep: $1 ($2)"; }
+board_merged() {  # --apply only: card whose .wt is exactly this worktree, PR (results.tsv) merged per gh
+  local c u n=$(basename "$1"); [ $APPLY = 1 ] || return 0
+  for c in "$OPS"/cards/*.wt; do [ -f "$c" ] && [ "$(cat "$c")" = "$n" ] || continue; c=$(basename "$c" .wt)
+    u=$(awk -F'\t' -v s="$c" '{i=$2; sub(/^[0-9]+-/,"",i)} i==s{u=$3} END{print u}' "$OPS/results.tsv" 2>/dev/null)
+    [ -n "$u" ] && [ -n "$(gh pr view "$u" --json state,mergedAt -q 'select(.state=="MERGED") | .mergedAt' 2>/dev/null)" ] && \
+      do_ bash "$REPO/scripts/board-update.sh" merged "$c"; done; }
 CW=${CURSOR_WT:-$HOME/.cursor/worktrees}
 last_activity() {  # newest of: last commit, index write, newest tracked-or-untracked file (not .build)
   local c i f; c=$(git -C "$1" log -1 --format=%ct 2>/dev/null || echo 0)
@@ -30,6 +36,7 @@ git -C "$REPO" worktree list --porcelain | awk '/^worktree /{print $2}' | while 
   [ "$W" = "$MAIN" ] && continue
   case $W in */ops/goal-loop*|*/ops/pr-verify*) continue;; esac
   case $W in "$HOME"/code/wt/*|"$HOME"/.cursor/worktrees/*) ;; *) keep "$W" "not a lane worktree"; continue;; esac
+  board_merged "$W"   # squash merges never show in ancestry, so ask gh
   in_use "$W" && { keep "$W" "in use or locked"; continue; }
   [ -n "$(git -C "$W" status --porcelain --untracked-files=no)" ] && { keep "$W" "uncommitted changes"; continue; }
   BR=$(git -C "$W" rev-parse --abbrev-ref HEAD)

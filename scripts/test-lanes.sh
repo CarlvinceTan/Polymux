@@ -8,7 +8,7 @@ PASS=0; FAILS=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAILS=$((FAILS+1)); echo "FAIL $1"; fi; }
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/repo"; cd "$T/repo"
 git config user.name "Lane Test"; git config user.email lane@test.invalid
-mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup}.sh "$SRC"/scripts/lanes.py scripts/
+mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup,board-update}.sh "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
 cat > agents/lanes.toml <<'TOML'
 max_builds = 1
 lock_dir = "~/ops/lanes/locks"
@@ -157,5 +157,7 @@ check "2nd failed end in a row stops chaining" '[ "$(ndisp "$GLOG")" = 1 ] && gr
 # 9 lanes.py per-host override
 printf '[l]\nkey = "neutral"\nkey@hostx = "special"\n' > "$T/o.toml"
 check "lanes.py host override" '[ "$(LANES_TOML=$T/o.toml LANES_HOST=hostx python3 scripts/lanes.py lane l key)" = special ] && [ "$(LANES_TOML=$T/o.toml LANES_HOST=y python3 scripts/lanes.py lane l key)" = neutral ]'
+# 16 board-update.sh (Notion board) cases
+. "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"
 echo "test-lanes: $PASS passed, $FAILS failed"; [ $FAILS = 0 ]

@@ -1,0 +1,69 @@
+# test-board.sh: board-update.sh cases, sourced by test-lanes.sh (uses its check/T/HOME/LANES_HOME/RL).
+# Stub vault + curl (+ gh); no network. Each case would fail on the d2969c4 version.
+B="$T/bb"; mkdir -p "$B" "$T/gl"; BLOG="$LANES_HOME/board.log"; BU="bash scripts/board-update.sh"
+export GOAL_LOOP_HOME="$T/gl" BOARD_T="$T"; BP="$B:$T/bin:$PATH"
+cp "$SRC"/scripts/{board-update.sh,media-check.py} scripts/
+printf '#!/bin/sh\necho "{\\"password\\":\\"SECRET-TOK\\"}"\n' > "$B/vault"
+printf '#!/bin/sh\ncase "$*" in "pr view"*) echo 2026-10-13T01:00:00Z;; esac\nexit 0\n' > "$B/gh"
+cat > "$B/curl" <<'STUB'
+#!/bin/bash
+cat > /dev/null; echo "$*" >> "$BOARD_T/curl.log"; S=$BOARD_T
+case "$*" in
+  *"-X GET"*pages/*) [ -f $S/readfail ] && exit 22
+    printf '{"properties":{"Status":{"type":"select","select":{"name":"%s"}},"PR":{"type":"url","url":"%s"},"Verification":{"type":"select","select":null}}}' "$(cat $S/cur)" "$(cat $S/prurl 2>/dev/null)";;
+  *"-X GET"*start_cursor=c2*) [ -f $S/blockfail ] && exit 22; printf '{"results":[%s],"has_more":false}' "$(cat $S/blocks 2>/dev/null)";;
+  *"-X GET"*blocks/*) printf '{"results":[],"has_more":true,"next_cursor":"c2"}';;
+  *"-X PATCH"*) [ -f $S/fail ] && exit 22; echo '{}';; esac
+STUB
+chmod +x "$B"/*; : > "$T/curl.log"; NP() { grep -c "X PATCH.*$1" "$T/curl.log"; }
+printf 'needs: none\ncard: https://app.notion.com/p/Fake-0123456789abcdef0123456789abcdef\nFake unit\n' > "$T/c.task"
+printf 'needs: none\nNo card unit\n' > "$T/nc.task"
+PATH=$BP $BU card fake-unit "$T/c.task"; PATH=$BP $BU card nocard "$T/nc.task"; PATH=$BP $BU start nocard >/dev/null; R0=$?
+check "board: missing card: line -> skip + log, exit 0" '[ $R0 = 0 ] && grep -q "nocard start: skip: no card for unit" "$BLOG"'
+echo Backlog > "$T/cur"; PATH=$BP $BU start fake-unit
+check "board: dry-run without BOARD_LIVE logs the exact write, no PATCH" 'grep -q "DRY-RUN would PATCH pages/01234567-89ab-cdef-0123-456789abcdef Status: .Backlog. -> .In Progress." "$BLOG" && [ "$(NP .)" = 0 ]'
+touch "$LANES_HOME/BOARD_LIVE"; OUT=$(PATH=$BP $BU start fake-unit)
+check "board: live refused without RELAY_HOLD (board_error, no read/write)" '[ "$(NP .)" = 0 ] && grep -q "board_error	start	refusing live write" "$LANES_HOME/events.tsv" && echo "$OUT" | grep -q "^board_error:"'
+touch "$T/gl/RELAY_HOLD"; echo "In Progress" > "$T/cur"; PATH=$BP $BU start fake-unit
+check "board: idempotent skip when equal" 'grep -q "start: skip: Status already .In Progress." "$BLOG" && [ "$(NP .)" = 0 ]'
+for s in Review Completed; do echo $s > "$T/cur"; PATH=$BP $BU start fake-unit; done
+check "board: start never moves Review/Completed backwards" '[ "$(NP .)" = 0 ] && [ "$(grep -c "never backwards" "$BLOG")" = 2 ]'
+touch "$T/readfail"; echo Backlog > "$T/cur"; PATH=$BP $BU start fake-unit >/dev/null; PATH=$BP $BU pr fake-unit https://x/pull/1 >/dev/null; rm "$T/readfail"
+check "board: failed read skips the write (property)" '[ "$(NP .)" = 0 ] && [ "$(grep -c "board_error	.*read of .* failed; write skipped" "$LANES_HOME/events.tsv")" = 2 ]'
+echo Review > "$T/cur"; PATH=$BP $BU merged fake-unit
+check "board: live merged = one PATCH to Completed; token never in argv/logs" '[ "$(NP pages)" = 1 ] && grep -q "wrote Status: .Review. -> .Completed." "$BLOG" && ! grep -q SECRET-TOK "$T/curl.log" "$BLOG" "$LANES_HOME/events.tsv"'
+: > "$T/prurl"; PATH=$BP $BU pr fake-unit https://github.com/o/r/pull/9; echo https://github.com/o/r/pull/9 > "$T/prurl"; PATH=$BP $BU pr fake-unit https://github.com/o/r/pull/9
+check "board: PR url written once, then skipped" '[ "$(NP pages)" = 2 ] && grep -q "\"url\": \"https://github.com/o/r/pull/9\"" "$T/curl.log" && grep -q "pr: skip: PR already" "$BLOG"'
+mkdir -p "$LANES_HOME/board/fake-unit.lock"; echo $$ > "$LANES_HOME/board/fake-unit.lock/pid"
+PATH=$BP BOARD_LOCK_TRIES=1 $BU verify fake-unit build-only >/dev/null; R1=$?; rm -rf "$LANES_HOME/board/fake-unit.lock"
+check "board: lock contention -> board_error, no write, exit 0" '[ $R1 = 0 ] && grep -q "board_error	verify	unit lock busy" "$LANES_HOME/events.tsv" && [ "$(NP .)" = 2 ]'
+P1="$T/proof1"; P2="$T/proof2"; mkdir -p "$P1" "$P2"
+HOME=$(eval echo ~"$(id -un)") python3 -c 'import random,sys; from PIL import Image; r=random.Random(1); im=Image.new("RGB",(200,100))
+im.putdata([(r.randrange(256),r.randrange(256),r.randrange(256)) for _ in range(20000)]); im.save(sys.argv[1]+"/ready-a.png")
+Image.new("RGB",(200,100),"white").save(sys.argv[1]+"/blank.png")' "$P1"; cp "$P1/ready-a.png" "$P2/"
+SHA=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$P1/ready-a.png")
+rm "$LANES_HOME/BOARD_LIVE"; PATH=$BP $BU verify fake-unit UI-verified "$P1" https://github.com/o/r/raw/proof-media/run1
+check "board: dry-run media line carries sha256; blank image held" 'grep -q "DRY-RUN would append .*run1/ready-a.png sha256=$SHA" "$BLOG" && grep -q "held media (pre-publish check failed: mostly empty space.*blank.png" "$BLOG" && [ "$(NP blocks)" = 0 ]'
+touch "$LANES_HOME/BOARD_LIVE"; touch "$T/blockfail"; PATH=$BP $BU verify fake-unit UI-verified "$P1" https://github.com/o/r/raw/proof-media/run1 >/dev/null; rm "$T/blockfail"
+check "board: failed (paged) blocks read -> no append, board_error" '[ "$(NP blocks)" = 0 ] && grep -q "start_cursor=c2" "$T/curl.log" && grep -q "board_error	verify	blocks read failed" "$LANES_HOME/events.tsv"'
+PATH=$BP $BU verify fake-unit UI-verified "$P1" https://github.com/o/r/raw/proof-media/run1; PATH=$BP $BU verify fake-unit UI-verified "$P2" https://github.com/o/r/raw/proof-media/run2
+check "board: same proof across two runs (new refs) appended once (sha ledger)" '[ "$(NP blocks)" = 1 ] && grep -qx "$SHA" "$LANES_HOME/board/fake-unit.media" && grep -q "already published" "$BLOG"'
+rm "$LANES_HOME/board/fake-unit.media"; printf '{"type":"image","image":{"caption":[{"plain_text":"proof sha256:%s ready-a.png"}]}}' "$SHA" > "$T/blocks"
+PATH=$BP $BU verify fake-unit UI-verified "$P2" https://github.com/o/r/raw/proof-media/run3
+check "board: proof already on card (caption sha, page 2) not re-appended" '[ "$(NP blocks)" = 1 ] && grep -q "already on card" "$BLOG"'
+rm "$LANES_HOME/BOARD_LIVE"; echo Backlog > "$T/cur"; : > "$BLOG"
+printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard fails\n' > "$T/bf.task"
+PATH=$BP LANE_FORCE_FAIL="laneA laneB" $RL laneA "$T/bf.task" >/dev/null 2>&1
+check "run-lane: no start without work; final failure -> Verification failed only" '! grep -q "board-fails start" "$BLOG" && grep -q "board-fails verify: DRY-RUN .*Verification: .. -> .failed." "$BLOG"'
+printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard works\n' > "$T/bw.task"
+PATH=$BP LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
+check "run-lane: start written after the agent's first commit" 'grep -q "board-works start: DRY-RUN .*-> .In Progress." "$BLOG"'
+touch "$LANES_HOME/BOARD_LIVE"; echo Review > "$T/cur"; : > "$T/curl.log"; : > "$BLOG"; C=$LANES_HOME/cards
+echo 11111111-2222-3333-4444-555555555555 | tee "$C/board-done" > "$C/done"; echo laneA-board-done > "$C/board-done.wt"; echo other > "$C/done.wt"
+printf '2026-10-13 11:00:00\t10131100-board-done\thttps://github.com/o/r/pull/7\tabc\tUI-verified\n' >> "$LANES_HOME/results.tsv"
+git worktree add -q --detach "$HOME/code/wt/laneA-board-done" main
+PATH=$BP bash scripts/cleanup.sh >/dev/null 2>&1
+check "cleanup dry run: no board write" '[ "$(NP .)" = 0 ] && ! grep -q merged "$BLOG"'
+PATH=$BP bash scripts/cleanup.sh --apply >/dev/null 2>&1
+check "cleanup --apply: exact worktree + gh mergedAt -> one Completed write" '[ "$(NP pages)" = 1 ] && grep -q "board-done merged: wrote Status: .Review. -> .Completed." "$BLOG" && ! grep -q " done merged" "$BLOG"'
+rm -f "$LANES_HOME/BOARD_LIVE"
