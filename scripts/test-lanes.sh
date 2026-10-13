@@ -162,7 +162,7 @@ git push -q origin test/big:refs/heads/test/open; echo https://github.com/o/r/pu
 VC2='mkdir -p .build/proof && echo "## ok" > .build/proof/summary.md && echo unit-test-verified > .build/proof/level'
 OUT=$(PATH="$GB:$PATH" LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Continue open' t21)" --branch test/open 2>&1); RC=$?
 NH=$(git ls-remote origin refs/heads/test/open | cut -f1)
-check "open PR: pushed, commented new head, no new PR, success recorded" '[ $RC = 0 ] && ! grep -q "^pr create" "$T/gh.log" && grep -q "^pr comment https://github.com/o/r/pull/55 .*new head $NH" "$T/gh.log" && [ "$NH" != "$(git rev-parse test/big)" ] && grep -q "continue-open	https://github.com/o/r/pull/55	$NH" "$LANES_HOME/results.tsv" && [ -f "$LANES_HOME/cards/continue-open.wt" ]'
+check "open PR: pushed, commented new head, no new PR, success recorded" '[ $RC = 0 ] && ! grep -q "^pr create" "$T/gh.log" && grep -q "^pr comment https://github.com/o/r/pull/55 .*new head $NH" "$T/gh.log" && [ "$NH" != "$(git rev-parse test/big)" ] && grep -q "continue-open	https://github.com/o/r/pull/55	$NH" "$LANES_HOME/results.tsv" && [ ! -f "$LANES_HOME/cards/continue-open.wt" ] && ! git -C "$LANES_WT/laneA-continue-open" symbolic-ref -q HEAD'
 # 21 PR body footer, build-only existing PR -> draft, gh pr list error, local branch behind origin
 G2="$T/ghbin2"; mkdir -p "$G2"; cat > "$G2/gh" <<GH
 #!/bin/bash
@@ -559,6 +559,27 @@ printf '# Wd pinned\nneeds: none\nexpected_min: 5\nagent: codex\n' > "$T/wdp.tas
 OA=$(LANE_NO_CHAIN=1 $RL --check laneA "$T/wdp.task" 2>&1); RA=$?; OB=$(LANE_NO_CHAIN=1 $RL --check laneB "$T/wdp.task" 2>&1); RB=$?
 check "agent: header pins the retry: --check refuses the opencode lane (5), the codex lane is not refused for agent" '[ $RA = 5 ] && echo "$OA" | grep -q "wants agent .codex." && ! echo "$OB" | grep -q "wants agent"'
 rm -f "$QD"/*.task
+# 32 unit exit frees clean trees, while dirty trees and live locks survive.
+for name in happy-path always-fails oc-fastfail oc-killed wd-disabled; do
+  check "unit-free: $name exits detached" '! git -C "$LANES_WT/laneA-$name" symbolic-ref -q HEAD && [ -d "$LANES_WT/laneA-$name" ]'
+done
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; sleep 300' $RL laneA "$(task 'Free watchdog' uf1)" 2>&1); RC=$?
+check "unit-free: clean watchdog exit detaches" '[ $RC = 1 ] && ! git -C "$LANES_WT/laneA-free-watchdog" symbolic-ref -q HEAD'
+check "unit-free: dirty watchdog tree stays attached and logs its file count once" 'git -C "$LANES_WT/laneA-wd-nocommit" symbolic-ref -q HEAD && [ -f "$LANES_WT/laneA-wd-nocommit/w.txt" ] && [ "$(grep -c "unit-free: wd-nocommit .*dirty=1; kept" "$LANES_HOME"/logs/*wd-nocommit-laneA.log)" = 1 ] && grep -q "wt_dirty.*wd-nocommit.*dirty=1" "$LANES_HOME/events.tsv"'
+UF_STUB='mkdir -p .build/verify.lock "$HOME/ops/lanes/locks/active" "$HOME/ops/lanes/locks/slot1"; echo 999999 > .build/verify.lock/pid; echo 999999 > "$HOME/ops/lanes/locks/slot1/pid"; pwd > "$HOME/ops/lanes/locks/slot1/wt"; touch .build/verify-active "$HOME/ops/lanes/locks/active/polymux-$(basename "$PWD")"; mkdir -p "$HOME/ops/lanes/cards"; basename "$PWD" > "$HOME/ops/lanes/cards/free-markers.wt"; '
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$UF_STUB$STUB_OK" $RL laneA "$(task 'Free markers' uf2)" 2>&1); RC=$?
+check "unit-free: clears verify markers, card.wt and dead build locks" '[ $RC = 0 ] && [ ! -e "$LANES_WT/laneA-free-markers/.build/verify-active" ] && [ ! -e "$LANES_WT/laneA-free-markers/.build/verify.lock" ] && [ ! -e "$HOME/ops/lanes/locks/slot1" ] && [ ! -e "$HOME/ops/lanes/locks/active/polymux-laneA-free-markers" ] && [ ! -e "$LANES_HOME/cards/free-markers.wt" ]'
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='test "$(git symbolic-ref --short HEAD)" = agent/free-markers && '"$STUB_OK" $RL laneA "$T/uf2.task" 2>&1); RC=$?
+check "unit-free: a new attempt re-attaches the same branch and frees it again" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK" && ! git -C "$LANES_WT/laneA-free-markers" symbolic-ref -q HEAD'
+git worktree add -q "$LANES_WT/reattach-proof" agent/free-markers
+check "unit-free: branch re-attaches in a different worktree after exit" '[ "$(git -C "$LANES_WT/reattach-proof" symbolic-ref --short HEAD)" = agent/free-markers ]'
+git worktree remove "$LANES_WT/reattach-proof"
+. scripts/lanelib.sh
+mkdir -p "$HOME/ops/lanes/locks/slot2"; echo $$ > "$HOME/ops/lanes/locks/slot2/pid"; echo "$LANES_WT/laneA-free-markers" > "$HOME/ops/lanes/locks/slot2/wt"
+# Run in a separate shell so the test's pid is another live holder.
+bash -c '. scripts/lanelib.sh; OPS=$LANES_HOME ID=test unit_free "$1" free-markers "$HOME/ops/lanes/locks" "$2"' _ "$LANES_WT/laneA-free-markers" "$T/free.log"
+check "unit-free: preserves a build lock held by another live pid" '[ "$(cat "$HOME/ops/lanes/locks/slot2/pid")" = $$ ]'
+rm -rf "$HOME/ops/lanes/locks/slot2"
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"

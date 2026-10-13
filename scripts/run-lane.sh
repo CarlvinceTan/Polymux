@@ -206,7 +206,14 @@ lock_take "$UL" || { lock_drop "$CAPL" 2>/dev/null; echo "unit '$SLUG' already h
 echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
 for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
 rm -f "$OPS/refusals.tsv"; lock_drop "$OPS/chain-state.lock"   # a unit started: the refusal streak is broken
-trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
+OWN_WT=""; CLEANED=""
+cleanup_unit() {
+  [ -n "$CLEANED" ] && return 0
+  CLEANED=1
+  [ -n "$OWN_WT" ] && unit_free "$WT" "$SLUG" "$(cfg get lock_dir)" "$LOG"
+  return 0
+}
+trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
 BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
@@ -233,7 +240,7 @@ free_branch() {
     elif [ -z "$(git -C "$p" status --porcelain 2>/dev/null)" ]; then
       [ -d "$p/.build/proof" ] && mkdir -p "$OPS/proof-archive" && cp -R "$p/.build/proof" "$OPS/proof-archive/$(basename "$p")-$(date +%Y%m%d%H%M%S)" 2>/dev/null   # keep evidence (ignored files go with the tree)
       git -C "$REPO" worktree remove "$p" >> "$LOG" 2>&1 && echo "removed stale worktree $p (held $b)" >> "$LOG"
-    else git -C "$p" checkout -q --detach >> "$LOG" 2>&1 && echo "detached stale dirty worktree $p (held $b; changes kept)" >> "$LOG"; fi
+    else echo "branch $b is checked out in dirty worktree $p; leaving it" >> "$LOG"; fi
   fi
   git -C "$REPO" show-ref -q "refs/heads/$b" && git -C "$REPO" show-ref -q "refs/remotes/origin/$b" || return 0
   git -C "$REPO" merge-base --is-ancestor "refs/heads/$b" "refs/remotes/origin/$b" && return 0   # behind or equal: fine
@@ -305,6 +312,12 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
       echo "worktree add failed (try $wtry); pruning and retrying" >> "$LOG"; git -C "$REPO" worktree prune; rm -rf "$WT"; sleep $((wtry * 5 * RS)); done; rm -f "$LOG.wt"
     [ -n "$WOK" ] || { ev failed "$L" "worktree add failed"; continue; }
   fi
+  OWN_WT=1
+  if ! git -C "$WT" symbolic-ref -q HEAD >/dev/null; then
+    git -C "$WT" checkout -q "$B" >> "$LOG" 2>&1 || { ev failed "$L" "branch attach failed"; continue; }
+  elif [ "$(git -C "$WT" symbolic-ref --short HEAD)" != "$B" ]; then
+    OWN_WT=""; ev failed "$L" "worktree holds another branch"; continue
+  fi
   if git -C "$REPO" show-ref -q "refs/remotes/origin/$B" && [ "$(git -C "$WT" rev-parse HEAD)" != "$(git -C "$REPO" rev-parse "origin/$B")" ]; then
     if git -C "$WT" merge-base --is-ancestor HEAD "origin/$B"; then   # local branch behind origin: fast-forward, never reset
       git -C "$WT" merge -q --ff-only "origin/$B" >> "$LOG" 2>&1 && echo "fast-forwarded $B to origin/$B" >> "$LOG" || { ev failed "$L" "fast-forward of $B failed"; continue; }
@@ -375,6 +388,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   basename "$WT" > "$OPS/cards/$SLUG.wt"; BU pr "$SLUG" "$URL"   # .wt: exact worktree name for cleanup
   BU verify "$SLUG" "$LV" "$WT/.build/proof" "$(echo "$BODY" | grep -oE "https://github.com/$SLUG_REPO/raw/proof-media/[^/) ]+" | head -1)"
   ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV" >> "$OPS/results.tsv"
+  cleanup_unit
   echo "$URL ($LV)"; exit 0
 done
 BT=$(base_title "$TITLE"); AT=$(echo "$TITLE" | sed -nE 's/.* \(attempt ([0-9]+)\)$/\1/p'); AT=${AT:-1}
