@@ -2729,7 +2729,7 @@ export interface DriveSourceDto {
   id: string;
   provider: DriveProviderId;
   accountId: string;
-  /** The provider's own name — "Google Drive", "This Mac". */
+  /** The provider's own name — "S3 storage", "This Mac". */
   name: string;
   /** Which account, set only when the provider has more than one signed in.
    * The switcher reads as `<name> – <accountLabel>` when this is set, which is
@@ -2770,8 +2770,8 @@ export interface DriveEntryDto {
   path: string;
   mimeType: string | null;
   /**
-   * The provider's own token for *this* version of the entry — a Dropbox rev,
-   * an S3 or Graph ETag, mtime and size for a local file. Opaque: it is only
+   * The provider's own token for *this* version of the entry — an S3 ETag,
+   * mtime and size for a local file. Opaque: it is only
    * ever compared for equality, never parsed or ordered.
    *
    * It is what makes a write conditional. A run that read a file holds the
