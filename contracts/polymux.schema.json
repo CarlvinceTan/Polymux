@@ -23,6 +23,12 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "body": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        },
         "seq": {
           "type": "integer"
         },
@@ -40,6 +46,8 @@
         }
       },
       "required": [
+        "body",
+        "outcome",
         "seq",
         "conversationID",
         "messageID",
