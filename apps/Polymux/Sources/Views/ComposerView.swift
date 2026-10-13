@@ -10,6 +10,7 @@ struct DraftFile: Identifiable {
     let id = UUID()
     let url: URL
     let kind: UTType
+    var ready = true
 }
 
 struct ComposerView: View {
@@ -257,7 +258,7 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: Circle())
                 .accessibilityLabel("Send message")
-                .disabled(sending || loadingPhotos)
+                .disabled(sending || loadingPhotos || files.contains { !$0.ready })
             }
         }
     }
@@ -398,58 +399,65 @@ struct ComposerView: View {
         .buttonStyle(.plain)
     }
 
+    private func pastedFile() -> DraftFile {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "Pasted-\(UUID().uuidString.prefix(8)).png")
+        let file = DraftFile(url: url, kind: .png, ready: false)
+        files.append(file)
+        error = nil
+        return file
+    }
+
+    private func finishPaste(_ file: DraftFile, data: Data?) async {
+        do {
+            guard let data else { throw CocoaError(.fileReadCorruptFile) }
+            try await Task.detached(priority: .userInitiated) {
+                try data.write(to: file.url, options: .atomic)
+            }.value
+            guard let index = files.firstIndex(where: { $0.id == file.id }) else {
+                try? FileManager.default.removeItem(at: file.url)
+                return
+            }
+            files[index].ready = true
+        } catch {
+            files.removeAll { $0.id == file.id }
+            self.error = error.localizedDescription
+        }
+    }
+
     #if os(macOS)
-    /// Writes the image on the pasteboard into the draft like a picked file.
     private func pasteImage() {
         let board = NSPasteboard.general
         let png = board.data(forType: .png)
         let tiff = png == nil ? board.data(forType: .tiff) : nil
         guard png != nil || tiff != nil else { return }
+        let file = pastedFile()
         Task {
-            do {
-                let url = try await Task.detached(priority: .userInitiated) {
-                    let data: Data
-                    if let png { data = png }
-                    else if let tiff, let rep = NSBitmapImageRep(data: tiff),
-                            let encoded = rep.representation(using: .png, properties: [:]) {
-                        data = encoded
-                    } else {
-                        throw CocoaError(.fileReadCorruptFile)
-                    }
-                    let url = FileManager.default.temporaryDirectory
-                        .appending(path: "Pasted-\(UUID().uuidString.prefix(8)).png")
-                    try data.write(to: url, options: .atomic)
-                    return url
-                }.value
-                withAnimation { files.append(DraftFile(url: url, kind: .png)) }
-            } catch { self.error = error.localizedDescription }
+            let data = await Task.detached(priority: .userInitiated) {
+                if let png { return png }
+                guard let tiff, let rep = NSBitmapImageRep(data: tiff) else { return nil as Data? }
+                return rep.representation(using: .png, properties: [:])
+            }.value
+            await finishPaste(file, data: data)
         }
     }
     #endif
 
     #if os(iOS)
-    /// Writes pasted images into the draft like picked files.
     private func paste(_ providers: [NSItemProvider]) {
-        guard !providers.isEmpty else { return }
-        loadingPhotos = true
-        Task {
-            do {
-                for provider in providers {
-                    guard let image = await Self.image(provider), let png = image.pngData() else { continue }
-                    let url = FileManager.default.temporaryDirectory
-                        .appending(path: "Pasted-\(UUID().uuidString.prefix(8)).png")
-                    try png.write(to: url, options: .atomic)
-                    withAnimation { files.append(DraftFile(url: url, kind: .png)) }
-                }
-            } catch { self.error = error.localizedDescription }
-            loadingPhotos = false
+        for provider in providers {
+            let file = pastedFile()
+            Task {
+                let data = await Self.pasteData(provider)
+                await finishPaste(file, data: data)
+            }
         }
     }
 
-    private static func image(_ provider: NSItemProvider) async -> UIImage? {
+    private nonisolated static func pasteData(_ provider: NSItemProvider) async -> Data? {
         await withCheckedContinuation { continuation in
             provider.loadObject(ofClass: UIImage.self) { object, _ in
-                continuation.resume(returning: object as? UIImage)
+                continuation.resume(returning: (object as? UIImage)?.pngData())
             }
         }
     }
@@ -537,7 +545,7 @@ struct ComposerView: View {
 
     /// Clears the composer in the same frame, then hands the files to `send` to upload behind the bubble.
     private func sendDraft(at tap: ContinuousClock.Instant) {
-        guard hasContent, !loadingPhotos else { sending = false; return }
+        guard hasContent, !loadingPhotos, files.allSatisfy(\.ready) else { sending = false; return }
         let draft = text
         let pending = files
         let quote = reply
