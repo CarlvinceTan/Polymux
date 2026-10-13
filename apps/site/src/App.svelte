@@ -59,7 +59,6 @@
   const featuredStorage = [
     {id: 'local', name: 'Local'},
     {id: 'network', name: 'Network'},
-    {id: 'dropbox', name: 'Dropbox'},
     {id: 's3', name: 'S3'},
   ] as const;
   const featuredAgents: ConnectedApp[] = [

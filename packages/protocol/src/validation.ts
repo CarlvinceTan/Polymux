@@ -192,12 +192,6 @@ export const DRIVE_PROVIDERS: {
     description: "A shared folder on your network. Reachable when it is mounted.",
   },
   {
-    value: "dropbox",
-    label: "Dropbox",
-    kind: "oauth",
-    description: "Scoped to the Polymux app folder, not your whole Dropbox.",
-  },
-  {
     value: "s3",
     label: "S3 storage",
     kind: "s3",

@@ -1393,7 +1393,7 @@ function createBrowserDemoApi(): PolymuxApi {
             {kind: 'settings' as const, count: 3, items: ['settings.json', 'agents/explore.md', 'CLAUDE.md'], importable: true, detail: null},
             {kind: 'skills' as const, count: 4, items: ['ce-code-review', 'frontend-design', 'ui-tester', 'run'], importable: true, detail: null},
             {kind: 'plugins' as const, count: 2, items: ['context-mode', 'frontend-design'], importable: true, detail: null},
-            {kind: 'mcp' as const, count: 2, items: ['Google Drive', 'Notion'], importable: true, detail: null},
+            {kind: 'mcp' as const, count: 2, items: ['GitHub', 'Notion'], importable: true, detail: null},
             {kind: 'memory' as const, count: 1, items: ['MEMORY.md'], importable: true, detail: null},
           ] : (['settings', 'skills', 'plugins', 'mcp', 'memory'] as const).map((kind) => ({kind, count: 0, items: [], importable: verified, detail: null})),
         }];
@@ -3781,30 +3781,24 @@ function goal(conversationId: string, objective: string): GoalDto {
 
 /**
  * One provider of each shape, so the settings tab can be worked on in a browser
- * without credentials: connected, connectable, needing a form, and one this
- * build has no client id for.
+ * without credentials: connected, not mounted, and needing a form.
  */
 const demoDriveStatus: DriveStatusDto = {
-  saveOrder: ['google-drive', 'dropbox', 'onedrive', 's3', 'local'],
+  saveOrder: ['s3', 'local'],
   providers: [
     {id: 'local', name: 'Local', kind: 'local', state: 'connected', accounts: [{id: 'local', name: 'Polymux', email: null}], usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: 52_000_000_000}, root: '/demo/Polymux', error: null},
     // A share that is not mounted right now, which is the state worth seeing:
     // it stays listed so it can be reconnected or forgotten.
     {id: 'network', name: 'Network', kind: 'network', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
-    {id: 'google-drive', name: 'Google Drive', kind: 'oauth', state: 'connected', accounts: [{id: 'demo@example.com', name: 'Demo User', email: 'demo@example.com'}], usage: {used: 6_200_000_000, total: 15_000_000_000, appUsed: 1_200_000_000}, root: 'Polymux', error: null},
-    {id: 'dropbox', name: 'Dropbox', kind: 'oauth', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
-    {id: 'onedrive', name: 'OneDrive', kind: 'oauth', state: 'unconfigured', accounts: [], usage: null, root: null, error: 'This build has no OneDrive client credentials.'},
     {id: 's3', name: 'S3 storage', kind: 's3', state: 'logged-out', accounts: [], usage: null, root: null, error: null},
   ],
-  // Two local places plus one signed-in account, which is enough for the
-  // switcher to show a provider icon next to an account name.
+  // Two local places, which is enough for the switcher to show a choice.
   sources: [
     // The virtual drive the manager now puts at the head of the list: every
     // connected place at once, which is what the workspace opens into.
     {id: 'all#all', provider: 'all', accountId: 'all', name: 'All storage', accountLabel: null, state: 'connected', usage: {used: 418_200_000_000, total: 1_009_000_000_000, appUsed: 53_200_000_000}, root: '', error: null},
     {id: 'local#outputs', provider: 'local', accountId: 'outputs', name: 'Local', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: 52_000_000_000}, root: '/demo/Documents/Polymux', error: null},
     {id: 'local#home', provider: 'local', accountId: 'home', name: 'Local', accountLabel: null, state: 'connected', usage: {used: 412_000_000_000, total: 994_000_000_000, appUsed: null}, root: '/demo/home', error: null},
-    {id: 'google-drive#default', provider: 'google-drive', accountId: 'default', name: 'Google Drive', accountLabel: 'demo@example.com', state: 'connected', usage: {used: 6_200_000_000, total: 15_000_000_000, appUsed: 1_200_000_000}, root: 'Polymux', error: null},
   ],
 };
 
@@ -3858,9 +3852,9 @@ function demoDriveSeed(source: string): DriveEntryDto[] {
   // on this Mac, a marked one says where it actually lives.
   if (provider === 'all')
     return [
-      {id: 'all#all/Reports', name: 'Reports', kind: 'folder', size: null, modifiedAt: now, provider: 'google-drive', path: 'all#all/Reports', mimeType: null},
-      {id: 'all#all/Launch brief.docx', name: 'Launch brief.docx', kind: 'file', size: 48_310, modifiedAt: now, provider: 'google-drive', path: 'all#all/Launch brief.docx', mimeType: null},
-      {id: 'all#all/Budget.xlsx', name: 'Budget.xlsx', kind: 'file', size: 21_004, modifiedAt: now, provider: 'dropbox', path: 'all#all/Budget.xlsx', mimeType: null},
+      {id: 'all#all/Reports', name: 'Reports', kind: 'folder', size: null, modifiedAt: now, provider: 's3', path: 'all#all/Reports', mimeType: null},
+      {id: 'all#all/Launch brief.docx', name: 'Launch brief.docx', kind: 'file', size: 48_310, modifiedAt: now, provider: 's3', path: 'all#all/Launch brief.docx', mimeType: null},
+      {id: 'all#all/Budget.xlsx', name: 'Budget.xlsx', kind: 'file', size: 21_004, modifiedAt: now, provider: 'network', path: 'all#all/Budget.xlsx', mimeType: null},
       {id: 'all#all/Notes.md', name: 'Notes.md', kind: 'file', size: 1_820, modifiedAt: now, provider: 'local', path: 'all#all/Notes.md', mimeType: null},
     ];
   return [

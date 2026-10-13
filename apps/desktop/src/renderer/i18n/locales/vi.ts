@@ -596,8 +596,6 @@ const messages: Catalog = {
   'drive.stateError': 'Cần xem lại',
   'drive.about.local': 'Một thư mục trên máy này. Luôn sẵn có, không bao giờ đồng bộ.',
   'drive.about.network': 'Thư mục dùng chung trên mạng của bạn. Truy cập được khi đã gắn kết.',
-  'drive.about.googleDrive': 'Các tệp Polymux tạo ra nằm trong thư mục Drive riêng của nó.',
-  'drive.about.dropbox': 'Chỉ giới hạn trong thư mục ứng dụng Polymux, không phải toàn bộ Dropbox.',
   'drive.about.s3': 'Bất kỳ bucket tương thích S3 nào — AWS, R2, Backblaze hay MinIO.',
   'drive.s3Blurb':
     'Dùng được với mọi dịch vụ tương thích S3. Khoá bí mật được cất vào chuỗi khoá của bạn; phần còn lại lưu như cài đặt thông thường.',

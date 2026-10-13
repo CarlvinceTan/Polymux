@@ -2668,9 +2668,6 @@ export type DriveProviderId =
   | "all"
   | "local"
   | "network"
-  | "google-drive"
-  | "dropbox"
-  | "onedrive"
   | "s3";
 
 /**

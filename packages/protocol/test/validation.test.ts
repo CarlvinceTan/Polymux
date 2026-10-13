@@ -109,6 +109,10 @@ test("rejects OneDrive because this build has no sign-in for it", () => {
   assert.throws(() => driveProvider("onedrive"), /not a supported storage provider/);
 });
 
+test("rejects Dropbox because this build has no sign-in for it", () => {
+  assert.throws(() => driveProvider("dropbox"), /not a supported storage provider/);
+});
+
 test("keeps every storage provider reachable in the save order", () => {
   // Connectable, not every provider: the save order answers where a new file
   // goes, and the virtual drive holds nothing — naming it would make it the

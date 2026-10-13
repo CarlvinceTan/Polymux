@@ -596,8 +596,6 @@ const messages: Catalog = {
   'drive.stateError': 'ต้องดูแล',
   'drive.about.local': 'โฟลเดอร์บนเครื่องนี้ ใช้ได้เสมอ ไม่มีการซิงก์',
   'drive.about.network': 'โฟลเดอร์ที่แชร์บนเครือข่ายของคุณ ใช้ได้เมื่อเชื่อมต่ออยู่',
-  'drive.about.googleDrive': 'ไฟล์ที่ Polymux สร้างจะอยู่ในโฟลเดอร์ Drive ของมันเอง',
-  'drive.about.dropbox': 'จำกัดอยู่ที่โฟลเดอร์แอป Polymux ไม่ใช่ทั้ง Dropbox ของคุณ',
   'drive.about.s3': 'บักเก็ตใดก็ได้ที่รองรับ S3 — AWS, R2, Backblaze หรือ MinIO',
   'drive.s3Blurb':
     'ใช้ได้กับบริการใดก็ได้ที่รองรับ S3 คีย์ลับจะไปอยู่ในพวงกุญแจของคุณ ส่วนที่เหลือเก็บเป็นการตั้งค่าธรรมดา',

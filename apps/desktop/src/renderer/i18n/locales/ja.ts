@@ -596,8 +596,6 @@ const messages: Catalog = {
   'drive.stateError': '対応が必要',
   'drive.about.local': 'このコンピュータ上のフォルダ。常に利用でき、同期はされません。',
   'drive.about.network': 'ネットワーク上の共有フォルダ。マウントされている間だけ使えます。',
-  'drive.about.googleDrive': 'Polymux が作成したファイルは専用の Drive フォルダに置かれます。',
-  'drive.about.dropbox': 'Dropbox 全体ではなく Polymux アプリのフォルダに限定されます。',
   'drive.about.s3': 'S3 互換のバケットなら何でも — AWS、R2、Backblaze、MinIO。',
   'drive.s3Blurb':
     'S3 互換のサービスであれば利用できます。シークレットキーはキーチェーンに保存され、それ以外は通常の設定として保存されます。',

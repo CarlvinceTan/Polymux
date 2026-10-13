@@ -921,8 +921,6 @@ export default {
   'drive.stateError': 'Needs attention',
   'drive.about.local': 'A folder on this computer. Always available, never synced.',
   'drive.about.network': 'A shared folder on your network. Reachable when it is mounted.',
-  'drive.about.googleDrive': 'Files Polymux creates live in their own Drive folder.',
-  'drive.about.dropbox': 'Scoped to the Polymux app folder, not your whole Dropbox.',
   'drive.about.s3': 'Any S3-compatible bucket — AWS, R2, Backblaze, or MinIO.',
   'drive.s3Blurb':
     'Works with any S3-compatible service. The secret key goes to your keychain; the rest is kept as ordinary settings.',

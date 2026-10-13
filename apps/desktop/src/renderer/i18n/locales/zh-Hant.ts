@@ -606,8 +606,6 @@ const messages: Catalog = {
   'drive.stateError': '需要處理',
   'drive.about.local': '這台電腦上的一個檔案夾。隨時可用，永不同步。',
   'drive.about.network': '網路上的共用資料夾。掛載後即可存取。',
-  'drive.about.googleDrive': 'Polymux 建立的檔案放在它自己的 Drive 檔案夾中。',
-  'drive.about.dropbox': '僅限 Polymux App 的檔案夾，而非整個 Dropbox。',
   'drive.about.s3': '任何相容 S3 的儲存桶 —— AWS、R2、Backblaze 或 MinIO。',
   'drive.s3Blurb':
     '可搭配任何相容 S3 的服務。私密金鑰會存到你的鑰匙圈，其餘內容以一般設定的方式儲存。',

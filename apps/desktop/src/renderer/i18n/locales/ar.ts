@@ -602,8 +602,6 @@ const messages: Catalog = {
   'drive.stateError': 'يحتاج إلى انتباه',
   'drive.about.local': 'مجلد على هذا الحاسوب. متاح دائمًا، ولا يُزامَن أبدًا.',
   'drive.about.network': 'مجلد مشترك على شبكتك. متاح عندما يكون موصولاً.',
-  'drive.about.googleDrive': 'الملفات التي ينشئها Polymux تعيش في مجلد Drive خاص بها.',
-  'drive.about.dropbox': 'مقصور على مجلد تطبيق Polymux، وليس Dropbox كاملًا.',
   'drive.about.s3': 'أي سلة متوافقة مع S3 — AWS أو R2 أو Backblaze أو MinIO.',
   'drive.s3Blurb':
     'يعمل مع أي خدمة متوافقة مع S3. يُحفظ المفتاح السري في سلسلة المفاتيح لديك؛ ويُحفظ الباقي كإعدادات عادية.',

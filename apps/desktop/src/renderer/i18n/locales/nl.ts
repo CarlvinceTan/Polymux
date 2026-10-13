@@ -598,8 +598,6 @@ const messages: Catalog = {
   'drive.stateError': 'Vraagt aandacht',
   'drive.about.local': 'Een map op deze computer. Altijd beschikbaar, nooit gesynchroniseerd.',
   'drive.about.network': 'Een gedeelde map op je netwerk. Bereikbaar zolang die gekoppeld is.',
-  'drive.about.googleDrive': 'Bestanden die Polymux maakt staan in een eigen Drive-map.',
-  'drive.about.dropbox': 'Beperkt tot de Polymux-appmap, niet je hele Dropbox.',
   'drive.about.s3': 'Elke S3-compatibele bucket — AWS, R2, Backblaze of MinIO.',
   'drive.s3Blurb':
     'Werkt met elke S3-compatibele dienst. De geheime sleutel gaat naar je sleutelhanger; de rest wordt bewaard als gewone instellingen.',

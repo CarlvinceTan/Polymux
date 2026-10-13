@@ -596,8 +596,6 @@ const messages: Catalog = {
   'drive.stateError': 'Perlu perhatian',
   'drive.about.local': 'Sebuah folder di komputer ini. Selalu tersedia, tidak pernah disinkronkan.',
   'drive.about.network': 'Folder bersama di jaringan Anda. Tersedia saat terpasang.',
-  'drive.about.googleDrive': 'Berkas yang dibuat Polymux berada di folder Drive-nya sendiri.',
-  'drive.about.dropbox': 'Terbatas pada folder aplikasi Polymux, bukan seluruh Dropbox Anda.',
   'drive.about.s3': 'Bucket apa pun yang kompatibel dengan S3 — AWS, R2, Backblaze, atau MinIO.',
   'drive.s3Blurb':
     'Bisa dipakai dengan layanan apa pun yang kompatibel dengan S3. Kunci rahasia masuk ke gantungan kunci Anda; sisanya disimpan sebagai pengaturan biasa.',

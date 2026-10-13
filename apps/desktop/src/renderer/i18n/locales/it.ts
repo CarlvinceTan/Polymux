@@ -849,8 +849,6 @@ const messages: Catalog = {
   'drive.stateError': 'Richiede attenzione',
   'drive.about.local': 'Una cartella su questo computer. Sempre disponibile, mai sincronizzata.',
   'drive.about.network': 'Una cartella condivisa in rete. Disponibile quando è montata.',
-  'drive.about.googleDrive': 'I file creati da Polymux vivono in una loro cartella di Drive.',
-  'drive.about.dropbox': "Limitato alla cartella dell'app Polymux, non a tutto il tuo Dropbox.",
   'drive.about.s3': 'Qualsiasi bucket compatibile con S3 — AWS, R2, Backblaze o MinIO.',
   'drive.s3Blurb':
     'Funziona con qualsiasi servizio compatibile con S3. La chiave segreta finisce nel tuo portachiavi; il resto è conservato come impostazioni normali.',

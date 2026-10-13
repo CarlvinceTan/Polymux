@@ -596,8 +596,6 @@ const messages: Catalog = {
   'drive.stateError': '확인 필요',
   'drive.about.local': '이 컴퓨터의 폴더입니다. 항상 쓸 수 있고 동기화되지 않습니다.',
   'drive.about.network': '네트워크의 공유 폴더입니다. 마운트되어 있을 때 사용할 수 있습니다.',
-  'drive.about.googleDrive': 'Polymux 가 만든 파일은 전용 Drive 폴더에 놓입니다.',
-  'drive.about.dropbox': 'Dropbox 전체가 아니라 Polymux 앱 폴더로 한정됩니다.',
   'drive.about.s3': 'S3 호환 버킷이면 무엇이든 — AWS, R2, Backblaze, MinIO.',
   'drive.s3Blurb':
     'S3 호환 서비스라면 어디든 쓸 수 있습니다. 비밀 키는 키체인에 저장되고, 나머지는 일반 설정으로 저장됩니다.',

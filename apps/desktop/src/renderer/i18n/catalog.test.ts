@@ -7,6 +7,7 @@ test("ships no Polymux account copy", () => {
   assert.deepEqual(keys, []);
 });
 
-test("ships no OneDrive storage blurb", () => {
-  assert.equal("drive.about.onedrive" in en, false);
+test("ships no storage blurb for a removed sign-in provider", () => {
+  for (const key of ["drive.about.onedrive", "drive.about.googleDrive", "drive.about.dropbox"])
+    assert.equal(key in en, false, key);
 });

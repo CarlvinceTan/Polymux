@@ -606,8 +606,6 @@ const messages: Catalog = {
   'drive.stateError': '需要处理',
   'drive.about.local': '这台电脑上的一个文件夹。始终可用，从不同步。',
   'drive.about.network': '网络上的共享文件夹。挂载后即可访问。',
-  'drive.about.googleDrive': 'Polymux 创建的文件放在它自己的 Drive 文件夹里。',
-  'drive.about.dropbox': '仅限 Polymux 应用文件夹，而非整个 Dropbox。',
   'drive.about.s3': '任何兼容 S3 的存储桶 —— AWS、R2、Backblaze 或 MinIO。',
   'drive.s3Blurb':
     '可用于任何兼容 S3 的服务。私密密钥保存在你的钥匙串中，其余内容作为普通设置保存。',

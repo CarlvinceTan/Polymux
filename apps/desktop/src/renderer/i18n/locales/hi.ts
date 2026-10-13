@@ -596,8 +596,6 @@ const messages: Catalog = {
   'drive.stateError': 'ध्यान देने की ज़रूरत है',
   'drive.about.local': 'इस कंप्यूटर का एक फ़ोल्डर। हमेशा उपलब्ध, कभी सिंक नहीं होता।',
   'drive.about.network': 'आपके नेटवर्क पर एक साझा फ़ोल्डर। माउंट होने पर उपलब्ध।',
-  'drive.about.googleDrive': 'Polymux की बनाई फ़ाइलें अपने ही Drive फ़ोल्डर में रहती हैं।',
-  'drive.about.dropbox': 'पूरे Dropbox तक नहीं, सिर्फ़ Polymux ऐप फ़ोल्डर तक सीमित।',
   'drive.about.s3': 'कोई भी S3-संगत बकेट — AWS, R2, Backblaze या MinIO।',
   'drive.s3Blurb':
     'किसी भी S3-संगत सेवा के साथ चलता है। गुप्त कुंजी आपके कीचेन में जाती है; बाक़ी सब सामान्य सेटिंग्स की तरह रखा जाता है।',
