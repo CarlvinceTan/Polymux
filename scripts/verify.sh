@@ -70,13 +70,9 @@ acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
 }
 declare -a ROWS; FAIL=0
 skip() { ROWS+=("| $1 | SKIP | not affected | 0s |"); echo "verify: $1 SKIP (not affected)"; }
-GO_PKGS=./... SWIFT=all APP=1; VT=${VERIFY_TARGETS:-full}
-if [ "$VT" = affected ]; then
-  if A=$(python3 "$SD/affected.py" "${TI_BASE:-origin/main}" 2>"$L/affected.log"); then eval "$A"
-    [ "$GO_PKGS" = all ] && GO_PKGS=./...
-    echo "verify: affected ($WHY): go=[${GO_PKGS:-none}] swift=[${SWIFT:-none}] app=$APP"
-  else VT=full; echo "verify: affected.py failed, running full (see $L/affected.log)"; fi
-fi
+# Target selection (scripts/verify-targets.sh): unset/full -> everything; affected -> affected.py, falling back to full.
+VT=full GO_PKGS=./... SWIFT=all APP=1 WHY="verify-targets.sh missing"; [ -f "$SD/verify-targets.sh" ] && eval "$(bash "$SD/verify-targets.sh" "${TI_BASE:-origin/main}" "$L/affected.log")"
+[ "$VT" = affected ] && echo "verify: affected ($WHY): go=[${GO_PKGS:-none}] swift=[${SWIFT:-none}] app=$APP" || echo "verify: targets full ($WHY)"
 step() {  # step NAME cmd...
   local n=$1; shift; local t=$SECONDS; mark
   perl -e 'alarm shift; exec @ARGV' 2400 "$@" > "$L/$n.log" 2>&1; local rc=$?
@@ -89,6 +85,7 @@ step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 [ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"
 # Lane scripts changed -> run their hermetic tests too.
 # From the worktree under test, so --verify-only checks the PR's own scripts and tests.
+[ -f "$ROOT/scripts/test-affected.sh" ] && step affected-tests bash "$ROOT/scripts/test-affected.sh"
 lane_files_changed "${TI_BASE:-origin/main}" && step lane-tests bash "$(lane_tests_path "$ROOT" "$SD")"
 if [ -d apps/server ] && [ -z "$GO_PKGS" ]; then skip go-vet; skip go-test; skip fixture-off
 elif [ -d apps/server ]; then
@@ -151,11 +148,14 @@ ok() { printf '%s\n' "${ROWS[@]}" | grep -q "^| $1 | PASS | [1-9]"; }
 LEVEL=build-only; ok packages && LEVEL=unit-test-verified
 [ "$VT" = affected ] && [ -z "$SWIFT" ] && printf "%s\n" "${ROWS[@]}" | grep -q "^| go-test | PASS" && LEVEL=unit-test-verified   # Go-only change
 [ $READY = yes ] && [ -s "$P/ready.json" ] && ls "$P"/ready-*.png >/dev/null 2>&1 && LEVEL=UI-verified   # readiness + ready.json required
+BUILT=0; printf '%s\n' "${ROWS[@]}" | grep -qE '^\| (go-test|packages|macos-build|ios-build) \| PASS' && BUILT=1
+NOTE=""; [ $BUILT = 0 ] && NOTE="nothing built or tested (inert-only change in affected mode); not a build"
 [ $FAIL = 1 ] && LEVEL=failed
-echo $LEVEL > "$P/level"
+echo $LEVEL > "$P/level"; if [ -n "$NOTE" ]; then echo "$NOTE" > "$P/level-note"; else rm -f "$P/level-note"; fi
 { echo "## verify.sh: $([ $FAIL = 0 ] && echo PASS || echo FAIL)"
   echo "commit \`$(git rev-parse --short HEAD)\` on $(hostname -s), $(date '+%F %T %Z'), worktree $WT_NAME"
   echo "targets: $VT$([ "$VT" = affected ] && echo " (go: ${GO_PKGS:-none}; swift: ${SWIFT:-none}; app: $APP)")"
+  [ -n "$NOTE" ] && echo "note: **$NOTE**"
   echo "level: **$LEVEL**, ready (chats.list + 12 sidebar rows + waits): $READY"
   echo; echo "| step | result | tests | time |"; echo "|---|---|---|---|"; printf '%s\n' "${ROWS[@]}"
   echo; echo "media: ${MEDIA:-none (readiness test attachments only)}"

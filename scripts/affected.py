@@ -27,9 +27,16 @@ changed = sorted(set(changed))
 if not changed: out("", "", 0, "no changed paths")
 
 GLOBAL = re.compile(r"^(Package\.swift|Package\.resolved|go\.work(\.sum)?|contracts/|packages/CSQLite/)")
-INERT = re.compile(r"^(docs/|specs/|agents/|scripts/|[^/]+\.md$|apps/server/[^/]*\.md$|LICENSE$|\.github/)|\.md$")
+# Lane-only scripts: covered by lane-tests / merge-queue tests, not by the app build. Every OTHER file under
+# scripts/ (verify.sh, affected.py, lanelib.sh, wt-setup.sh, fetch_cua.py, templates/...) is verify tooling:
+# a PR that changes verify must not be checked by its own skipping verify, so it runs full.
+LANE_ONLY = re.compile(r"^scripts/(run-lane|cleanup|dispatch-guard|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|lane-status|merge-queue|test-merge-queue|review-verdict|queue-write)\.sh$|^scripts/(lanes|media-check|verdict)\.py$")
+INERT = re.compile(r"^(docs/|specs/|agents/|[^/]+\.md$|apps/server/[^/]*\.md$|LICENSE$|\.github/)|\.md$")
+def inert(p): return bool(INERT.search(p) or LANE_ONLY.match(p))
 for p in changed:
     if GLOBAL.match(p): out("all", "all", 1, f"{p} is shared by every target")
+    if p.startswith("scripts/") and not LANE_ONLY.match(p) and not p.endswith(".md"):
+        out("all", "all", 1, f"{p} is verify tooling")
 
 # --- Go: changed packages + every package that imports them (tests included) ---------------
 SRV = "apps/server"
@@ -48,7 +55,7 @@ elif go_files:
     for p in go_files:
         rel = os.path.dirname(p[len(SRV) + 1:]) or "."
         if rel in dirs: hit.add(dirs[rel])
-        elif p.endswith(".go") or "testdata" in p or not INERT.search(p):
+        elif p.endswith(".go") or "testdata" in p or not inert(p):
             # file in a non-package dir (testdata, embedded asset): owning package = longest prefix
             own = max((d for d in dirs if rel == d or rel.startswith(d + "/")), key=len, default=None)
             if own is None: go_pkgs = "all"; break
@@ -69,14 +76,15 @@ for t in dump["targets"]:
     for d in t.get("dependencies", []):
         v = next(iter(d.values())); deps.add(v[0] if isinstance(v, list) else v)
     targets[t["name"]] = (t.get("path") or "", t["type"], deps)
-swift_hit = set(); app = 0; unmapped = []
+swift_hit = set(); app = 0; unmapped = []; swift_all = False
 for p in changed:
-    if p.startswith(SRV + "/") or INERT.search(p): continue
+    if p.startswith(SRV + "/") or inert(p): continue
     owner = max((n for n, (d, _, _) in targets.items() if d and p.startswith(d + "/")),
                 key=lambda n: len(targets[n][0]), default=None)
     if owner: swift_hit.add(owner)
     if p.startswith("apps/Polymux/") or p.startswith("packages/"):
         app = 1   # the Xcode app links the packages and compiles apps/Polymux/Sources directly
+        if not owner: swift_all = True   # ownerless non-doc file (resource, new dir): every Swift target
         continue
     if not owner: unmapped.append(p)
 if unmapped: out("all", "all", 1, "unmapped paths: " + " ".join(unmapped[:5]))
@@ -86,5 +94,5 @@ while grew:
     for n, (_, _, deps) in targets.items():
         if n not in swift_hit and deps & swift_hit: swift_hit.add(n); grew = True
 tests = sorted(n for n in swift_hit if targets[n][1] == "test")
-swift = ("^(" + "|".join(tests) + r")\.") if tests else ""
+swift = "all" if swift_all else (("^(" + "|".join(tests) + r")\.") if tests else "")
 out(go_pkgs, swift, app, f"{len(changed)} changed paths")
