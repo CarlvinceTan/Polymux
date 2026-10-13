@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
@@ -23,7 +24,34 @@ CREATE TABLE IF NOT EXISTS push_queue(
 	if err != nil {
 		return err
 	}
-	return s.addPushRetry(ctx)
+	if err := s.addPushRetry(ctx); err != nil {
+		return err
+	}
+	var schema string
+	if err := s.DB.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE name='notices'`).Scan(&schema); err != nil {
+		return err
+	}
+	if !strings.Contains(schema, "message_id TEXT NOT NULL UNIQUE") {
+		return nil
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `CREATE TEMP TABLE saved_push AS SELECT * FROM push_queue;
+CREATE TABLE notices_next(seq INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, message_id TEXT REFERENCES messages(id) ON DELETE CASCADE, notice_key TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
+INSERT INTO notices_next SELECT seq,thread_id,message_id,message_id,json_set(data,'$.body','New message in Polymux','$.outcome','done') FROM notices;
+DROP TABLE push_queue;
+DROP TABLE notices;
+ALTER TABLE notices_next RENAME TO notices;
+CREATE TABLE push_queue(notice_seq INTEGER NOT NULL REFERENCES notices(seq) ON DELETE CASCADE, device_id TEXT NOT NULL REFERENCES push_devices(id) ON DELETE CASCADE, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER, PRIMARY KEY(notice_seq,device_id));
+INSERT INTO push_queue SELECT * FROM saved_push;
+DROP TABLE saved_push;`)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // addPushRetry is idempotent rather than version-gated, because later migrations rewrite user_version.
@@ -56,6 +84,9 @@ func (s *Store) addPushRetry(ctx context.Context) error {
 }
 
 func noticeTx(ctx context.Context, tx *sql.Tx, m *contract.Message, event contract.Event) error {
+	if event.Run != nil && event.Run.Trigger == "message" {
+		return turnNotice(ctx, tx, event.Run)
+	}
 	if m == nil || m.Role != "assistant" || m.Status != "done" || event.Type != "message.done" && event.Type != "message.start" {
 		return nil
 	}
@@ -72,7 +103,7 @@ func noticeTx(ctx context.Context, tx *sql.Tx, m *contract.Message, event contra
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if trigger == "created" || trigger == "peer" {
+		if trigger == "created" || trigger == "peer" || trigger == "message" {
 			return nil
 		}
 	}
@@ -83,9 +114,62 @@ func noticeTx(ctx context.Context, tx *sql.Tx, m *contract.Message, event contra
 			title = name
 		}
 	}
-	notice := contract.Notice{ConversationID: m.ThreadID, MessageID: m.ID, Title: title, CreatedAt: Now()}
+	notice := contract.Notice{ConversationID: m.ThreadID, MessageID: m.ID, Title: title, Body: "New message in Polymux", Outcome: "done", CreatedAt: Now()}
+	return saveNotice(ctx, tx, notice, m.ID, m.ID)
+}
+
+func turnNotice(ctx context.Context, tx *sql.Tx, run *contract.Run) error {
+	outcome, body := "", ""
+	switch run.Status {
+	case "completed":
+		outcome, body = "done", "Finished"
+	case "failed":
+		outcome, body = "failed", "Failed"
+		if run.Error != nil {
+			body += ": " + run.Error.Message
+		}
+	case "waiting_input":
+		outcome, body = "waiting_input", "Needs your approval"
+	default:
+		return nil
+	}
+	var data string
+	var messageID any
+	err := tx.QueryRowContext(ctx, `SELECT data FROM messages WHERE json_extract(data,'$.runID')=? AND json_extract(data,'$.role')='assistant' AND json_extract(data,'$.status')='done' ORDER BY rowid DESC LIMIT 1`, run.ID).Scan(&data)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		var m contract.Message
+		if err := json.Unmarshal([]byte(data), &m); err != nil {
+			return err
+		}
+		messageID = m.ID
+		if outcome == "done" && strings.TrimSpace(Text(m)) != "" {
+			body = Text(m)
+		}
+	}
+	title := "Polymux"
+	var name string
+	if err := tx.QueryRowContext(ctx, `SELECT json_extract(data,'$.name') FROM agents WHERE id=?`, run.AgentID).Scan(&name); err == nil && name != "" {
+		title = name
+	}
+	id, _ := messageID.(string)
+	return saveNotice(ctx, tx, contract.Notice{ConversationID: run.ConversationID, MessageID: id, Title: title, Body: noticeBody(body), Outcome: outcome, CreatedAt: Now()}, messageID, run.ID)
+}
+
+func noticeBody(body string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(body), "\n")
+	chars := []rune(strings.TrimSpace(line))
+	if len(chars) > 140 {
+		chars = chars[:140]
+	}
+	return string(chars)
+}
+
+func saveNotice(ctx context.Context, tx *sql.Tx, notice contract.Notice, messageID any, key string) error {
 	data, _ := json.Marshal(notice)
-	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO notices(thread_id,message_id,data)VALUES(?,?,?)`, m.ThreadID, m.ID, string(data))
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO notices(thread_id,message_id,notice_key,data)VALUES(?,?,?,?)`, notice.ConversationID, messageID, key, string(data))
 	if err != nil {
 		return err
 	}

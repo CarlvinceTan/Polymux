@@ -7,6 +7,8 @@ type PushStatus struct {
 }
 
 type Notice struct {
+	Body           string `json:"body"`
+	Outcome        string `json:"outcome"`
 	Seq            int64  `json:"seq"`
 	ConversationID string `json:"conversationID"`
 	MessageID      string `json:"messageID"`
