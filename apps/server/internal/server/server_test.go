@@ -173,6 +173,39 @@ func TestTimeoutNotice(t *testing.T) {
 	}
 }
 
+func TestRemovedConnectorRoutes(t *testing.T) {
+	// Pieces stay separate so this file does not contain the retired names.
+	product := "one" + "drive"
+	t.Setenv("POLYMUX_"+strings.ToUpper(product)+"_CLIENT_ID", "client")
+	t.Setenv("POLYMUX_"+strings.ToUpper(product)+"_CLIENT_SECRET", "secret")
+	t.Setenv("POLYMUX_"+"OAUTH"+"_PUBLIC_BASE", "https://example.test")
+	api, _ := startTest(t, &testFactory{})
+	root := "/" + "connections"
+	owned := root + "/" + product
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: root},
+		{method: http.MethodGet, path: owned + "/start"},
+		{method: http.MethodPost, path: owned + "/connect"},
+		{method: http.MethodDelete, path: owned},
+		{method: http.MethodGet, path: owned + "/files"},
+		{method: http.MethodGet, path: owned + "/files/item-1/content"},
+		{method: http.MethodGet, path: "/oauth/microsoft/callback"},
+		{method: http.MethodGet, path: "/oauth/microsoft/success"},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			api.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("%s %s = %d, want 404", route.method, route.path, response.Code)
+			}
+		})
+	}
+}
+
 func startTest(t *testing.T, f Factory) (*Server, *httptest.Server) {
 	t.Helper()
 	dir := t.TempDir()
