@@ -41,7 +41,7 @@ P1="$T/proof1"; P2="$T/proof2"; mkdir -p "$P1" "$P2"
 HOME=$(eval echo ~"$(id -un)") python3 -c 'import random,sys; from PIL import Image; r=random.Random(1); im=Image.new("RGB",(200,100))
 im.putdata([(r.randrange(256),r.randrange(256),r.randrange(256)) for _ in range(20000)]); im.save(sys.argv[1]+"/ready-a.png")
 Image.new("RGB",(200,100),"white").save(sys.argv[1]+"/blank.png")' "$P1"; cp "$P1/ready-a.png" "$P2/"
-printf 'ready-a.png\nblank.png\n' | tee "$P1/approved" > "$P2/approved"
+printf 'ready-a.png\nblank.png\n' | tee "$P1/approved" "$P1/uploaded" "$P2/uploaded" > "$P2/approved"
 SHA=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$P1/ready-a.png")
 rm "$LANES_HOME/BOARD_LIVE"; PATH=$BP $BU verify fake-unit UI-verified "$P1" https://github.com/o/r/raw/proof-media/run1
 check "board: dry-run media line carries sha256; blank image held" 'grep -q "DRY-RUN would append .*run1/ready-a.png sha256=$SHA" "$BLOG" && grep -q "held media (pre-publish check failed: mostly empty space.*blank.png" "$BLOG" && [ "$(NP blocks)" = 0 ]'
@@ -52,21 +52,32 @@ check "board: same proof across two runs (new refs) appended once (sha ledger)" 
 rm "$LANES_HOME/board/fake-unit.media"; printf '{"type":"image","image":{"caption":[{"plain_text":"proof sha256:%s ready-a.png"}]}}' "$SHA" > "$T/blocks"
 PATH=$BP $BU verify fake-unit UI-verified "$P2" https://github.com/o/r/raw/proof-media/run3
 check "board: proof already on card (caption sha, page 2) not re-appended" '[ "$(NP blocks)" = 1 ] && grep -q "already on card" "$BLOG"'
-# approved-list gate: unlisted file, .mov, missing list -> no append (live)
-P3="$T/proof3"; P4="$T/proof4"; mkdir -p "$P3" "$P4"
+# approved-list + uploaded gates: unlisted file, .mov, no approved list, approved but not uploaded -> no append (live)
+P3="$T/proof3"; P4="$T/proof4"; P5="$T/proof5"; mkdir -p "$P3" "$P4" "$P5"
 HOME=$(eval echo ~"$(id -un)") python3 -c 'import random,sys; from PIL import Image; r=random.Random(2); im=Image.new("RGB",(200,100))
-im.putdata([(r.randrange(256),r.randrange(256),r.randrange(256)) for _ in range(20000)]); im.save(sys.argv[1]+"/fresh.png")' "$P3"; cp "$P3/fresh.png" "$P4/"
-ffmpeg -v error -f lavfi -i testsrc=size=320x240:rate=10 -t 1 -pix_fmt yuv420p "$P3/clip.mov"
-echo clip.mov > "$P3/approved"; : > "$BLOG"
-PATH=$BP $BU verify fake-unit UI-verified "$P3" https://github.com/o/r/raw/proof-media/run4; PATH=$BP $BU verify fake-unit UI-verified "$P4" https://github.com/o/r/raw/proof-media/run5
-check "board: unlisted file, .mov, or no approved list -> no append" '[ "$(NP blocks)" = 1 ] && grep -q "PASS.*clip.mov" <(python3 scripts/media-check.py "$P3") && grep -q "not in $P3/approved): fresh.png" "$BLOG" && grep -q "not uploaded by publish_proof): clip.mov" "$BLOG" && grep -q "not in $P4/approved): fresh.png" "$BLOG"'
+im.putdata([(r.randrange(256),r.randrange(256),r.randrange(256)) for _ in range(20000)]); im.save(sys.argv[1]+"/fresh.png")' "$P3"; cp "$P3/fresh.png" "$P4/"; cp "$P3/fresh.png" "$P5/"
+FF() { ffmpeg -v error -f lavfi -i "$1" -t "$2" -pix_fmt yuv420p "$3"; }
+FF testsrc=size=320x240:rate=10 1 "$P3/clip.mov"; echo clip.mov | tee "$P3/approved" > "$P3/uploaded"; echo fresh.png > "$P5/approved"; : > "$BLOG"
+for n in 3 4 5; do PATH=$BP $BU verify fake-unit UI-verified "$T/proof$n" https://github.com/o/r/raw/proof-media/run$n; done
+check "board: unlisted file, .mov, or no approved list -> no append" '[ "$(NP blocks)" = 1 ] && grep -q "not in $P3/approved): fresh.png" "$BLOG" && grep -q "pre-publish check failed: .mov is not uploaded.*clip.mov" "$BLOG" && grep -q "not in $P4/approved): fresh.png" "$BLOG"'
+check "board: approved but not uploaded by publish_proof -> no append" '[ "$(NP blocks)" = 1 ] && grep -q "not uploaded by publish_proof, $P5/uploaded): fresh.png" "$BLOG"'
+# media-check: video length, sampled frames, .mov, loud failure when Pillow/ffmpeg are missing
+V="$T/vid"; mkdir -p "$V"; FF testsrc=size=320x240:rate=10 1 "$V/ok.mp4"; FF testsrc=size=320x240:rate=10 0.2 "$V/short.mp4"
+FF color=c=white:size=320x240:rate=10 1 "$V/solid.mp4"; FF testsrc=size=320x240:rate=10 1 "$V/m.mov"; MCO=$(python3 scripts/media-check.py "$V")
+check "media-check: video length (1 s passes, 0.2 s too short)" 'grep -q "^PASS.*ok.mp4" <<< "$MCO" && grep -q "^FAIL	too short	short.mp4" <<< "$MCO"'
+check "media-check: solid-colour video fails on sampled frames" 'grep -q "^FAIL	frame 1 at .*mostly empty space.*solid.mp4" <<< "$MCO"'
+check "media-check: .mov rejected" 'grep -q "^FAIL	.mov is not uploaded.*m.mov" <<< "$MCO"'
+MC_FFPROBE=/nonexistent/ffprobe PATH=$BP $BU verify fake-unit UI-verified "$V" https://github.com/o/r/raw/proof-media/run6 >/dev/null
+MC_NOPIL=1 PATH=$BP $BU verify fake-unit UI-verified "$P5" https://github.com/o/r/raw/proof-media/run7 >/dev/null
+check "board: missing ffprobe / Pillow -> loud board_error, no append" '[ "$(NP blocks)" = 1 ] && grep -q "board_error	verify	media-check failed (rc=3): media-check: ffprobe/ffmpeg missing" "$LANES_HOME/events.tsv" && grep -q "board_error	verify	media-check failed (rc=3): media-check: Pillow missing" "$LANES_HOME/events.tsv"'
 rm "$LANES_HOME/BOARD_LIVE"; echo Backlog > "$T/cur"; : > "$BLOG"
 printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard fails\n' > "$T/bf.task"
 PATH=$BP LANE_FORCE_FAIL="laneA laneB" $RL laneA "$T/bf.task" >/dev/null 2>&1
 check "run-lane: no start without work; final failure -> Verification failed only" '! grep -q "board-fails start" "$BLOG" && grep -q "board-fails verify: DRY-RUN .*Verification: .. -> .failed." "$BLOG"'
 printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard works\n' > "$T/bw.task"
-PATH=$BP LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
-check "run-lane: start written after the agent's first commit" 'grep -q "board-works start: DRY-RUN .*-> .In Progress." "$BLOG"'
+PATH=$BP LANE_DRY=1 LANE_STUB_CMD="sleep 2; grep -q \"board-works start\" \"$BLOG\" && echo early > \"$T/bw.seen\"; printf %s \"\$PROMPT\" > \"$T/bw.prompt\"; $STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
+check "run-lane: start not written before the agent works, written after its first commit" '[ ! -f "$T/bw.seen" ] && grep -q "board-works start: DRY-RUN .*-> .In Progress." "$BLOG"'
+check "run-lane: agent prompt asks it to review the shots and write .build/approved" 'grep -q "open every screenshot and video" "$T/bw.prompt" && grep -q "to .build/approved" "$T/bw.prompt"'
 touch "$LANES_HOME/BOARD_LIVE"; echo Review > "$T/cur"; : > "$T/curl.log"; : > "$BLOG"; C=$LANES_HOME/cards
 echo 11111111-2222-3333-4444-555555555555 | tee "$C/board-done" > "$C/done"; echo laneA-board-done > "$C/board-done.wt"; echo other > "$C/done.wt"
 printf '2026-10-13 11:00:00\t10131100-board-done\thttps://github.com/o/r/pull/7\tabc\tUI-verified\n' >> "$LANES_HOME/results.tsv"

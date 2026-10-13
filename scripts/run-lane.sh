@@ -23,6 +23,7 @@ publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own 
       git update-index --add --cacheinfo "100644,$(git hash-object -w "$f"),$(basename "$f")" || exit 1; done &&
     c=$(git commit-tree "$(git write-tree)" -m "proof $id") &&
     git push -q origin "$c:refs/heads/$ref" 2>&1 ); local rc=$?; rm -f "$idx"
+  [ $rc = 0 ] && (cd "$wt/.build/proof" && ls *.png *.mp4 2>/dev/null) > "$wt/.build/proof/uploaded"   # board appends only these
   if [ $rc -ne 0 ]; then echo "proof push failed ($ref): $err" >&2
     echo "_media upload to \`$ref\` failed: $(echo "$err" | tail -1 | cut -c1-200)_"; return; fi
   local u="https://github.com/$SLUG_REPO/raw/$ref"
@@ -59,12 +60,15 @@ Rules: work only in this worktree. Keep the change small and scoped.${SCOPE:+ On
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
-needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it under ~300 changed lines. If you cannot make verify.sh pass, say why and stop."; }
+needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it under ~300 changed lines. If you cannot make verify.sh pass, say why and stop.
+Proof review: after your last verify.sh run, open every screenshot and video in .build/proof and write the
+names of the ones that really show this change (one per line, e.g. ready-main.png) to .build/approved.
+Nothing listed means no proof media goes on the board card."; }
 run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer name.
   local a cmd P; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd); P=$(prompt "$1")
   export GIT_COMMITTER_NAME="$(git -C "$2" config user.name || echo agent) ($1/$a)"
   case " ${LANE_FORCE_FAIL:-} " in *" $1 "*) echo "forced failure (LANE_FORCE_FAIL test)" >> "$3"; return 97;; esac
-  [ -n "${LANE_STUB_CMD:-}" ] && { (cd "$2" && LANE="$1" AGENT="$a" bash -c "$LANE_STUB_CMD") >> "$3" 2>&1; return; }  # test hook
+  [ -n "${LANE_STUB_CMD:-}" ] && { (cd "$2" && LANE="$1" AGENT="$a" PROMPT="$P" bash -c "$LANE_STUB_CMD") >> "$3" 2>&1; return; }  # test hook
   case $a in
     cursor) local K; K=$(vault get "$(cfg lane "$1" key)" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       # Key only in this child's environment: never argv (ps), never exported, keychain untouched.
@@ -117,6 +121,7 @@ for L in $(cfg order "$LANE"); do
     git -C "$WT" log --format=%B "$BASE"..HEAD | grep -qE '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" bash "$SD/verify.sh") >> "$LOG" 2>&1; VRC=$?
+  [ -f "$WT/.build/approved" ] && cp "$WT/.build/approved" "$WT/.build/proof/approved"   # verify.sh wipes proof/; the agent's review list survives
   [ -x ~/.local/bin/lane-guard ] && { ~/.local/bin/lane-guard --task-end "$L" "$ID" "$VRC" "$LOG" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
   [ $VRC = 0 ] || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
