@@ -53,7 +53,7 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "device" {
 		return runDevice(os.Args[2:])
 	}
-	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "unauthenticated backend IP:port; should stay on loopback (defaults to 127.0.0.1:7337)")
+	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "authenticated backend IP:port (loopback, private LAN or Tailscale; defaults to 127.0.0.1:7337)")
 	dev := flag.Bool("dev", os.Getenv("POLYMUX_DEV") == "1", "development mode (loopback is always allowed)")
 	dir := flag.String("data", os.Getenv("POLYMUX_DATA_DIR"), "data directory")
 	deviceListen := flag.String("device-listen", "", "TLS device listener (defaults to backend port + 2)")
@@ -128,7 +128,7 @@ func run() error {
 		return err
 	}
 	defer pairings.Close()
-	if _, err := pairings.Local(ctx, *dir); err != nil {
+	if _, err := localCredential(ctx, pairings, *dir); err != nil {
 		return err
 	}
 	devices := device.New(pairings)
