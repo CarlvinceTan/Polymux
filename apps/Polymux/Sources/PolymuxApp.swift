@@ -58,19 +58,22 @@ final class AppSession {
     let settings: SettingsStore
     let avatars: AvatarStore
 
-    init(address: String) throws {
+    init(address: String) async throws {
         guard let url = ServerAddress.parse(address) else {
             throw URLError(.badURL)
         }
         client = APIClient(baseURL: url)
-        let support = try FileManager.default.url(
-            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        )
         let key = address.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
-        let directory = support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        cache = try LocalCache(url: directory.appending(path: "cache.sqlite"))
+        cache = try await Task.detached {
+            let support = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+            )
+            let directory = support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            return try LocalCache(url: directory.appending(path: "cache.sqlite"))
+        }.value
         sidebar = SidebarStore(client: client, cache: cache)
+        await sidebar.load()
         settings = SettingsStore(client: client)
         avatars = AvatarStore(sidebar: sidebar)
     }
@@ -103,7 +106,7 @@ struct AppRoot: View {
         .neutralBackground()
         .task(id: address) {
             do {
-                session = try AppSession(address: address)
+                session = try await AppSession(address: address)
                 error = nil
                 if let session {
                     Notifications.shared.connect(session.client)

@@ -14,7 +14,7 @@ import Testing
         #expect(try JSONDecoder().decode(Proactivity.self, from: JSONEncoder().encode(settings)) == settings)
     }
 
-    @Test @MainActor func noticesReplayWithoutAStreamingBubble() throws {
+    @Test func noticesReplayWithoutAStreamingBubble() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("db")
         let cache = try LocalCache(url: url)
         let agent = Agent(id: "a", name: "A")

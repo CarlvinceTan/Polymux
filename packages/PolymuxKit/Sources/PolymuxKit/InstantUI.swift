@@ -3,31 +3,36 @@ import os
 #endif
 import Foundation
 
-/// Visible feedback within 16 ms, and the published state change within 50 ms.
+/// Visible feedback lands inside one frame. The published state change lands inside 50 ms.
 public enum InstantUI {
+    /// Visible feedback has to finish inside one frame.
     public static let feedbackBudget: Duration = .milliseconds(16)
+
+    /// A published state change has to finish inside this window.
     public static let stateBudget: Duration = .milliseconds(50)
 
-    /// Records a signpost from `tap` through `body` and keeps the duration on `trace`.
-    public static func interval(
+    /// Records a signpost from `tap` through `body` and returns the body's value.
+    @discardableResult
+    public static func interval<T>(
         _ name: StaticString,
         budget: Duration,
         trace: SignpostTrace,
         from tap: ContinuousClock.Instant? = nil,
-        _ body: () -> Void
-    ) {
+        _ body: () -> T
+    ) -> T {
         prepare()
         let clock = ContinuousClock()
         #if os(macOS) || os(iOS) || os(visionOS) || os(tvOS) || os(watchOS)
         let state = signposter.beginInterval(name)
         #endif
         let start = tap ?? clock.now
-        body()
+        let value = body()
         let duration = start.duration(to: clock.now)
         #if os(macOS) || os(iOS) || os(visionOS) || os(tvOS) || os(watchOS)
         signposter.endInterval(name, state)
         #endif
         trace.record(signpostName(name), duration: duration, budget: budget)
+        return value
     }
 
     private static func prepare() {
@@ -100,7 +105,8 @@ public final class SignpostTrace: @unchecked Sendable {
         public let name: String
         public let duration: Duration
         public let budget: Duration
-        public var withinBudget: Bool { duration <= budget }
+        /// Strictly inside the budget. A span that merely ties the limit has missed it.
+        public var withinBudget: Bool { duration < budget }
     }
 
     private let lock = NSLock()
@@ -108,8 +114,11 @@ public final class SignpostTrace: @unchecked Sendable {
 
     public init() {}
 
-    public func record(_ name: String, duration: Duration, budget: Duration) {
-        lock.withLock { storage.append(Span(name: name, duration: duration, budget: budget)) }
+    @discardableResult
+    public func record(_ name: String, duration: Duration, budget: Duration) -> Span {
+        let span = Span(name: name, duration: duration, budget: budget)
+        lock.withLock { storage.append(span) }
+        return span
     }
 
     public var spans: [Span] { lock.withLock { storage } }

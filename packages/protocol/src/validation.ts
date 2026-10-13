@@ -192,24 +192,6 @@ export const DRIVE_PROVIDERS: {
     description: "A shared folder on your network. Reachable when it is mounted.",
   },
   {
-    value: "google-drive",
-    label: "Google Drive",
-    kind: "oauth",
-    description: "Files Polymux creates live in their own Drive folder.",
-  },
-  {
-    value: "dropbox",
-    label: "Dropbox",
-    kind: "oauth",
-    description: "Scoped to the Polymux app folder, not your whole Dropbox.",
-  },
-  {
-    value: "onedrive",
-    label: "OneDrive",
-    kind: "oauth",
-    description: "Personal or work account, in its own Polymux folder.",
-  },
-  {
     value: "s3",
     label: "S3 storage",
     kind: "s3",

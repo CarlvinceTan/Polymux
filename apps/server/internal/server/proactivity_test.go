@@ -2,17 +2,21 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/testenv"
 )
 
 type reviewFactory struct {
@@ -333,5 +337,126 @@ func TestWaitingDoesNotPauseAgent(t *testing.T) {
 	items, err := api.Store.OpenWork(t.Context(), "assistant", "assistant")
 	if err != nil || len(items) != 2 || items[0].WaitingFor != "user" {
 		t.Fatal("blocked task was not retained", items, err)
+	}
+}
+
+func morningWork(t *testing.T, s *store.Store, id, job string) store.Work {
+	t.Helper()
+	routine, err := s.CreateRoutine(t.Context(), contract.Routine{
+		ID: id, AgentID: "assistant", Prompt: "Morning brief", Status: "active",
+		At: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := routine.Prompt
+	return store.Work{Trigger: "routine", RoutineID: &routine.ID, Message: contract.Message{
+		ID: job, ThreadID: "assistant", Role: "system", Parts: []contract.Part{{Kind: "text", Text: &prompt}},
+	}}
+}
+
+func failureNotices(t *testing.T, s *store.Store) []contract.Message {
+	t.Helper()
+	messages, err := s.Messages(t.Context(), "assistant", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := []contract.Message{}
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if part.Kind == "routine_failed" {
+				notes = append(notes, message)
+			}
+		}
+	}
+	return notes
+}
+
+func TestR4(t *testing.T) {
+	testenv.PiG(t)
+	const attempts = 3
+	var hits atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-should-retry", "false")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"internal server error","type":"server_error"}}`))
+	}))
+	t.Cleanup(provider.Close)
+	runtime, err := agentruntime.New(t.TempDir(), provider.URL+"/v1", "local/test", "test-key", agentruntime.Client{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	api, _ := startTest(t, runtime)
+	if err := api.Store.RegisterPush(t.Context(), contract.PushDevice{
+		ID: "fixture-installation", Token: strings.Repeat("ab", 32),
+		Environment: "sandbox", Server: "http://server.test:7337", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	work := morningWork(t, api.Store, "morning", "morning-job")
+	for range attempts {
+		api.execute(t.Context(), api.actors["assistant"], work)
+	}
+	if hits.Load() < 1 {
+		t.Fatal("model did not return 500")
+	}
+	run, err := api.Store.Run(t.Context(), store.NewRun(work.Message.ID, "assistant", "assistant", "routine").ID)
+	notes := failureNotices(t, api.Store)
+	if err != nil || run.Status != "failed" || run.Error == nil || len(notes) != 1 || notes[0].Role != "system" {
+		t.Fatalf("run %+v notices %d hits %d err %v", run, len(notes), hits.Load(), err)
+	}
+	part := notes[0].Parts[0]
+	var body map[string]string
+	if part.Kind != "routine_failed" || value(part.Text) != "Routine \u201cMorning brief\u201d failed: model error. Retry" || value(part.Name) != value(work.RoutineID) || json.Unmarshal([]byte(value(part.Args)), &body) != nil || body["title"] != "Morning brief" || body["reason"] != "model error" || body["routineID"] != value(work.RoutineID) {
+		t.Fatalf("notice %+v", notes[0])
+	}
+	push, err := api.Store.ClaimPush(t.Context())
+	if err != nil || push.Notice.MessageID != notes[0].ID {
+		t.Fatalf("notice was not pushed: %+v %v", push.Notice, err)
+	}
+	if _, err := api.Store.ClaimPush(t.Context()); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("failure notice pushed twice", err)
+	}
+	okAPI, _ := startTest(t, &testFactory{})
+	okWork := morningWork(t, okAPI.Store, "morning-ok", "morning-ok")
+	okAPI.execute(t.Context(), okAPI.actors["assistant"], okWork)
+	okRun, err := okAPI.Store.Run(t.Context(), store.NewRun(okWork.Message.ID, "assistant", "assistant", "routine").ID)
+	if err != nil || okRun.Status != "completed" || len(failureNotices(t, okAPI.Store)) != 0 {
+		t.Fatalf("successful routine %+v notices %d %v", okRun, len(failureNotices(t, okAPI.Store)), err)
+	}
+}
+
+type failModel struct{ calls atomic.Int32 }
+
+func (f *failModel) Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error) {
+	return &failSession{factory: f}, nil
+}
+
+type failSession struct{ factory *failModel }
+
+func (s *failSession) Send(context.Context, contract.Message, func(agentruntime.Delta) error) (agentruntime.Result, error) {
+	s.factory.calls.Add(1)
+	return agentruntime.Result{}, errors.New("500 internal server error")
+}
+func (*failSession) Close() error                { return nil }
+func (*failSession) Path() string                { return "fail.jsonl" }
+func (*failSession) Abort(context.Context) error { return nil }
+
+func TestR4CancelIsNotFailure(t *testing.T) {
+	model := &failModel{}
+	api, _ := startTest(t, model)
+	work := morningWork(t, api.Store, "morning", "morning-job")
+	if _, err := api.Store.CancelRoutine(t.Context(), "assistant", value(work.RoutineID)); err != nil {
+		t.Fatal(err)
+	}
+	api.execute(t.Context(), api.actors["assistant"], work)
+	run, err := api.Store.Run(t.Context(), store.NewRun(work.Message.ID, "assistant", "assistant", "routine").ID)
+	notes := failureNotices(t, api.Store)
+	if err != nil || run.Status != "cancelled" || len(notes) != 0 || model.calls.Load() != 0 {
+		t.Fatalf("cancel treated as failure: status %s notices %d model %d err %v", run.Status, len(notes), model.calls.Load(), err)
 	}
 }

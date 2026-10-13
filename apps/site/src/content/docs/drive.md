@@ -1,7 +1,7 @@
 ---
 title: Drive
 slug: drive
-description: Work with local files, cloud drives, network folders, and S3-compatible storage inside Polymux.
+description: Work with local files, network folders, S3-compatible storage, and cloud files from an MCP server the agent installs.
 section: Using Polymux
 sectionOrder: 2
 order: 3
@@ -18,18 +18,18 @@ Polymux supports:
 
 - A local folder on this computer
 - Mounted network folders
-- Google Drive
-- Dropbox
-- OneDrive personal or work accounts
 - S3-compatible storage such as AWS S3, Cloudflare R2, Backblaze B2, or MinIO
+- Cloud files through an MCP server the agent installs
 
 Availability can depend on how a particular build was configured.
 
 ## Connect storage
 
-Open **Settings → Drive**. Connect one or more providers, then arrange their priority under **Drive Configuration**. When the agent creates a file, Polymux uses the first available destination in that order.
+Open **Settings → Drive** for a local folder, a network share, or S3-compatible storage, then arrange their priority under **Drive Configuration**. When the agent creates a file, Polymux uses the first available destination in that order.
 
-Cloud providers are restricted to a Polymux app folder where the provider supports that scope. Credentials are stored through the operating system’s protected credential storage.
+Cloud drives are not a Polymux sign-in. Ask the agent to install that service’s MCP server. The connection belongs to you, and the files stay on your devices and in the service you connected. See [Skills and MCP](/docs/skills-and-mcp/).
+
+Credentials for local and S3 storage are stored through the operating system’s protected credential storage.
 
 ## Work with files
 
