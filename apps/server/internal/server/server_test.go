@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
@@ -71,6 +72,10 @@ func (s *timeoutSession) Abort(ctx context.Context) error {
 }
 
 func TestTimeoutNotice(t *testing.T) {
+	synctest.Test(t, timeoutNotice)
+}
+
+func timeoutNotice(t *testing.T) {
 	dir := t.TempDir()
 	db, err := store.Open(t.Context(), filepath.Join(dir, "db"))
 	if err != nil {
@@ -120,16 +125,12 @@ func TestTimeoutNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	childID := store.NewRun("delivery", "b", "b", "peer").ID
-	until := time.Now().Add(2 * time.Second)
-	for time.Now().Before(until) {
-		parent, err = db.Run(t.Context(), parent.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if store.Terminal(parent.Status) {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	// Abort proves the child reached its deadline; Wait drains finalization.
+	<-factory.aborted
+	synctest.Wait()
+	parent, err = db.Run(t.Context(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
 	child, err := db.Run(t.Context(), childID)
 	if err != nil || child.Status != "failed" || child.Error == nil || child.Error.Code != "timeout" || !strings.Contains(strings.ToLower(child.Error.Message), "timed out") || child.FinishedAt == nil {

@@ -100,15 +100,15 @@ struct SidebarOffMainTests {
 
     @Test func renameStaysVisibleWhileTheSaveIsStalled() async throws {
         let rig = try await Rig()
-        await rig.sidebar.cacheActor.setStall(.milliseconds(70))
+        await rig.sidebar.cacheActor.parkNext()
         await rig.sidebar.cacheActor.setFailing(true)
-        let started = ContinuousClock().now
         rig.sidebar.rename("arlo", to: "Arlo West")
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
-        #expect(started.duration(to: ContinuousClock().now) < InstantUI.feedbackBudget)
-        try await Task.sleep(for: .milliseconds(20))
+        while await !rig.sidebar.cacheActor.isParked { await Task.yield() }
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
-        await CacheWork.untilSaved(rig.sidebar)
+        #expect(rig.sidebar.editIssues["arlo"] == nil)
+        await rig.sidebar.cacheActor.release()
+        await rig.sidebar.settled()
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo")
         #expect(rig.sidebar.editIssues["arlo"] == "Couldn’t save the new name. Retry")
     }
