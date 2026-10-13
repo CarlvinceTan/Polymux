@@ -5,6 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out="${1:?Supply a snapshot output directory}"
+# Absolute, resolved path: the iOS harness runs inside the simulator and gets this path verbatim
+# (it used to get "$PWD/$out", which for an absolute $out became <repo>/Users/... and the iOS shots were lost).
+mkdir -p "$out"; out=$(cd "$out" && pwd -P)
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$PWD/.build/clang-cache}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$PWD/.build/swift-cache}"
 swift build --disable-sandbox
@@ -370,5 +373,7 @@ xcrun --sdk iphonesimulator swiftc -disable-sandbox -O -swift-version 6 -parse-a
   -target "$ios_triple" -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
   -I "$ios_products" -I packages/CSQLite \
   "${sources[@]}" "$scratch/SA1Check.swift" "$ios_products/PolymuxKit.o" -o "$scratch/sa1-check-ios"
-xcrun simctl spawn "$udid" "$scratch/sa1-check-ios" "$PWD/$out" "$PWD"
-echo "ui_snapshots: $(ls "$out" | wc -l | tr -d ' ') files in $out"
+xcrun simctl spawn "$udid" "$scratch/sa1-check-ios" "$out" "$PWD"
+n_ios=$(ls "$out"/ios-*.png 2>/dev/null | wc -l | tr -d ' ')
+[ "$n_ios" -gt 0 ] || { echo "ui_snapshots: iOS harness wrote no ios-*.png into $out" >&2; exit 1; }
+echo "ui_snapshots: $(ls "$out" | wc -l | tr -d ' ') files in $out ($n_ios iOS)"
