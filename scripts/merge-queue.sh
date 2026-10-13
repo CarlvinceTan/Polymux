@@ -46,8 +46,10 @@ merge_only() {  # $1 reviewed sha, $2 head: head == R, or reached from R only by
   while [ "$c" != "$1" ]; do n=$((n+1)); [ $n -gt 20 ] && return 1
     p=($(git -C "$REPO" rev-list --parents -n1 "$c")); [ ${#p[@]} = 3 ] || { echo "approval: ${c:0:7} is not a merge" >> "$LOG"; return 1; }
     git -C "$REPO" merge-base --is-ancestor "${p[2]}" origin/main || { echo "approval: ${c:0:7} merges a non-main parent" >> "$LOG"; return 1; }
-    [ "$(git -C "$REPO" merge-tree --write-tree "${p[1]}" "${p[2]}" 2>/dev/null | head -1)" = "$(git -C "$REPO" rev-parse "$c^{tree}")" ] ||
-      { echo "approval: ${c:0:7} is not a clean auto-merge (conflict or manual edits)" >> "$LOG"; return 1; }
+    local mt mrc; mt=$(git -C "$REPO" merge-tree --write-tree "${p[1]}" "${p[2]}" 2>/dev/null); mrc=$?   # 1 = conflicts, >1 = error
+    [ $mrc = 0 ] || { echo "approval: ${c:0:7}: git merge-tree exit $mrc (conflict or error), not clean" >> "$LOG"; return 1; }
+    [ "$(printf '%s\n' "$mt" | head -1)" = "$(git -C "$REPO" rev-parse "$c^{tree}")" ] ||
+      { echo "approval: ${c:0:7} is not a clean auto-merge (manual edits)" >> "$LOG"; return 1; }
     c=${p[1]}; done; }
 approved() {  # $1 pr, $2 head -> sets RS
   RS=$(reviewed_sha "$1") || return 1; merge_only "$RS" "$2" || { echo "approval: head ${2:0:7} is not reviewed ${RS:0:7} plus merge-only commits" >> "$LOG"; return 1; }; }

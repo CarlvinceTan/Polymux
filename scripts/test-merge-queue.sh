@@ -69,6 +69,22 @@ check "conflict with main: failed, nothing merged or pushed" '[ -f "$MQ/failed/2
 S=$(mkpr p11); enq 11 p11; cm 1 "$(verdict 11 "$S" PASS)" > "$T/comments.jsonl"
 : > "$T/gh.log"; MERGE_VERIFY_CMD='true' bash scripts/merge-queue.sh run >/dev/null 2>&1
 check "missing verification level: refused, not merged" '[ -f "$MQ/failed/2026-pr11" ] && ! merged 11 && grep -q "verification level missing" "$LANES_HOME/logs/merge-pr11.log"'
+# 13 fail closed: an UNSIGNED 'Liam: FIX' after a signed PASS still blocks
+S=$(mkpr p13); enq 13 p13; { cm 1 "$(verdict 13 "$S" PASS)"; cm 2 "Liam: FIX ${S:0:7} — one more thing"; } > "$T/comments.jsonl"; run
+check "unsigned 'Liam: FIX' after a signed PASS blocks (fail closed)" 'blocked 13'
+# 14 other unsigned FIX/CHANGES forms (any case) after PASS block too
+S=$(mkpr p14); enq 14 p14; { cm 1 "$(verdict 14 "$S" PASS)"; cm 2 "changes requested: see above"; } > "$T/comments.jsonl"; run
+S=$(mkpr p15); enq 15 p15; { cm 1 "$(verdict 15 "$S" PASS)"; cm 2 "liam: fix the release note"; } > "$T/comments.jsonl"; run
+check "unsigned 'changes requested' / lowercase 'liam: fix' after PASS block" 'blocked 14 && blocked 15'
+# 16 an unsigned FIX OLDER than the signed PASS does not block; unrelated chatter is ignored
+S=$(mkpr p16); enq 16 p16; { cm 1 "Liam: FIX old head"; cm 2 "$(verdict 16 "$S" PASS)"; cm 3 "Thanks, merging soon (no fix needed)"; } > "$T/comments.jsonl"; run
+check "unsigned FIX before the signed PASS does not block; chatter ignored" 'merged 16'
+# 17 git merge-tree exit status: a 'merge of main' committing the conflicted merge-tree result is not clean
+git checkout -q -b p17 main; echo P17 > f.txt; git commit -qam p17; git push -q origin p17; S=$(git rev-parse HEAD); git checkout -q main
+echo M17 > f.txt; git commit -qam main17; git push -q origin main
+TR=$(git merge-tree --write-tree p17 main | head -1); MC=$(git commit-tree "$TR" -p "$S" -p main -m "merge main (conflicted tree)")
+git push -q origin "$MC:refs/heads/p17"; enq 17 p17; cm 1 "$(verdict 17 "$S" PASS)" > "$T/comments.jsonl"; run
+check "merge whose tree equals a CONFLICTED merge-tree result (exit 1) voids the approval" '! merged 17 && grep -q "merge-tree exit 1" "$LANES_HOME/logs/merge-pr17.log"'
 # 12 review-verdict.sh output is accepted by the checker; key never printed
 S=$(mkpr p12); cp "$SRC/scripts/review-verdict.sh" scripts/
 printf '#!/bin/bash\necho "$*" >> "%s/gh.log"\ncase "$1 $2" in "pr view") echo %s;; "api repos"*) cat "%s/comments.jsonl";; esac; exit 0\n' "$T" "$S" "$T" > "$T/bin/gh"

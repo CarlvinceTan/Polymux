@@ -5,8 +5,12 @@
 A comment is a valid verdict only if ALL hold: author login in MERGE_REVIEWERS (default CarlvinceTan);
 not a merge-queue comment (<!-- polymux-merge-queue -->); body starts exactly with "Liam: PASS" or "Liam: FIX";
 it carries <!-- verdict:v1 pr=<PR> sha=<40 hex> v=<same verdict> mac=<hex> --> with a correct HMAC; and the
-visible text names that sha (full or a 7+ char prefix). Everything else is ignored."""
+visible text names that sha (full or a 7+ char prefix). Everything else is ignored, EXCEPT (fail closed):
+any comment from an allowed login whose body starts with a FIX/CHANGES verdict ("Liam: FIX", "FIX",
+"Liam: CHANGES", "Changes requested", any case), signed or not, posted after the newest valid PASS
+blocks it: newest prints "FIX unsigned"."""
 import hashlib, hmac, json, os, re, sys
+NEG = re.compile(r"^\s*(liam\s*:\s*)?(fix|changes)\b", re.I)
 QUEUE_MARK = "<!-- polymux-merge-queue -->"
 MARK = re.compile(r"<!-- verdict:v1 pr=(\d+) sha=([0-9a-f]{40}) v=(PASS|FIX) mac=([0-9a-f]{64}) -->")
 def mac(key, pr, sha, v): return hmac.new(key, f"{pr}|{sha}|{v}".encode(), hashlib.sha256).hexdigest()
@@ -20,11 +24,16 @@ for c in sorted(cs, key=lambda c: (c.get("created_at") or "", c.get("id") or 0))
     b = c.get("body") or ""; login = (c.get("user") or {}).get("login") or (c.get("author") or {}).get("login")
     if login not in allowed or QUEUE_MARK in b: continue
     m = MARK.search(b)
-    if not m or m.group(1) != pr: continue
+    if not m or m.group(1) != pr:
+        if NEG.match(b): best = ("FIX", "unsigned")   # fail closed: an unsigned FIX/CHANGES still blocks
+        continue
     v, sha = m.group(3), m.group(2)
-    if not b.startswith("Liam: " + v): continue
-    if not hmac.compare_digest(m.group(4), mac(key, pr, sha, v)): continue
+    if not b.startswith("Liam: " + v) or not hmac.compare_digest(m.group(4), mac(key, pr, sha, v)):
+        if NEG.match(b): best = ("FIX", "unsigned")   # a forged/malformed FIX still blocks; a forged PASS never approves
+        continue
     vis = b.replace(m.group(0), "")
-    if not any(sha.startswith(t) for t in re.findall(r"\b[0-9a-f]{7,40}\b", vis)): continue
+    if not any(sha.startswith(t) for t in re.findall(r"\b[0-9a-f]{7,40}\b", vis)):
+        if v == "FIX": best = ("FIX", sha)
+        continue
     best = (v, sha)
 print("%s %s" % best if best else "NONE")
