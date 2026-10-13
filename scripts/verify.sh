@@ -87,6 +87,7 @@ step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 # From the worktree under test, so --verify-only checks the PR's own scripts and tests.
 [ -f "$ROOT/scripts/test-affected.sh" ] && step affected-tests bash "$ROOT/scripts/test-affected.sh"
 lane_files_changed "${TI_BASE:-origin/main}" && step lane-tests bash "$(lane_tests_path "$ROOT" "$SD")"
+lane_files_changed "${TI_BASE:-origin/main}" && [ -f "$ROOT/scripts/test-merge-queue.sh" ] && step merge-queue-tests bash "$ROOT/scripts/test-merge-queue.sh"
 if [ -d apps/server ] && [ -z "$GO_PKGS" ]; then skip go-vet; skip go-test; skip fixture-off
 elif [ -d apps/server ]; then
   step go-vet sh -c 'cd apps/server && GOMAXPROCS=4 go vet -tags sqlite_fts5 $1 && GOMAXPROCS=4 go vet -tags "sqlite_fts5 verifyfixture" $1' _ "$GO_PKGS"
