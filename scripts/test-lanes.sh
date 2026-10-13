@@ -97,6 +97,16 @@ check "lane tests run from the PR worktree" '[ "$(. scripts/lanelib.sh; lane_tes
 # 15 proof-media branches: old ones (>14d) pruned, dry run by default
 OLD=$(GIT_COMMITTER_DATE="$(( $(date +%s) - 20*86400 )) +0000" git commit-tree "$(git write-tree)" -m old-proof)
 git push -q origin "$OLD:refs/heads/proof-media/old-run"
+# 16 empty-pid lock: live during its grace period, stale after it; gate age is numeric
+E="$T/empty.lock"; mkdir "$E"
+check "empty-pid lock within grace is not taken" '! (. scripts/lanelib.sh; lock_take "$E")'
+touch -t 202001010000 "$E"
+check "empty-pid lock past grace is reclaimed" '(. scripts/lanelib.sh; lock_take "$E") && [ -s "$E/pid" ]'
+check "_mtime/_age are numeric" '(. scripts/lanelib.sh; [ "$(_age "$E")" -ge 0 ] 2>/dev/null)'
+# 17 failover never calls lane-guard --dispatch (it pops the queue)
+printf '#!/bin/sh\necho "$*" >> "%s/guard.calls"\n' "$T" > "$T/guard"; chmod +x "$T/guard"
+OUT=$(LANE_GUARD="$T/guard" LANE_FORCE_FAIL=laneA LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Failover guard' t8)" 2>&1)
+check "failover ran laneB with preflight only, no --dispatch" 'echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "^--preflight" "$T/guard.calls" && ! grep -q -- "--dispatch" "$T/guard.calls"'
 # 8 cleanup dry run: dirty and unpushed kept, merged removable, nothing deleted
 git worktree add -q -b c/dirty "$HOME/code/wt/dirty" main && echo x > "$HOME/code/wt/dirty/README"
 git worktree add -q -b c/unpushed "$HOME/code/wt/unpushed" main && (cd "$HOME/code/wt/unpushed" && echo y > u && git add u && git commit -qm u)

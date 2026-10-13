@@ -67,7 +67,10 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
     cursor) local K; K=$(vault get "$(cfg lane "$1" key)" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       # Key only in this child's environment: never argv (ps), never exported, keychain untouched.
       (cd "$2" && CURSOR_API_KEY="$K" "$cmd" -p --force --trust --workspace "$2" --output-format text "$P") >> "$3" 2>&1;;
-    # codex >= 0.16x dropped --full-auto; git commits need .git outside the worktree, so no workspace sandbox.
+    # No workspace-write sandbox (tested 13 Oct, codex 0.162 seatbelt, network on, .git common dir +
+    # ~/ops/lanes as writable roots): .git stays read-only inside the sandbox, so the agent can't
+    # commit, and simctl/CoreSimulator XPC is refused, so verify.sh (iOS sim build) fails. Re-test
+    # before tightening. (--full-auto no longer exists in codex exec.)
     codex) (cd "$2" && "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
     opencode) (cd "$2" && "$cmd" run "$P") >> "$3" 2>&1;;
     *) echo "unknown agent $a" >> "$3"; return 99;;
