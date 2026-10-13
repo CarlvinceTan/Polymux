@@ -28,4 +28,15 @@ grep -q "^bootout gui/$(id -u)/com.carlvince.gui-run." "$T/log" || fail "agent n
 : > "$T/log"; rc=0; out=$(STUB_FAIL=1 bash "$ROOT/scripts/gui-run.sh" true 2>&1) || rc=$?
 [ "$rc" = 125 ] || fail "failed bootstrap rc $rc, want 125"
 [ -z "$(ls -A "$T/tmp")" ] || fail "temp dir left after failed load"
-echo "PASS: gui-run passes stdout/stderr and exit code, boots out the agent, removes its temp dir, 125 on failed load"
+# Timeout path (verify.sh's step alarm): TERM -> 143, the job's whole process tree killed, temp dir gone.
+: > "$T/log"; rm -rf "$T/tmp"; mkdir -p "$T/tmp"
+bash "$ROOT/scripts/gui-run.sh" bash -c "echo \$\$ > '$T/job.pid'; sleep 300" >/dev/null 2>&1 &
+gpid=$!
+for _ in $(seq 1 50); do [ -s "$T/job.pid" ] && break; sleep 0.1; done
+[ -s "$T/job.pid" ] || fail "job never started (no pid file)"
+kill -TERM "$gpid"; wait "$gpid"; rc=$?
+[ "$rc" = 143 ] || fail "TERM exit code $rc, want 143"
+jpid=$(cat "$T/job.pid"); for _ in $(seq 1 20); do kill -0 "$jpid" 2>/dev/null || break; sleep 0.1; done
+kill -0 "$jpid" 2>/dev/null && { kill -9 "$jpid" 2>/dev/null; fail "job survived the timeout kill"; }
+[ -z "$(ls -A "$T/tmp")" ] || fail "temp dir left after TERM: $(ls "$T/tmp")"
+echo "PASS: gui-run passes stdout/stderr and exit code, boots out the agent, removes its temp dir, 125 on failed load, kills the job on the step alarm"

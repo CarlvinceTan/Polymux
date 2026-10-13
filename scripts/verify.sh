@@ -6,8 +6,9 @@
 # Swift test targets and app builds reachable from paths changed since TI_BASE, via scripts/affected.py),
 # write .build/proof/summary.md. Exit 0 only when everything passed.
 # macos-test has its own cap (MACOS_TEST_TIMEOUT, default 600 s, not the 2400 s per-step limit) and a
-# codesign preflight (macos-sign); a blocking com.apple.UserNotificationCenter dialog is reported as
-# UNAVAILABLE, never as a hang or FAIL.
+# codesign preflight (macos-sign) over the built runner; the macOS app and runner ad-hoc sign
+# (CODE_SIGN_IDENTITY=-) so they never hit the Gatekeeper "damaged" dialog, and a blocking
+# com.apple.UserNotificationCenter dialog is reported as UNAVAILABLE, never as a hang or FAIL.
 # Builds wait for a slot in the shared lock dir (max_builds; 1 while ~/ops/pr-verify builds).
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd)   # scripts may live in another checkout (cloud PRs)
@@ -85,7 +86,9 @@ step() {  # step NAME cmd...
   local cap=2400; [ "$n" = macos-test ] && cap=${MACOS_TEST_TIMEOUT:-600}
   perl -e 'alarm shift; exec @ARGV' "$cap" "$@" > "$L/$n.log" 2>&1; local rc=$?
   case $rc in 142|143) echo "verify: $n hit the ${cap}s cap (step alarm)" >> "$L/$n.log";; esac
-  local res; res=$(verify_result "$n" "$rc" "$L/$n.log")
+  # verify_result sets VERIFY_UNAVAILABLE_REASON; a $( ) capture is a subshell and would drop it.
+  local vf="$L/$n.verdict"; verify_result "$n" "$rc" "$L/$n.log" > "$vf"
+  local res; res=$(<"$vf")
   [ "$res" = FAIL ] && FAIL=1
   if [ "$res" = UNAVAILABLE ]; then
     UI_UNAVAILABLE=1
@@ -117,8 +120,14 @@ for l in open(sys.argv[1]):
 fi
 NEED_SLOT=1; [ "$APP" = 0 ] && [ -z "$SWIFT" ] && NEED_SLOT=0
 if [ "$APP" = 1 ]; then python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }; fi
-XC=(-jobs 6 -derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
-    CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
+XCB=(-jobs 6 -derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
+     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache")
+XC=("${XCB[@]}" CODE_SIGNING_ALLOWED=NO)   # iOS simulator: nothing to sign
+# macOS ad-hoc signs (CODE_SIGN_IDENTITY=-) the app and the UI test runner: CODE_SIGNING_ALLOWED=NO
+# leaves the runner unsigned and macOS shows the Gatekeeper "damaged" dialog, which XCUITest's
+# interruption monitor loops on. No entitlements and no hardened runtime: both only run locally for
+# the readiness test. scripts/check-runner-sign.sh guards the launch (VERIFY-ALERT-GUARD).
+XCT=("${XCB[@]}" CODE_SIGN_IDENTITY=- CODE_SIGN_ENTITLEMENTS= ENABLE_HARDENED_RUNTIME=NO)
 [ $NEED_SLOT = 1 ] && { acquire; echo "verify: slot $SLOT"; }
 if [ -z "$SWIFT" ]; then skip packages
 elif [ "$SWIFT" = all ]; then step packages swift test --scratch-path .build/swiftpm --cache-path .build/SPM-cache
@@ -126,17 +135,20 @@ else step packages swift test --scratch-path .build/swiftpm --cache-path .build/
 if [ "$APP" = 0 ]; then skip macos-build; skip ios-build; ACT=skip; READY=unavailable
 else
 step macos-build xcodebuild build -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
-  -destination platform=macOS "${XC[@]}"
+  -destination platform=macOS "${XCT[@]}"
 # App scheme gains a test action later (UI tests); until then build it and rely on package tests.
 ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme && ACT=test
 if [ $ACT = test ]; then
+  # build-for-testing writes the PolymuxUITests-Runner.app the sign check reads; the test action reuses it.
+  step macos-test-build xcodebuild build-for-testing -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+    -destination platform=macOS "${XCT[@]}"
   # An unsigned/damaged runner makes macOS show the Gatekeeper dialog and XCUITest loop on it
   # (scripts/check-runner-sign.sh): check the built runner signs, and never launch into that.
   step macos-sign bash "$ROOT/scripts/check-runner-sign.sh" "$DD/Build/Products/Debug/PolymuxUITests-Runner.app"
   if grep -q '^| macos-sign | PASS' <(printf '%s\n' "${ROWS[@]}"); then
     # XCUITest needs the GUI (Aqua) session; gui-run.sh runs it there when verify.sh came from ssh.
     step macos-test bash "$ROOT/scripts/gui-run.sh" xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
-      -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
+      -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XCT[@]}"
   else
     ROWS+=("| macos-test | FAIL | not launched (runner fails codesign -v) | 0s |"); FAIL=1
     echo "verify: macos-test not launched (macos-sign failed)"

@@ -26,7 +26,10 @@ done
 # Blocking system alert (com.apple.UserNotificationCenter) at the macos-test cap: UNAVAILABLE with
 # the alert named, never a hang; the same cap with no dialog is a real hang and stays FAIL.
 "$T/xcodebuild" alert > "$T/log" || :
-result=$(verify_result macos-test 143 "$T/log")
+# Direct call: verify_result sets VERIFY_UNAVAILABLE_REASON for its caller, and verify.sh step() reads
+# it the same way (a $( ) capture would run in a subshell and lose it).
+verify_result macos-test 143 "$T/log" > "$T/result"
+result=$(<"$T/result")
 [ "$result" = UNAVAILABLE ] || { echo "capped alert: expected UNAVAILABLE, got $result"; exit 1; }
 case "$VERIFY_UNAVAILABLE_REASON" in *"blocking system alert com.apple.UserNotificationCenter"*) ;;
   *) echo "capped alert reason: ${VERIFY_UNAVAILABLE_REASON:-none}"; exit 1;; esac
@@ -74,5 +77,15 @@ rc=0; out=$(GUI_RUN_FORCE_EXEC=1 bash "$ROOT/scripts/gui-run.sh" sh -c "echo hi;
 grep -q "step macos-test bash \"\$ROOT/scripts/gui-run.sh\" xcodebuild test" "$ROOT/scripts/verify.sh" || { echo "FAIL: macos-test not run via gui-run.sh"; exit 1; }
 grep -q "step macos-sign bash \"\$ROOT/scripts/check-runner-sign.sh\"" "$ROOT/scripts/verify.sh" || { echo "FAIL: macos-sign preflight missing"; exit 1; }
 grep -q 'MACOS_TEST_TIMEOUT:-600' "$ROOT/scripts/verify.sh" || { echo "FAIL: macos-test has no own cap"; exit 1; }
+# Scope 0: the macOS path ad-hoc signs (never CODE_SIGNING_ALLOWED=NO) and builds the runner before
+# macos-sign reads it, so the Gatekeeper "damaged" dialog can never come back.
+grep -q '^XCT=(.*CODE_SIGN_IDENTITY=- ' "$ROOT/scripts/verify.sh" || { echo "FAIL: no ad-hoc sign flags in XCT"; exit 1; }
+grep -q '^XCT=(.*CODE_SIGN_ENTITLEMENTS= ENABLE_HARDENED_RUNTIME=NO' "$ROOT/scripts/verify.sh" || { echo "FAIL: XCT keeps entitlements or hardened runtime"; exit 1; }
+! grep -q '^XCT=(.*CODE_SIGNING_ALLOWED=NO' "$ROOT/scripts/verify.sh" || { echo "FAIL: XCT disables signing"; exit 1; }
+grep -A2 'step macos-build' "$ROOT/scripts/verify.sh" | grep -q 'XCT\[@\]' || { echo "FAIL: macOS app build is not ad-hoc signed"; exit 1; }
+grep -q 'step macos-test-build xcodebuild build-for-testing' "$ROOT/scripts/verify.sh" || { echo "FAIL: runner is not built before macos-sign"; exit 1; }
+grep -A3 'step macos-test bash' "$ROOT/scripts/verify.sh" | grep -q 'XCT\[@\]' || { echo "FAIL: macos-test does not use the ad-hoc flags"; exit 1; }
+awk '/step macos-sign /{s=NR} /step macos-test /{t=NR} END{exit !(s && t && s<t)}' "$ROOT/scripts/verify.sh" \
+  || { echo "FAIL: macos-sign must run before macos-test"; exit 1; }
 bash "$ROOT/scripts/test-gui-run.sh"
 echo 'PASS: runner timeout, blocking-alert guard, readiness cap, real failures, runner signing, Release and Debug addresses, gui-run'

@@ -14,7 +14,9 @@ verify_result() {
     # 373 s that way). That is a machine condition, never a hang or a test failure. The dialog is
     # reported only: nothing here clicks or dismisses it.
     local alerts=0 capped=0
-    alerts=$(grep -c 'com\.apple\.UserNotificationCenter' "$log" 2>/dev/null); alerts=${alerts:-0}
+    # `|| :`: grep -c exits 1 on zero matches; callers with set -e (test-readiness.sh) must not abort.
+    alerts=$(grep -c 'com\.apple\.UserNotificationCenter' "$log" 2>/dev/null || :)
+    alerts=${alerts:-0}   # unreadable log: no alert lines
     case "$rc" in 142|143) capped=1;; esac  # step alarm: 142 = perl, 143 = gui-run.sh on the alarm
     if ! grep -Eq "$failed" "$log" &&
        { [ "$alerts" -ge "${ALERT_MIN:-5}" ] || { [ "$capped" = 1 ] && [ "$alerts" -gt 0 ]; }; }; then
