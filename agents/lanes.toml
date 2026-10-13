@@ -17,20 +17,25 @@ cursor_install_sha256 = ""        # empty = refuse automatic install; install ma
 
 # Lane layout (Carlvince, 13 Oct 2026): primaries = lane3 (Codex) + lane2 (UniMelb student Cursor);
 # lane4 (OpenCode) is fallback-only; lane1 (main Cursor Ultra account) must NOT code.
+# run-lane.sh refuses a disabled/expired/unknown lane before any claim, worktree or vault read,
+# strips any inherited CURSOR_API_KEY from every agent child, and refuses the vault titles below.
+# Keychain: a per-lane HOME does NOT isolate the macOS login keychain (securityd is per user), so
+# isolation rests on: the key is passed only via the child's CURSOR_API_KEY (no `cursor-agent login`,
+# no keychain write by run-lane), lane HOME is never the real HOME, and lanes never open a browser
+# or the main account's Grok Bot session/profile (prompt rule + no browser launch in run-lane).
+forbidden_keys = ["Cursor API key (cvmini cursor-agent)", "Cursor API key - lane1 (ultra)"]
 [lane1]
 enabled = false         # main account: never used for coding or failover (13 Oct 2026)
 agent = "cursor"
 account = "ultra"
-key = "Cursor API key - lane1 (ultra)"
 cmd = "~/.local/bin/cursor-agent"
 
 [lane2]
 agent = "cursor"
 account = "second"
 key = "Cursor API key - UniMelb (second account)"   # vault entry title, read at run time
-cmd = "~/.local/bin/cursor-agent"
+cmd = "~/.local/bin/cursor-agent-auto"   # Free plan: Auto model only (wraps cursor-agent --model auto)
 home = "~/.lanes/lane2-unimelb"   # isolated HOME/config for the student account; main logins/keychain untouched
-max_concurrent = 1      # CPU-aware cap
 role = "primary"
 
 [lane3]

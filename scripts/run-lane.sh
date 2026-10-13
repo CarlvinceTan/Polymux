@@ -50,6 +50,8 @@ TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "card:" (Notion card
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
   TASK=$(grep -vE '^(unit|needs|scope|expected_min|card):' "$TASK"); EXP=${EXP:-60}
 fi
+# Lane gate FIRST: a disabled (lane1 = main Cursor account), expired or unknown lane never runs; no claim, worktree or vault read.
+cfg usable "$LANE" || { echo "refusing: lane '$LANE' is disabled, expired or unknown in agents/lanes.toml"; exit 5; }
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
@@ -60,16 +62,21 @@ Rules: work only in this worktree. Keep the change small and scoped.${SCOPE:+ On
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
-needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it under ~300 changed lines. If you cannot make verify.sh pass, say why and stop."; }
+needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it under ~300 changed lines. Never open a browser, a browser profile or any Grok Bot session. If you cannot make verify.sh pass, say why and stop."; }
 run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer name.
-  local a cmd P; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd); P=$(prompt "$1")
+  cfg usable "$1" || { echo "refusing: lane $1 not usable" >>"$3"; return 95; }   # belt and braces
+  unset CURSOR_API_KEY   # never inherit the main account key into any agent child
+  local a cmd P H; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd); P=$(prompt "$1")
+  H=$(cfg lane "$1" home); if [ -n "$H" ]; then [ "$H" = "$HOME" ] && { echo "refusing: lane home is the real HOME" >>"$3"; return 96; }; mkdir -p "$H"; fi
   export GIT_COMMITTER_NAME="$(git -C "$2" config user.name || echo agent) ($1/$a)"
   case " ${LANE_FORCE_FAIL:-} " in *" $1 "*) echo "forced failure (LANE_FORCE_FAIL test)" >> "$3"; return 97;; esac
-  [ -n "${LANE_STUB_CMD:-}" ] && { (cd "$2" && LANE="$1" AGENT="$a" PROMPT="$P" bash -c "$LANE_STUB_CMD") >> "$3" 2>&1; return; }  # test hook
+  [ -n "${LANE_STUB_CMD:-}" ] && { (cd "$2" && HOME="${H:-$HOME}" LANE="$1" AGENT="$a" PROMPT="$P" bash -c "$LANE_STUB_CMD") >> "$3" 2>&1; return; }  # test hook
   case $a in
-    cursor) local K; K=$(vault get "$(cfg lane "$1" key)" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
+    cursor) local K KT; KT=$(cfg lane "$1" key)
+      [ -n "$KT" ] || { echo "refusing: cursor lane $1 has no key" >>"$3"; return 98; }
+      python3 "$SD/lanes.py" forbidden "$KT" && { echo "refusing: lane $1 key is a main-account key" >>"$3"; return 98; }
+      K=$(vault get "$KT" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       # Key only in this child's environment: never argv (ps), never exported, keychain untouched.
-      local H; H=$(cfg lane "$1" home); [ -n "$H" ] && mkdir -p "$H"   # per-lane HOME isolates account config
       (cd "$2" && HOME="${H:-$HOME}" CURSOR_API_KEY="$K" "$cmd" -p --force --trust --workspace "$2" --output-format text "$P") >> "$3" 2>&1;;
     # No workspace-write sandbox (tested 13 Oct, codex 0.162 seatbelt, network on, .git common dir +
     # ~/ops/lanes as writable roots): .git stays read-only inside the sandbox, so the agent can't

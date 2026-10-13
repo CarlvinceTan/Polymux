@@ -199,7 +199,7 @@ check "LANE_NO_CHAIN disables dispatch" '[ "$(ndisp "$GLOG")" = 0 ]'
 # 19 no chain on SIGTERM; a failing task never blocks refilling the lane, but its own queued retries are held
 export GLOG="$T/g19"
 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD='sleep 5' $RL laneA "$(task 'Chain term' t19)" >/dev/null 2>&1 & P=$!
-for k in $(seq 1 50); do [ -d "$LANES_HOME/units/chain-term.lock" ] && break; sleep 0.1; done; kill -TERM $P; wait $P
+for k in $(seq 1 50); do grep -q "chain-term	running" "$LANES_HOME/events.tsv" 2>/dev/null && break; sleep 0.1; done; sleep 0.3; kill -TERM $P; wait $P
 check "SIGTERM: no dispatch" 'grep -q "chain-term rc=143: not chaining" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
 mkdir -p "$LANES_HOME/queue"; printf 'needs: none\nChain short fail (attempt 2)\n' > "$LANES_HOME/queue/r1.task"; printf 'needs: none\nOther card\n' > "$LANES_HOME/queue/r2.task"
 OUT=$(LANE_GUARD="$FGF" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain short fail' t19b)" 2>&1); waitfor "$GLOG" "free-lane laneA"
@@ -233,6 +233,54 @@ check "chain lock busy ~10 s: refill skipped and logged, no dispatch" 'grep -q "
 # 9 lanes.py per-host override
 printf '[l]\nkey = "neutral"\nkey@hostx = "special"\n' > "$T/o.toml"
 check "lanes.py host override" '[ "$(LANES_TOML=$T/o.toml LANES_HOST=hostx python3 scripts/lanes.py lane l key)" = special ] && [ "$(LANES_TOML=$T/o.toml LANES_HOST=y python3 scripts/lanes.py lane l key)" = neutral ]'
+# 22 lane gate (#72): disabled/unknown lanes refused before any vault read; no main key; per-lane HOME
+VB="$T/vaultbin"; mkdir -p "$VB"; : > "$T/vault.log"
+printf '#!/bin/sh\necho "$*" >> "%s/vault.log"\necho "{\\"password\\":\\"lanekey-test\\"}"\n' "$T" > "$VB/vault"; chmod +x "$VB/vault"
+printf '#!/bin/sh\necho "HOME=$HOME KEY=${CURSOR_API_KEY:-unset}" >> "%s/agent.rec"\nexit 1\n' "$T" > "$VB/fake-cursor"; chmod +x "$VB/fake-cursor"
+cat > "$T/gate.toml" <<TOML
+max_builds = 1
+lock_dir = "~/ops/lanes/locks"
+mac_hosts = ["testmac"]
+forbidden_keys = ["main key"]
+[lane1]
+enabled = false
+agent = "cursor"
+cmd = "$VB/fake-cursor"
+[lane2]
+agent = "cursor"
+key = "student key"
+home = "$T/lane2home"
+cmd = "$VB/fake-cursor"
+role = "primary"
+[lane3]
+agent = "codex"
+cmd = "true"
+role = "primary"
+until = "2000-01-01"
+[lane4]
+agent = "opencode"
+cmd = "true"
+role = "fallback"
+[lane5]
+agent = "cursor"
+key = "main key"
+cmd = "$VB/fake-cursor"
+role = "fallback"
+TOML
+GT="LANES_TOML=$T/gate.toml PATH=$VB:$PATH"
+OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" CURSOR_API_KEY=main-should-not-leak $RL lane1 "$(task 'Gate lane1' g1)" 2>&1); RC=$?
+check "disabled lane1 refused (exit 5) with no vault read, no claim, no worktree" '[ $RC = 5 ] && echo "$OUT" | grep -q "refusing: lane .lane1. is disabled" && [ ! -s "$T/vault.log" ] && [ ! -e "$T/agent.rec" ] && ! grep -q "gate-lane1" "$LANES_HOME/events.tsv" && [ ! -d "$LANES_WT/lane1-gate-lane1" ]'
+OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" $RL lane3 "$(task 'Gate expired' g2)" 2>&1); R2=$?
+OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" $RL nolane "$(task 'Gate unknown' g3)" 2>&1); R3=$?
+check "expired and unknown lanes refused (exit 5)" '[ $R2 = 5 ] && [ $R3 = 5 ] && [ ! -s "$T/vault.log" ]'
+check "lanes.py primaries/order: disabled + expired excluded, fallback last / only if no primary" '[ "$(LANES_TOML=$T/gate.toml python3 scripts/lanes.py primaries)" = lane2 ] && [ "$(LANES_TOML=$T/gate.toml python3 scripts/lanes.py order lane1)" = "lane2 lane4 lane5" ] && [ "$(LANES_TOML=$T/gate.toml python3 scripts/lanes.py order lane4)" = "lane2 lane4 lane5" ]'
+OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" CURSOR_API_KEY=main-should-not-leak LANE_NO_CHAIN=1 $RL lane5 "$(task 'Gate mainkey' g4)" 2>&1)
+check "cursor lane naming a main-account key refuses before the vault read" '[ ! -s "$T/vault.log" ] && [ ! -e "$T/agent.rec" ] && grep -q "key is a main-account key" "$LANES_HOME"/logs/*gate-mainkey-lane5.log'
+OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" CURSOR_API_KEY=main-should-not-leak LANE_NO_CHAIN=1 $RL lane2 "$(task 'Gate home' g5)" 2>&1)
+check "lane2 runs with its own HOME and only its own vault key (inherited key stripped)" '[ "$(cat "$T/vault.log")" = "get student key" ] && grep -qx "HOME=$T/lane2home KEY=lanekey-test" "$T/agent.rec" && ! grep -q main-should-not-leak "$T/agent.rec"'
+OUT=$(env LANES_TOML="$T/gate.toml" CURSOR_API_KEY=main-should-not-leak LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo "SH=$HOME K=${CURSOR_API_KEY:-unset}" > "$HOME/../stub.rec"; echo s >> s.txt && git add s.txt && git commit -qm s -m "Lane: $LANE/$AGENT"' $RL lane4 "$(task 'Gate strip' g6)" 2>&1)
+check "non-cursor lane child never inherits CURSOR_API_KEY" 'grep -q "K=unset" "$HOME/../stub.rec"'
+rm -f "$LANES_HOME/queue/"*.task
 # 16 board-update.sh (Notion board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tiny reader for agents/lanes.toml.
-Usage: lanes.py get KEY | list KEY | lane NAME FIELD | order [FIRST] | primaries
+Usage: lanes.py get KEY | list KEY | lane NAME FIELD | order [FIRST] | primaries | usable NAME (exit 0/1)
 Lane fields honour a per-host override `field@<host>` (host = LANES_HOST or hostname -s)."""
 import ast, datetime, os, socket, sys
 from pathlib import Path
@@ -26,6 +26,10 @@ elif a[0] == "list": v = cfg.get(a[1], []); print(" ".join(v if isinstance(v, li
 elif a[0] == "lane":
     host = os.environ.get("LANES_HOST") or socket.gethostname().split(".")[0]
     l = cfg.get(a[1], {}); print(os.path.expanduser(str(l.get(a[2] + "@" + host, l.get(a[2], "")))))
+elif a[0] == "forbidden":  # exit 0 if the vault title is a main-account key
+    sys.exit(0 if a[1] in cfg.get("forbidden_keys", []) else 1)
+elif a[0] == "usable":  # run-lane gate: unknown, disabled or expired lanes never run
+    sys.exit(0 if isinstance(cfg.get(a[1]), dict) and usable(a[1]) else 1)
 elif a[0] == "primaries":  # dispatch rotation: primaries only; fallback lanes only if no primary is usable
     names = [k for k, v in cfg.items() if isinstance(v, dict) and usable(k)]
     pri = [n for n in names if cfg[n].get("role") != "fallback"]
