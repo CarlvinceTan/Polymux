@@ -80,7 +80,7 @@ func (w *Worktrees) Ensure(ctx context.Context, repo, agent, thread string) (str
 	if err := git(ctx, repo, "fetch", "origin"); err != nil {
 		return "", err
 	}
-	branch := branchName(thread)
+	branch := branchName(agent, thread)
 	if branchExists(ctx, repo, branch) {
 		// A checkout removed by hand leaves its branch behind; reuse it.
 		if err := git(ctx, repo, "worktree", "add", path, branch); err != nil {
@@ -110,7 +110,7 @@ func (w *Worktrees) Remove(ctx context.Context, repo, agent, thread string) erro
 }
 
 // branchName is the branch a conversation's own worktree is created on.
-func branchName(thread string) string { return "polymux/" + thread }
+func branchName(agent, thread string) string { return "polymux/" + agent + "--" + thread }
 
 // reuse returns an existing checkout only when it is a worktree of repo. A
 // directory left by another repository, or by a failed add, is never reused.

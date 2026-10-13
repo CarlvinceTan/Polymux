@@ -276,7 +276,7 @@ func buildPrompt(d Definition, tools []string, mcpDown bool) (string, error) {
 		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(repo, home+string(filepath.Separator)) {
 			repo = "~" + strings.TrimPrefix(repo, home)
 		}
-		prompt += "\nStart your first reply with: Working in " + repo + " on branch " + branchName(WorkspaceThread(d)) + "."
+		prompt += "\nStart your first reply with: Working in " + repo + " on branch " + branchName(d.Agent.ID, WorkspaceThread(d)) + "."
 		if d.Worktree != "" {
 			prompt += "\nThis conversation's checkout is " + d.Worktree + ", shared with no other conversation; keep edits there. The source repository is " + d.Workspace + "."
 		}
