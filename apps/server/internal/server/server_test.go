@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -173,25 +174,21 @@ func TestTimeoutNotice(t *testing.T) {
 	}
 }
 
-func TestRemovedConnectorRoutes(t *testing.T) {
-	// Pieces stay separate so this file does not contain the retired names.
-	product := "one" + "drive"
-	t.Setenv("POLYMUX_"+strings.ToUpper(product)+"_CLIENT_ID", "client")
-	t.Setenv("POLYMUX_"+strings.ToUpper(product)+"_CLIENT_SECRET", "secret")
-	t.Setenv("POLYMUX_"+"OAUTH"+"_PUBLIC_BASE", "https://example.test")
+func TestRemovedOneDriveRoutes404(t *testing.T) {
+	t.Setenv("POLYMUX_ONEDRIVE_CLIENT_ID", "client")
+	t.Setenv("POLYMUX_ONEDRIVE_CLIENT_SECRET", "secret")
+	t.Setenv("POLYMUX_OAUTH_PUBLIC_BASE", "https://example.test")
 	api, _ := startTest(t, &testFactory{})
-	root := "/" + "connections"
-	owned := root + "/" + product
 	routes := []struct {
 		method string
 		path   string
 	}{
-		{method: http.MethodGet, path: root},
-		{method: http.MethodGet, path: owned + "/start"},
-		{method: http.MethodPost, path: owned + "/connect"},
-		{method: http.MethodDelete, path: owned},
-		{method: http.MethodGet, path: owned + "/files"},
-		{method: http.MethodGet, path: owned + "/files/item-1/content"},
+		{method: http.MethodGet, path: "/connections"},
+		{method: http.MethodGet, path: "/connections/onedrive/start"},
+		{method: http.MethodPost, path: "/connections/onedrive/connect"},
+		{method: http.MethodDelete, path: "/connections/onedrive"},
+		{method: http.MethodGet, path: "/connections/onedrive/files"},
+		{method: http.MethodGet, path: "/connections/onedrive/files/item-1/content"},
 		{method: http.MethodGet, path: "/oauth/microsoft/callback"},
 		{method: http.MethodGet, path: "/oauth/microsoft/success"},
 	}
@@ -203,6 +200,50 @@ func TestRemovedConnectorRoutes(t *testing.T) {
 				t.Fatalf("%s %s = %d, want 404", route.method, route.path, response.Code)
 			}
 		})
+	}
+}
+
+func TestStartupRemovesOneDriveDir(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "connections", "onedrive")
+	boot := func() {
+		t.Helper()
+		db, err := store.Open(t.Context(), filepath.Join(dir, "db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		api, err := New(t.Context(), db, Config{
+			DataDir:     dir,
+			Definitions: []agentruntime.Definition{{Agent: contract.Agent{ID: "assistant", Name: "Assistant"}}},
+			Factory:     &testFactory{},
+			Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		})
+		if err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		if err := api.Close(); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	boot()
+	if err := os.MkdirAll(legacy, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "account.json"), []byte(`{"refresh_token":"secret"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	boot()
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatal("onedrive directory remains")
+	}
+	boot()
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatal("onedrive directory returned")
 	}
 }
 

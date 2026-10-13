@@ -98,6 +98,10 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(c.DataDir, "attachments"), 0700); err != nil {
 		return nil, err
 	}
+	// Refresh tokens from the removed OneDrive connector must not survive startup.
+	if err := os.RemoveAll(filepath.Join(c.DataDir, "connections", "onedrive")); err != nil {
+		return nil, fmt.Errorf("remove onedrive directory: %w", err)
+	}
 	preferences, err := settings.Open(filepath.Join(c.DataDir, "settings.json"))
 	if err != nil {
 		return nil, err
