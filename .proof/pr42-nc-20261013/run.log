@@ -66,3 +66,8 @@ Known limits (also in summary.md)
   because a split view asserts when rendered outside an app bundle in this harness.
 - iOS has no Simulator UI on this host and this checkout has no XCUITest target, so the iOS states
   come from the real views and stores driven in the harness rather than from taps.
+
+Review round
+- verify.sh PASS at 177758c (run 20261013-225352-177758c); the table, build-log excerpts and this
+  evidence summary were posted on PR #42 (issue comment 6148410187) and the PR body was rewritten
+  for the current diff (release-note block unchanged).
