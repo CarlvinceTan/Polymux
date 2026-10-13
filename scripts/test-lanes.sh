@@ -351,6 +351,24 @@ check "max_concurrent=2: 2nd run allowed with 1 running, 3rd refused (exit 5)" '
 CT="$SRC/agents/lanes.toml"
 check "committed lanes.toml: lane3 only primary (max 2), lane4 fallback, lane1+lane2 disabled, no main key" '[ "$(LANES_TOML=$CT python3 scripts/lanes.py primaries)" = lane3 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py order lane4)" = "lane3 lane4" ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py maxconc lane3)" = 2 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane4 role)" = fallback ] && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane1 && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane2 && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane1 key)" ] && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane2 key)" ]'
 rm -f "$LANES_HOME/queue/"*.task
+# 24 (#75) prompt names the size cap and this run's start commit
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='printf "%s" "$PROMPT" > "$HOME/../prompt.txt"; '"$STUB_OK" $RL laneA "$(task 'Prompt start' p1)" 2>&1)
+PS0=$(git -C "$LANES_WT/laneA-prompt-start" rev-parse HEAD~1)
+check "prompt has size cap and the run's start commit (size base == START)" 'grep -q "Size cap: 300 changed lines" "$T/prompt.txt" && grep -q "git diff --stat $PS0..HEAD" "$T/prompt.txt"'
+# 25 idle agent: whole process group stopped, no surviving grandchild
+OUT=$(LANE_NO_CHAIN=1 LANE_IDLE_S=2 LANE_KILL_WAIT=1 LANE_STUB_CMD='trap "" TERM; (trap "" TERM; sleep 300) & echo $! > "$HOME/../gc.pid"; sleep 300' $RL laneA "$(task 'Idle group' p2)" 2>&1)
+GC=$(cat "$T/gc.pid" 2>/dev/null); sleep 0.5
+check "idle fast-fail kills the agent's whole process group (TERM-ignoring grandchild gone)" '[ -n "$GC" ] && ! kill -0 "$GC" 2>/dev/null && grep -q "fast-fail: idle 2s" "$LANES_HOME/events.tsv"'
+rm -f "$LANES_HOME"/queue/*.task
+# 26 worktree add fails once (path occupied by a file), then succeeds; agent runs once
+: > "$T/runs"; echo x > "$LANES_WT/laneA-wt-retry"
+OUT=$(LANE_NO_CHAIN=1 LANE_RETRY_SLEEP=0 LANE_DRY=1 LANE_STUB_CMD='echo r >> "$HOME/../runs"; '"$STUB_OK" $RL laneA "$(task 'Wt retry' p3)" 2>&1); RC=$?
+check "worktree add retried after a failed attempt; agent ran exactly once" '[ $RC = 0 ] && [ "$(wc -l < "$T/runs" | tr -d " ")" = 1 ] && grep -q "worktree add failed (try 1)" "$LANES_HOME"/logs/*wt-retry-laneA.log'
+# 27 gh pr create fails twice then succeeds; agent ran once
+G3="$T/ghbin3"; mkdir -p "$G3"; : > "$T/pc.n"
+printf '#!/bin/bash\ncase "$1 $2" in\n"pr create") echo x >> "%s/pc.n"; [ $(wc -l < "%s/pc.n") -ge 3 ] && { echo https://github.com/o/r/pull/102; exit 0; }; exit 1;;\nesac\nexit 0\n' "$T" "$T" > "$G3/gh"; chmod +x "$G3/gh"; : > "$T/runs"
+OUT=$(PATH="$G3:$PATH" LANE_NO_CHAIN=1 LANE_RETRY_SLEEP=0 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD='echo r >> "$HOME/../runs"; '"$STUB_OK" $RL laneA "$(task 'Pr retry' p4)" --branch test/pr-retry 2>&1); RC=$?
+check "gh pr create fails twice then succeeds; agent ran once" '[ $RC = 0 ] && echo "$OUT" | grep -q pull/102 && [ "$(wc -l < "$T/pc.n" | tr -d " ")" = 3 ] && [ "$(wc -l < "$T/runs" | tr -d " ")" = 1 ]'
 # 23 wt-setup warms the sim template once; failed warms are capped; markers live under LANES_HOME
 WS="$T/warmbin"; mkdir -p "$WS"; : > "$T/warm.log"
 cat > "$WS/xcrun" <<XC
