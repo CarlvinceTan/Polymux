@@ -928,3 +928,25 @@ func openDurable(ctx context.Context, q rowQuery) (*sql.DB, bool) {
 	}
 	return db, true
 }
+
+func (s *Store) SaveSubmission(ctx context.Context, runID string, id int64) error {
+	if err := s.ensureSubmissions(ctx); err != nil {
+		return err
+	}
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO run_submissions(run_id, submission_id) VALUES(?,?) ON CONFLICT(run_id) DO UPDATE SET submission_id=excluded.submission_id`, runID, id)
+	return err
+}
+
+func (s *Store) Submission(ctx context.Context, runID string) (int64, bool) {
+	if err := s.ensureSubmissions(ctx); err != nil {
+		return 0, false
+	}
+	var id int64
+	err := s.DB.QueryRowContext(ctx, `SELECT submission_id FROM run_submissions WHERE run_id=?`, runID).Scan(&id)
+	return id, err == nil
+}
+
+func (s *Store) ensureSubmissions(ctx context.Context) error {
+	_, err := s.DB.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS run_submissions(run_id TEXT PRIMARY KEY, submission_id INTEGER NOT NULL)`)
+	return err
+}

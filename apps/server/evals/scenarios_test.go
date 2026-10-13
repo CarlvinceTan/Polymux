@@ -310,6 +310,8 @@ func TestX2PersistedToolResult(t *testing.T) {
 		fail(t, "X2", fmt.Sprintf("side_effect re-ran after restart: %d", counter.Load()))
 	case run.Status != "completed":
 		fail(t, "X2", "run status "+run.Status)
+	case assistantsFor(h.Messages(agentID), run.ID) != 1:
+		fail(t, "X2", fmt.Sprintf("assistant messages for run: %d", assistantsFor(h.Messages(agentID), run.ID)))
 	case !strings.Contains(resumed, "RESUMED_X2"):
 		fail(t, "X2", "missing resumed final text: "+resumed)
 	default:
@@ -376,6 +378,79 @@ func TestTR1SingleResume(t *testing.T) {
 	default:
 		pass(t, "TR1", "second crash interrupted without another resume")
 	}
+}
+
+func TestTR1QueuedMessage(t *testing.T) {
+	counter := &atomic.Int32{}
+	opened := make(chan struct{})
+	release := make(chan struct{})
+	h := Start(t, Options{
+		ID:      "TR1Q",
+		Effects: map[string]*atomic.Int32{agentID: counter},
+		Steps: []Step{
+			Fixed(nil, ToolReply("tr1q-call", "side_effect", map[string]any{})),
+			Fixed(func(req *ChatRequest) error {
+				if !hasToolResult(req, "tr1q-call", "effect-ok") {
+					return fmt.Errorf("expected tool result before the crash")
+				}
+				return nil
+			}, HoldReply("", release, func() { close(opened) }, nil)),
+			Fixed(func(req *ChatRequest) error {
+				if !hasToolResult(req, "tr1q-call", "effect-ok") {
+					return fmt.Errorf("resume missing tool result")
+				}
+				if strings.Contains(requestText(req), "queued-second") {
+					return fmt.Errorf("resume included the queued message")
+				}
+				return nil
+			}, TextReply("RESUMED_OWN")),
+			Fixed(nil, TextReply("SECOND_LATER")),
+		},
+	})
+	if code := h.Send(agentID, "tr1q-user", "effect then queue"); code != 202 && code != 200 {
+		fail(t, "TR1Q", fmt.Sprintf("send status %d", code))
+		return
+	}
+	WaitHold(t, "TR1Q", opened, holdWait)
+	if code := h.Send(agentID, "tr1q-next", "queued-second"); code != 202 && code != 200 {
+		fail(t, "TR1Q", fmt.Sprintf("second send status %d", code))
+		return
+	}
+	runID := RunID("tr1q-user", agentID)
+	h.Restart()
+	run := h.WaitRunID(runID, deadline)
+	if err := h.Emulator.DoneAllowExtra(); err != nil {
+		fail(t, "TR1Q", err.Error())
+		return
+	}
+	resumed := ""
+	for _, m := range h.AssistantDone(agentID) {
+		if m.RunID != nil && *m.RunID == run.ID {
+			resumed = messageText(m)
+		}
+	}
+	switch {
+	case counter.Load() != 1:
+		fail(t, "TR1Q", fmt.Sprintf("side_effect counter=%d", counter.Load()))
+	case run.Status != "completed":
+		fail(t, "TR1Q", "run status "+run.Status)
+	case assistantsFor(h.Messages(agentID), run.ID) != 1:
+		fail(t, "TR1Q", fmt.Sprintf("assistant messages for run: %d", assistantsFor(h.Messages(agentID), run.ID)))
+	case !strings.Contains(resumed, "RESUMED_OWN"):
+		fail(t, "TR1Q", "missing resumed text: "+resumed)
+	default:
+		pass(t, "TR1Q", "queued message stayed out of the resumed turn")
+	}
+}
+
+func assistantsFor(messages []contract.Message, runID string) int {
+	n := 0
+	for _, m := range messages {
+		if m.Role == "assistant" && m.RunID != nil && *m.RunID == runID {
+			n++
+		}
+	}
+	return n
 }
 
 func TestX4ProviderErrors(t *testing.T) {

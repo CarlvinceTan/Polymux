@@ -401,6 +401,11 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 	if err != nil {
 		return Result{}, err
 	}
+	if emit != nil {
+		if err := emit(Delta{Kind: "submission", ToolID: strconv.FormatInt(int64(submission.Id()), 10)}); err != nil {
+			return Result{}, err
+		}
+	}
 	settled, err := submission.Wait(ctx)
 	if err != nil {
 		if s.park.Swap(false) {
@@ -411,9 +416,9 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 	return s.outcome(ctx, settled)
 }
 
-// Resume continues a turn whose tool result is already durable. A placed submission
-// is the crash window; otherwise a new generation replays the stored context.
-func (s *durableSession) Resume(ctx context.Context, emit func(Delta) error) (Result, error) {
+// Resume continues one submission. A placed submission is the crash window; any other
+// queued message stays queued. Otherwise a new generation replays the stored context.
+func (s *durableSession) Resume(ctx context.Context, submissionID int64, emit func(Delta) error) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.emitMu.Lock()
@@ -429,7 +434,7 @@ func (s *durableSession) Resume(ctx context.Context, emit func(Delta) error) (Re
 	}
 	stop := s.stream(ctx, emit)
 	defer stop()
-	if submission, ok := s.pending(ctx); ok {
+	if submission, ok := s.owned(ctx, submissionID); ok {
 		settled, err := submission.Wait(ctx)
 		if err != nil {
 			return Result{}, err
@@ -439,23 +444,22 @@ func (s *durableSession) Resume(ctx context.Context, emit func(Delta) error) (Re
 	return s.replay(ctx)
 }
 
-func (s *durableSession) pending(ctx context.Context) (durable.Submission, bool) {
-	inspection, err := s.runtime.harness.Inspect(ctx)
-	if err != nil {
+func (s *durableSession) owned(ctx context.Context, id int64) (durable.Submission, bool) {
+	if id == 0 || s.runtime == nil {
 		return nil, false
 	}
-	id := s.conversation.Id()
-	for _, record := range inspection.Submissions {
-		if record.ConversationId != id || record.Type != durable.SubmissionTypeInput {
-			continue
-		}
-		submission, err := s.runtime.harness.Submission(ctx, record.Id)
-		if err != nil || submission == nil {
-			continue
-		}
-		return submission, true
+	submission, err := s.runtime.harness.Submission(ctx, durable.SubmissionId(id))
+	if err != nil || submission == nil {
+		return nil, false
 	}
-	return nil, false
+	record, err := submission.Status(ctx)
+	if err != nil || record.ConversationId != s.conversation.Id() || record.Type != durable.SubmissionTypeInput {
+		return nil, false
+	}
+	if record.Status != durable.SubmissionQueued && record.Status != durable.SubmissionPlaced {
+		return nil, false
+	}
+	return submission, true
 }
 
 func (s *durableSession) replay(ctx context.Context) (Result, error) {

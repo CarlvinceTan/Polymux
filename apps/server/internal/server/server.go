@@ -1127,6 +1127,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		})
 	}
 	var result agentruntime.Result
+	var submissionID int64
 	var content strings.Builder
 	var pending strings.Builder
 	var lastFlush time.Time
@@ -1200,9 +1201,15 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		// Durable work outlives Send's wait context until the session is aborted.
 		stopAbort := context.AfterFunc(runCtx, func() {
 			defer close(aborted)
-			// Server shutdown must not abort: an abort handler can replace the saved tool result.
+			// Only a resumable tool result may skip abort. Other runs still abort so shutdown settles them.
 			if ctx.Err() != nil {
-				return
+				check, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+				stored, loadErr := s.Store.Run(check, run.ID)
+				ready := loadErr == nil && stored.Attempt <= 1 && s.Store.ResumeReady(check, stored)
+				stop()
+				if ready {
+					return
+				}
 			}
 			abortCtx, end := context.WithTimeout(context.WithoutCancel(runCtx), time.Second)
 			defer end()
@@ -1212,8 +1219,13 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		})
 		turn := sess.Send
 		if continuing {
+			if submissionID == 0 {
+				if id, ok := s.Store.Submission(writeCtx, run.ID); ok {
+					submissionID = id
+				}
+			}
 			resumed, ok := sess.(interface {
-				Resume(context.Context, func(agentruntime.Delta) error) (agentruntime.Result, error)
+				Resume(context.Context, int64, func(agentruntime.Delta) error) (agentruntime.Result, error)
 			})
 			if !ok {
 				turn = func(context.Context, contract.Message, func(agentruntime.Delta) error) (agentruntime.Result, error) {
@@ -1221,13 +1233,21 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				}
 			} else {
 				turn = func(ctx context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
-					return resumed.Resume(ctx, emit)
+					return resumed.Resume(ctx, submissionID, emit)
 				}
 			}
 		}
 		result, err = turn(runCtx, user, func(delta agentruntime.Delta) error {
 			messageMu.Lock()
 			defer messageMu.Unlock()
+			if delta.Kind == "submission" {
+				id, convErr := strconv.ParseInt(delta.ToolID, 10, 64)
+				if convErr != nil {
+					return convErr
+				}
+				submissionID = id
+				return s.Store.SaveSubmission(writeCtx, run.ID, id)
+			}
 			if e := runCtx.Err(); e != nil {
 				return e
 			}
