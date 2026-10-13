@@ -48,8 +48,9 @@ LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP
 TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "card:" (Notion card), "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
-  TASK=$(grep -vE '^(unit|needs|scope|expected_min|card):' "$TASK"); EXP=${EXP:-60}
+  TASK=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
 fi
+QW() { bash "$SD/queue-write.sh" "$@"; }   # every queue/queue-hold write goes through the locked helper
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
@@ -109,9 +110,9 @@ hold_retries() {  # move queued retries of this task to queue-hold/
   local f t bt; bt=$(base_title "$TITLE"); mkdir -p "$OPS/queue-hold"
   for f in "$OPS"/queue/*.task; do [ -f "$f" ] || continue
     t=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)
-    [ "$(base_title "$t")" = "$bt" ] && mv "$f" "$OPS/queue-hold/" && echo "$(date '+%F %T') $SLUG: held retry $(basename "$f") (runaway guard)" >> "$OPS/logs/dispatch-chain.log"
+    [ "$(base_title "$t")" = "$bt" ] && QW --force --mv "$f" "$OPS/queue-hold/" >/dev/null && echo "$(date '+%F %T') $SLUG: held retry $(basename "$f") (runaway guard)" >> "$OPS/logs/dispatch-chain.log"
   done; }
-fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-40 | sed 's/-$//')"
+fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-40 | sed 's/-$//')"
   for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
   if [ "$rc" = 0 ]; then rm -f "$f"; lock_drop "$OPS/chain-state.lock"; return 0; fi
   n=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo $n > "$f"; lock_drop "$OPS/chain-state.lock"
@@ -187,7 +188,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
     MISS=$(sed -n 's/^verify: INFRA missing toolchain: *//p' "$LOG" | tail -1)
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" infra "$L" "missing toolchain: ${MISS:-?} (task: $SLUG)" "$LOG" >> "$OPS/failures.tsv"
     echo "$(date '+%F %T') $ID: INFRA missing toolchain on $HOST: ${MISS:-?} (lane $L, task '$TITLE' not failed) log $LOG" >> "$OPS/NEEDS_CODY"
-    [ -n "$TASKF" ] && { mkdir -p "$OPS/queue-hold"; cp "$TASKF" "$OPS/queue-hold/$ID-infra.task"; }
+    [ -n "$TASKF" ] && QW --no-check --dir "$OPS/queue-hold" --name "$ID-infra.task" "$TASKF" >/dev/null
     ev infra "$L" "missing toolchain: ${MISS:-?}"; BU verify "$SLUG" blocked; echo "INFRA: missing toolchain: ${MISS:-?} -> $OPS/NEEDS_CODY"; exit 10; fi
   [ -x "$LANE_GUARD" ] && { "$LANE_GUARD" --task-end "$L" "$ID" "$VRC" "$LOG" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
   [ $VRC = 0 ] || { ev failed "$L" "verify failed"; continue; }
@@ -221,9 +222,14 @@ if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to 
   for f in "$QD"/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have re-queued it
     [ "$(base_title "$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
   if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)-$SLUG-retry.task"
-    { [ -n "$TASKF" ] && grep -E '^(unit|needs|scope|expected_min|card|after):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
-      echo "$BT (attempt 2)"; echo "$TASK" | tail -n +2; } > "$Q.tmp"
-    ev requeued "$L" "failed on $L; brief back in queue ($Q)"; sleep 1; mv "$Q.tmp" "$Q"   # file newer than our events (lane-guard drop rule)
+    QB=$(mktemp); { echo "$BT (attempt 2)"; echo "needs: ${NEEDS:-none}"; echo "expected_min: $EXP"   # title first (queue-write rule)
+      [ -n "$TASKF" ] && grep -E '^(unit|scope|card|after):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
+      echo "$TASK" | tail -n +2; } > "$QB"
+    sleep 1   # file newer than our events (lane-guard drop rule)
+    if QW --name "$(basename "$Q")" "$QB" >/dev/null 2>"$QB.err"; then ev requeued "$L" "failed on $L; brief back in queue ($Q)"
+    else ev failed "$L" "requeue rejected: $(tr '\n' ' ' < "$QB.err" | cut -c1-200)"
+      echo "$(date '+%F %T') $ID: requeue of '$BT' rejected by queue-write: $(tr '\n' ' ' < "$QB.err")" >> "$OPS/NEEDS_CODY"; fi
+    rm -f "$QB" "$QB.err"
   else ev requeued "$L" "failed on $L; already re-queued ($DUP)"; fi
   echo "REQUEUED after: $L -> $OPS/queue (lane-guard dispatches it to a free lane)"; exit 1; fi
 ERR=$(tail -n 5 "$LOG" | tr '\t\n' '  ')
