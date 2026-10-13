@@ -6,33 +6,8 @@ import (
 	"errors"
 
 	"github.com/MichaelKinsy/PiG/agent"
-	"github.com/MichaelKinsy/PiG/ai"
 	"github.com/MichaelKinsy/PiG/durable"
-	"github.com/MichaelKinsy/PiG/durable/harness"
 )
-
-const (
-	retryMax   = 3
-	retryCapMs = 30_000
-)
-
-func init() {
-	if err := EnableRetry(); err != nil {
-		panic(err)
-	}
-}
-
-// EnableRetry bounds provider retries at three, honouring Retry-After up to 30s.
-// Hard statuses stop at the transport. Generation retry remains for dropped streams, with the same cap.
-func EnableRetry() error {
-	if err := ai.ConfigureProviderRetry(retryMax, retryCapMs); err != nil {
-		return err
-	}
-	delay := retryCapMs
-	harness.DefaultRetryPolicy.MaxRetries = retryMax
-	harness.DefaultRetryPolicy.MaxAgentDelayMs = &delay
-	return nil
-}
 
 // ErrTurnState reports a durable tool call that arrived without its turn state. Durable
 // executes tools on its own task line, so a resumed call after a restart has no caller

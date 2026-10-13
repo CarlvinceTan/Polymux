@@ -1225,6 +1225,15 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				}, nil)
 				return e
 			}
+			if delta.Kind == "run.retrying" {
+				text := "Retrying…"
+				if _, e := s.Store.Append(writeCtx, contract.Event{
+					Type: delta.Kind, ConversationID: m.ThreadID, RunID: &run.ID, AgentID: &a.id, Text: &text,
+				}, nil); e != nil {
+					return e
+				}
+				return setActivity("generating", text)
+			}
 			if delta.Kind == "generating" {
 				if len(tools) > 0 {
 					return nil
@@ -1411,20 +1420,20 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	} else if errors.Is(err, context.Canceled) {
 		// keep cancel handling below
 	}
-	if err == nil {
-		if result.Text != "" && result.Text != content.String() {
-			found := false
-			for n := range m.Parts {
-				if m.Parts[n].Kind == "text" {
-					m.Parts[n].Text = &result.Text
-					found = true
-					break
-				}
-			}
-			if !found {
-				m.Parts = append(m.Parts, contract.Part{Kind: "text", Text: &result.Text})
+	if result.Text != "" && result.Text != content.String() {
+		found := false
+		for n := range m.Parts {
+			if m.Parts[n].Kind == "text" {
+				m.Parts[n].Text = &result.Text
+				found = true
+				break
 			}
 		}
+		if !found {
+			m.Parts = append(m.Parts, contract.Part{Kind: "text", Text: &result.Text})
+		}
+	}
+	if err == nil {
 		if handed {
 			state.mu.Lock()
 			target := state.target

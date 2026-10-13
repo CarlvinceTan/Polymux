@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -42,13 +43,22 @@ func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Cli
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
+	if err := EnableRetry(); err != nil {
+		slog.Warn("provider retry settings were not applied", "error", err)
+	}
 	registry := harness.CreateRegistry()
 	opened, err := harness.OpenHarness(ctx, cacheHistory(storage), harness.HarnessOptions{
 		Models: durableModels(baseURL, key, model, client),
 		Settings: func() *harness.HarnessSettings {
-			return &harness.HarnessSettings{Compaction: &harness.CompactionPolicyPatch{
-				ReserveTokens: new(4096), KeepRecentTokens: new(4096), BackgroundTokens: new(0),
-			}}
+			return &harness.HarnessSettings{
+				// Text classification would retry a 400 or 401 whose body says overloaded.
+				Retry: &harness.RetryPolicyPatch{Enabled: new(false)},
+				// PiG's HTTP retry stays inert; statusRetry honours Retry-After.
+				Stream: &durable.ConversationStreamOptions{MaxRetries: new(0)},
+				Compaction: &harness.CompactionPolicyPatch{
+					ReserveTokens: new(4096), KeepRecentTokens: new(4096), BackgroundTokens: new(0),
+				},
+			}
 		},
 		Registry: registry,
 		Env: func(_ context.Context, target harness.EnvTarget) (env.ExecutionEnv, error) {
@@ -211,6 +221,10 @@ func durableModels(baseURL, key, model string, client Client) *ai.Models {
 // passthrough adapts an ai.Provider to the models runtime stream signature.
 func passthrough(provider ai.Provider) ai.ModelsStreamFunction {
 	return func(ctx context.Context, _ *ai.Model, transcript ai.TranscriptContext, opts ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
+		opts.MaxRetries = new(0)
+		if opts.Fetch == nil {
+			opts.Fetch = retryClient()
+		}
 		return provider.Stream(ctx, transcript, opts)
 	}
 }
@@ -270,8 +284,17 @@ func (s *durableSession) report(delta Delta) {
 // runs tools on its own line, so the gate must be reinstalled here or an unattended turn
 // would bypass budgets, the automatic-turn tool gate and effect receipts.
 func (s *durableSession) hooks() []durable.HookRegistration {
+	generation := &harness.GenerationHooks{BeforeRequest: s.markRequest}
 	if s.definition.BeforeTool == nil {
-		return nil
+		return []durable.HookRegistration{harness.Hook(harness.GenerationTask, generation)}
+	}
+	// Abort marks the generation so the scheduler ends it as unanswered.
+	generation.AfterTools = func(ctx context.Context, _ durable.EntryId, _ []durable.EntryId, _ harness.HookApi) error {
+		if !s.park.Load() {
+			return nil
+		}
+		_ = s.conversation.Abort(ctx, nil)
+		return errApprovalPause
 	}
 	return []durable.HookRegistration{
 		{Task: "pi.tool", Handlers: &harness.ToolHooks{
@@ -315,18 +338,57 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 				return nil, nil
 			},
 		}},
-		harness.Hook(harness.GenerationTask, &harness.GenerationHooks{
-			// Abort marks the generation so the scheduler ends it as unanswered. The error
-			// stops finishToolRound from starting a successor request in the same turn.
-			AfterTools: func(ctx context.Context, _ durable.EntryId, _ []durable.EntryId, _ harness.HookApi) error {
-				if !s.park.Load() {
-					return nil
-				}
-				_ = s.conversation.Abort(ctx, nil)
-				return errApprovalPause
-			},
-		}),
+		harness.Hook(harness.GenerationTask, generation),
 	}
+}
+
+// markRequest stamps the conversation id onto this attempt so a retry notice
+// reaches the session that is waiting. The transport removes the stamp.
+func (s *durableSession) markRequest(_ context.Context, request harness.GenerationRequest, api harness.HookApi) (*harness.GenerationRequest, error) {
+	marker := "\n" + conversationMarker(strconv.FormatInt(int64(api.ConversationId()), 10))
+	messages := append([]ai.Message(nil), request.Messages...)
+	for i, message := range messages {
+		system, ok := message.(ai.SystemMessage)
+		if !ok {
+			continue
+		}
+		switch content := system.Content.(type) {
+		case ai.SystemText:
+			system.Content = content + ai.SystemText(marker)
+			messages[i] = system
+			return &harness.GenerationRequest{Messages: messages}, nil
+		case ai.SystemTextBlocks:
+			blocks := append(ai.SystemTextBlocks(nil), content...)
+			if len(blocks) == 0 {
+				blocks = ai.SystemTextBlocks{{Text: strings.TrimPrefix(marker, "\n")}}
+			} else {
+				blocks[len(blocks)-1].Text += marker
+			}
+			system.Content = blocks
+			messages[i] = system
+			return &harness.GenerationRequest{Messages: messages}, nil
+		}
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		user, ok := messages[i].(ai.UserMessage)
+		if !ok {
+			continue
+		}
+		switch content := user.Content.(type) {
+		case ai.UserText:
+			user.Content = content + ai.UserText(marker)
+			messages[i] = user
+			return &harness.GenerationRequest{Messages: messages}, nil
+		case ai.UserContentBlocks:
+			blocks := append(ai.UserContentBlocks(nil), content...)
+			blocks = append(blocks, ai.TextContent{Text: strings.TrimPrefix(marker, "\n")})
+			user.Content = blocks
+			messages[i] = user
+			return &harness.GenerationRequest{Messages: messages}, nil
+		}
+	}
+	messages = append([]ai.Message{ai.SystemMessage{Content: ai.SystemText(strings.TrimPrefix(marker, "\n"))}}, messages...)
+	return &harness.GenerationRequest{Messages: messages}, nil
 }
 
 var errApprovalPause = errors.New("waiting for approval")
@@ -386,7 +448,10 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 	s.emitMu.Lock()
 	s.emit = emit
 	s.emitMu.Unlock()
+	conversationID := strconv.FormatInt(int64(s.conversation.Id()), 10)
+	bindRetry(conversationID, emit)
 	defer func() {
+		bindRetry(conversationID, nil)
 		s.emitMu.Lock()
 		s.emit = nil
 		s.emitMu.Unlock()
@@ -411,10 +476,10 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 	result := Result{}
 	if settled.Answer != nil {
 		text, usage, err := s.answer(ctx, *settled.Answer)
+		result.Text, result.Usage = text, usage
 		if err != nil {
 			return result, err
 		}
-		result.Text, result.Usage = text, usage
 	}
 	parked := s.park.Swap(false)
 	switch settled.Status {

@@ -49,6 +49,8 @@ type Response struct {
 
 	Status  int
 	Message string
+	// RetryAfter is the Retry-After value in seconds. Empty pins a 429 to 0.
+	RetryAfter string
 
 	OnOpen  func()
 	OnClose func()
@@ -242,10 +244,17 @@ func (e *Emulator) writeReply(w http.ResponseWriter, r *http.Request, stepIndex 
 			status = http.StatusBadRequest
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if status == http.StatusTooManyRequests {
-			// Pin Retry-After to 0 so PiG's retry path is measured within the scenario deadline.
-			w.Header().Set("Retry-After-Ms", "0")
-			w.Header().Set("Retry-After", "0")
+		if status == http.StatusTooManyRequests || reply.RetryAfter != "" {
+			after := reply.RetryAfter
+			if after == "" {
+				after = "0"
+			}
+			w.Header().Set("Retry-After", after)
+			// Retry-After-Ms wins over Retry-After. Only the zero pin sets it,
+			// so a non-zero Retry-After is the delay the retry layer waits.
+			if after == "0" {
+				w.Header().Set("Retry-After-Ms", "0")
+			}
 		}
 		w.WriteHeader(status)
 		msg := reply.Message

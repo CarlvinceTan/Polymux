@@ -308,10 +308,12 @@ func TestX2PersistedToolResult(t *testing.T) {
 }
 
 func TestX4ProviderErrors(t *testing.T) {
-	// 429 is retried by the provider transport. The emulator pins Retry-After: 0 so the
-	// retry fits the scenario deadline. 400 is not retried.
+	// 429 is retried once. Retry-After is non-zero so a build that ignores the
+	// header or never emits run.retrying cannot pass. 400 is not retried.
+	rateLimited := ErrorReply(429, "rate limited 429")
+	rateLimited.RetryAfter = "1"
 	h429 := Start(t, Options{ID: "X4", Steps: []Step{
-		Fixed(nil, ErrorReply(429, "rate limited 429")),
+		Fixed(nil, rateLimited),
 		Fixed(nil, TextReply("after retry")),
 	}})
 	if code := h429.Send(agentID, "x4-429", "retry me"); code != 202 && code != 200 {
@@ -320,6 +322,7 @@ func TestX4ProviderErrors(t *testing.T) {
 	}
 	run429 := h429.WaitRun(agentID, "x4-429", agentID, deadline)
 	count429 := h429.Emulator.Count()
+	retrying429 := countRetrying(t, h429)
 	if err := h429.Emulator.Done(); err != nil {
 		fail(t, "X4", err.Error())
 		return
@@ -335,6 +338,7 @@ func TestX4ProviderErrors(t *testing.T) {
 	}
 	run400 := h400.WaitRun(agentID, "x4-400", agentID, deadline)
 	count400 := h400.Emulator.Count()
+	retrying400 := countRetrying(t, h400)
 	if err := h400.Emulator.DoneAllowExtra(); err != nil {
 		fail(t, "X4", err.Error())
 		return
@@ -343,15 +347,38 @@ func TestX4ProviderErrors(t *testing.T) {
 	switch {
 	case run429.Status != "completed" || count429 != 2:
 		fail(t, "X4", fmt.Sprintf("429 path: status=%s requests=%d", run429.Status, count429))
+	case retrying429 != 1:
+		fail(t, "X4", fmt.Sprintf("429 path run.retrying events=%d, want 1", retrying429))
 	case run400.Status != "failed":
 		fail(t, "X4", "400 path status "+run400.Status)
 	case count400 != 1:
 		fail(t, "X4", fmt.Sprintf("400 path retried: requests=%d", count400))
+	case retrying400 != 0:
+		fail(t, "X4", fmt.Sprintf("400 path run.retrying events=%d, want 0", retrying400))
 	case run400.Error == nil:
 		fail(t, "X4", "400 path missing error")
 	default:
-		pass(t, "X4", "429 retried once; 400 failed without retry")
+		pass(t, "X4", "429 retried once with Retrying…; 400 failed without retry")
 	}
+}
+
+func countRetrying(t *testing.T, h *Harness) int {
+	t.Helper()
+	events, err := h.Store.Events(context.Background(), agentID, 0, 500)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	n := 0
+	for _, event := range events {
+		if event.Type != "run.retrying" {
+			continue
+		}
+		n++
+		if event.Text == nil || *event.Text != "Retrying…" {
+			t.Fatalf("run.retrying text %v, want Retrying…", event.Text)
+		}
+	}
+	return n
 }
 
 func TestX6DisconnectMidStream(t *testing.T) {
