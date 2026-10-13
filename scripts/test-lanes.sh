@@ -114,6 +114,16 @@ FG="$T/fake-guard"; mkguard "$FG" "lane-guard --dispatch [lane]"; FGF="$T/fake-g
 export GLOG="$T/g17"
 OUT=$(LANE_GUARD="$FG" LANE_FORCE_FAIL=laneA LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Failover guard' t8)" 2>&1); waitfor "$GLOG" dispatch
 check "failover ran laneB with preflight, no --dispatch before unit end, one at end" 'echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "^--preflight" "$GLOG.all" && [ "$(ndisp "$GLOG")" = 1 ] && ! grep -q "lock=yes" "$GLOG"'
+# 20 continuing an existing PR: size measured from the branch head at unit start; open PR -> comment, no new PR
+GB="$T/ghbin"; mkdir -p "$GB"; printf '#!/bin/sh\necho "$*" >> "%s/gh.log"\ncase "$1 $2" in\n"pr list") cat "%s/openpr" 2>/dev/null;;\n"pr create") echo https://github.com/o/r/pull/100;;\nesac\nexit 0\n' "$T" "$T" > "$GB/gh"; chmod +x "$GB/gh"
+git checkout -q -b test/big main; seq 1 400 > big.txt; git add big.txt; git commit -qm "big earlier work" -m "Lane: laneA/opencode"; git checkout -q main
+OUT=$(LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Continue big' t20)" --branch test/big 2>&1); RC=$?
+check "size cap counts only this unit's work, not the whole branch" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneA" && ! echo "$OUT" | grep -q "changed lines >"'
+git push -q origin test/big:refs/heads/test/open; echo https://github.com/o/r/pull/55 > "$T/openpr"; : > "$T/gh.log"
+VC2='mkdir -p .build/proof && echo "## ok" > .build/proof/summary.md && echo unit-test-verified > .build/proof/level'
+OUT=$(PATH="$GB:$PATH" LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Continue open' t21)" --branch test/open 2>&1); RC=$?
+NH=$(git ls-remote origin refs/heads/test/open | cut -f1)
+check "open PR: pushed, commented new head, no new PR, success recorded" '[ $RC = 0 ] && ! grep -q "^pr create" "$T/gh.log" && grep -q "^pr comment https://github.com/o/r/pull/55 .*new head $NH" "$T/gh.log" && [ "$NH" != "$(git rev-parse test/big)" ] && grep -q "continue-open	https://github.com/o/r/pull/55	$NH" "$LANES_HOME/results.tsv" && [ -f "$LANES_HOME/cards/continue-open.wt" ]'
 # 8 cleanup dry run: dirty and unpushed kept, merged removable, nothing deleted
 git worktree add -q -b c/dirty "$HOME/code/wt/dirty" main && echo x > "$HOME/code/wt/dirty/README"
 git worktree add -q -b c/unpushed "$HOME/code/wt/unpushed" main && (cd "$HOME/code/wt/unpushed" && echo y > u && git add u && git commit -qm u)

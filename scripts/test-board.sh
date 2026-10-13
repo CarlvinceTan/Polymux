@@ -84,6 +84,12 @@ echo https://github.com/o/r/raw/proof-media/run8 > "$AP/url-base"; echo UI-verif
 cp "$SRC/scripts/approve-proof.sh" scripts/; rm -f "$LANES_HOME/BOARD_LIVE"; : > "$BLOG"
 PATH=$BP bash scripts/approve-proof.sh "$AW" nope.png >/dev/null 2>&1; A1=$?; PATH=$BP bash scripts/approve-proof.sh "$AW" fresh.png >/dev/null 2>&1; A2=$?
 check "approve-proof: unknown file refused, viewed file approved and board append runs" '[ $A1 != 0 ] && [ $A2 = 0 ] && [ "$(cat "$AP/approved")" = fresh.png ] && grep -q "approve-me verify: DRY-RUN would append .*run8/fresh.png" "$BLOG"'
+cp "$AP/fresh.png" "$AP/second.png"; mkdir -p "$AP/sub"; cp "$AP/fresh.png" "$AP/sub/x.png"; cp "$AP/fresh.png" "$AP/.hid.png"
+printf 'fresh.png\nsecond.png\nsub/x.png\n.hid.png\n' > "$AP/uploaded"
+PATH=$BP bash scripts/approve-proof.sh "$AW" second.png >/dev/null 2>&1
+check "approve-proof: merges into the existing approved list" '[ "$(cat "$AP/approved")" = "$(printf "fresh.png\nsecond.png")" ]'
+PATH=$BP bash scripts/approve-proof.sh "$AW" sub/x.png >/dev/null 2>&1; A3=$?; PATH=$BP bash scripts/approve-proof.sh "$AW" .hid.png >/dev/null 2>&1; A4=$?
+check "approve-proof: refuses names with / or a leading ." '[ $A3 != 0 ] && [ $A4 != 0 ] && ! grep -q "sub/x.png\|.hid.png" "$AP/approved"'
 touch "$LANES_HOME/BOARD_LIVE"; echo Review > "$T/cur"; : > "$T/curl.log"; : > "$BLOG"; C=$LANES_HOME/cards
 echo 11111111-2222-3333-4444-555555555555 | tee "$C/board-done" > "$C/done"; echo laneA-board-done > "$C/board-done.wt"; echo other > "$C/done.wt"
 printf '2026-10-13 11:00:00\t10131100-board-done\thttps://github.com/o/r/pull/7\tabc\tUI-verified\n' >> "$LANES_HOME/results.tsv"
