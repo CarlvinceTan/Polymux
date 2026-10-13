@@ -62,13 +62,20 @@ final class AppSession {
         guard let url = ServerAddress.parse(address) else {
             throw URLError(.badURL)
         }
+        #if DEBUG
+        client = APIClient(baseURL: url, session: VerifyFixture.enabled ? VerifyFixture.session() : .shared)
+        #else
         client = APIClient(baseURL: url)
+        #endif
         let key = address.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
         cache = try await Task.detached {
             let support = try FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
             )
-            let directory = support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
+            let directory = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"].map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+                    .appending(path: "app-\(key)", directoryHint: .isDirectory)
+            } ?? support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             return try LocalCache(url: directory.appending(path: "cache.sqlite"))
         }.value
@@ -109,7 +116,11 @@ struct AppRoot: View {
                 session = try await AppSession(address: address)
                 error = nil
                 if let session {
+                    #if DEBUG
+                    if !VerifyFixture.enabled { Notifications.shared.connect(session.client) }
+                    #else
                     Notifications.shared.connect(session.client)
+                    #endif
                     while !Task.isCancelled {
                         await session.settings.refresh()
                         do { try await Task.sleep(for: .seconds(3)) }
