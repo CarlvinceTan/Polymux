@@ -40,7 +40,9 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
             switch request.url?.lastPathComponent {
             case "agents": data = try JSONEncoder().encode(Self.agents)
             case "threads": data = try JSONEncoder().encode(Self.threads)
-            case "settings": data = try JSONEncoder().encode(Settings(appearance: "system", sidebarWidth: 360))
+            case "settings":
+                let mode = ProcessInfo.processInfo.environment["POLYMUX_VERIFY_APPEARANCE"] ?? "system"
+                data = try JSONEncoder().encode(Settings(appearance: mode, sidebarWidth: 360))
             default: data = Data("{}".utf8)
             }
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,

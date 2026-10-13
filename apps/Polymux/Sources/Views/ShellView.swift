@@ -389,6 +389,10 @@ struct ShellView: View {
             }
         }
         .accessibilityIdentifier("sidebar.row.\(thread.id)")
+        .accessibilityValue(UnreadAccess.value(count: thread.unreadCount,
+            activity: thread.isGroup ? "" : ActivityStore.present(runs: thread.runs,
+                conversationID: thread.id, agentID: thread.agentID,
+                connected: session.sidebar.isConnected).label))
         #if os(macOS)
         .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 12))
         .overlay {

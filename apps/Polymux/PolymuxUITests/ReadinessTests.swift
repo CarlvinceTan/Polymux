@@ -81,14 +81,9 @@ final class ReadinessTests: XCTestCase {
         any["chats.list"].swipeDown()
         #endif
         // Unread rows announce their state without a count; collect the announcement across viewports.
-        if ProcessInfo.processInfo.environment["POLYMUX_DEBUG_ROWS"] != nil {
-            for row in any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.'")).allElementsBoundByIndex {
-                print("ROWDBG \(row.identifier) | value=\(String(describing: row.value)) | label=\(row.label)")
-            }
-        }
         var announced = Set<String>()
         timed("unread.rows") {
-            let rows = any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.' AND value CONTAINS 'Unread'"))
+            let rows = any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.' AND (value == 'Unread' OR value BEGINSWITH 'Unread, ')"))
             announced.formUnion(rows.allElementsBoundByIndex.map(\.identifier))
             if Self.unreadIDs.allSatisfy({ announced.contains("sidebar.row.\($0)") }) { return true }
             #if os(macOS)
@@ -105,45 +100,36 @@ final class ReadinessTests: XCTestCase {
                                  uniformTypeIdentifier: "public.json")
         // Xcode strips the final extension; keep ready.json for verify.sh's manifest match.
         json.name = "ready.json.json"; json.lifetime = .keepAlways; add(json)
-        if let port = env["POLYMUX_VERIFY_PORT"] {
-            // Only a live fixture server can switch appearance; capture the seeded unread rows in both themes.
-            capture("light", port: port, app: app)
-            capture("dark", port: port, app: app)
+        if env["POLYMUX_VERIFY_PORT"] == nil {
+            capture("light", app: app)
+            capture("dark", app: app)
         }
     }
 
-    /// The app takes appearance from server settings and refreshes every 3 s. Flip it and wait for
-    /// the window to actually render the theme before keeping the capture.
-    func capture(_ mode: String, port: String, app: XCUIApplication) {
-        if ProcessInfo.processInfo.environment["POLYMUX_DEBUG_ROWS"] != nil {
-            print("LUMDBG before \(mode) = \(String(describing: luminance(app)))")
+    func capture(_ mode: String, app: XCUIApplication) {
+        app.terminate()
+        app.launchEnvironment["POLYMUX_VERIFY_APPEARANCE"] = mode
+        app.launch()
+        let any = app.descendants(matching: .any)
+        timed("appearance.\(mode)", timeout: 20) {
+            any["chats.list"].exists && rendered(app, dark: mode == "dark")
         }
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/settings")!)
-        request.httpMethod = "PATCH"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["appearance": mode])
-        let sent = DispatchSemaphore(value: 0)
-        var status = 0
-        URLSession.shared.dataTask(with: request) { _, response, _ in
-            status = (response as? HTTPURLResponse)?.statusCode ?? -1; sent.signal()
-        }.resume()
-        _ = sent.wait(timeout: .now() + 5)
-        if ProcessInfo.processInfo.environment["POLYMUX_DEBUG_ROWS"] != nil { print("PATCHDBG \(mode) status=\(status)") }
-        timed("appearance.\(mode)", timeout: 20) { rendered(app, dark: mode == "dark") }
-        if ProcessInfo.processInfo.environment["POLYMUX_DEBUG_ROWS"] != nil {
-            print("LUMDBG after \(mode) = \(String(describing: luminance(app)))")
+        timed("unread.\(mode)") {
+            let row = any["sidebar.row.t-aria"]
+            let value = row.value as? String ?? ""
+            return row.exists && (value == "Unread" || value.hasPrefix("Unread, "))
         }
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "unread-\(mode)"; shot.lifetime = .keepAlways; add(shot)
     }
 
-    /// Light windows render above the luminance threshold, dark windows below it.
+    // Check the rendered theme before retaining its screenshot.
     func rendered(_ app: XCUIApplication, dark: Bool) -> Bool {
         guard let value = luminance(app) else { return false }
         return dark ? value < 0.5 : value > 0.5
     }
 
-    /// The owner token the server writes for applications on this host; nil on iOS.
+    // The host owner token is unavailable on iOS.
     func localToken() -> String? {
         #if os(macOS)
         guard let dir = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"] else { return nil }
