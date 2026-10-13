@@ -23,7 +23,7 @@ public final class SidebarStore {
     }
 
     func reveal(_ thread: Thread) {
-        notice = nil
+        clearNotice()
         revision &+= 1
         stagedThreads[thread.id] = thread
         acceptedThreads[thread.id] = thread
@@ -31,7 +31,7 @@ public final class SidebarStore {
     }
 
     func reveal(_ agent: Agent) {
-        notice = nil
+        clearNotice()
         revision &+= 1
         stagedAgents[agent.id] = agent
         acceptedAgents[agent.id] = agent
@@ -46,7 +46,11 @@ public final class SidebarStore {
     }
 
 
-    public func clearNotice() { notice = nil }
+    public func clearNotice() {
+        noticeTask?.cancel()
+        noticeTask = nil
+        notice = nil
+    }
 
     func dropStaged(thread id: String, notice message: String) {
         guard stagedThreads.removeValue(forKey: id) != nil else { return }

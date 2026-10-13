@@ -43,8 +43,8 @@ struct InstantUINewChat {
     @Test func forcedFailureRollsBackGroupInsideBudget() async throws {
         let rig = try await Rig()
         defer { rig.close() }
-        let beforeAgents = try rig.cache.agents()
-        let beforeThreads = try rig.cache.threads()
+        let beforeAgents = try await rig.sidebar.cacheActor.call { try $0.agents() }
+        let beforeThreads = try await rig.sidebar.cacheActor.call { try $0.threads() }
         let trace = SignpostTrace()
         let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: "Trip", sidebar: rig.sidebar, client: rig.client, trace: trace)
         let local = try #require(launch.thread?.id)
@@ -64,16 +64,16 @@ struct InstantUINewChat {
         #expect(rig.sidebar.notice == message)
         #expect(launch.thread == nil)
         #expect(!rig.sidebar.threads.contains { $0.id == local })
-        #expect(try rig.cache.agents() == beforeAgents)
-        #expect(try rig.cache.threads().map(\.id).sorted() == beforeThreads.map(\.id).sorted())
+        #expect(try await rig.sidebar.cacheActor.call { try $0.agents() } == beforeAgents)
+        #expect(try await rig.sidebar.cacheActor.call { try $0.threads().map(\.id).sorted() } == beforeThreads.map(\.id).sorted())
         #expect(rig.sidebar.thread(for: rig.arlo)?.id == rig.arlo.id)
     }
 
     @Test func forcedFailureRollsBackAgentInsideBudget() async throws {
         let rig = try await Rig()
         defer { rig.close() }
-        let beforeAgents = try rig.cache.agents()
-        let beforeThreads = try rig.cache.threads().map(\.id).sorted()
+        let beforeAgents = try await rig.sidebar.cacheActor.call { try $0.agents() }
+        let beforeThreads = try await rig.sidebar.cacheActor.call { try $0.threads().map(\.id).sorted() }
         let trace = SignpostTrace()
         let request = CreateAgentRequest(name: "Nova", role: "", prompt: "")
         let launch = InstantChat.create(request, sidebar: rig.sidebar, client: rig.client, trace: trace)
@@ -98,8 +98,8 @@ struct InstantUINewChat {
         #expect(launch.saved == nil)
         #expect(!rig.sidebar.agents.contains { $0.id == launch.agent.id })
         #expect(rig.sidebar.thread(for: launch.agent) == nil)
-        #expect(try rig.cache.agents() == beforeAgents)
-        #expect(try rig.cache.threads().map(\.id).sorted() == beforeThreads)
+        #expect(try await rig.sidebar.cacheActor.call { try $0.agents() } == beforeAgents)
+        #expect(try await rig.sidebar.cacheActor.call { try $0.threads().map(\.id).sorted() } == beforeThreads)
     }
 
     @Test func slowCreateMeetsBudgetAndKeepsServerChat() async throws {
@@ -117,8 +117,8 @@ struct InstantUINewChat {
         #expect(launch.thread?.id == "server-group")
         #expect(!rig.sidebar.threads.contains { $0.id == local })
         #expect(rig.sidebar.threads.contains { $0.id == "server-group" && $0.title == "Trip" })
-        #expect(try rig.cache.threads().contains { $0.id == "server-group" })
-        #expect(try !rig.cache.threads().contains { $0.id == local })
+        #expect((try await rig.sidebar.cacheActor.call { try $0.threads() }).contains { $0.id == "server-group" })
+        #expect((try await rig.sidebar.cacheActor.call { try $0.threads() }).allSatisfy { $0.id != local })
     }
 
     @Test func slowCreateExceedsBudget() async throws {
@@ -155,6 +155,56 @@ struct InstantUINewChat {
         #expect(rig.sidebar.displayed(local)?.id == "server-group")
     }
 
+    @Test func queuesSendUntilReconciled() async throws {
+        let rig = try await Rig(failCreates: false)
+        defer { rig.close() }
+        let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: nil,
+                                       sidebar: rig.sidebar, client: rig.client)
+        let local = try #require(launch.thread?.id)
+        let store = ChatStore(client: rig.client, actor: rig.sidebar.cacheActor,
+                              threadID: local, sidebar: rig.sidebar)
+        await store.ready()
+        async let result = launch.finish()
+        await rig.probe.waitUntilEntered()
+        let sending = Task { await store.send(text: "Hello") }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while store.messages.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!store.messages.isEmpty)
+        #expect(store.messages.first?.threadID == local)
+        #expect(await rig.probe.sentPaths.isEmpty)
+        #expect(try await rig.sidebar.cacheActor.call { try $0.pending(threadID: local).isEmpty })
+        #expect(await result == nil)
+        await sending.value
+        #expect(store.threadID == "server-group")
+        #expect(store.messages.first?.threadID == "server-group")
+        #expect(store.messages.first?.text == "Hello")
+        #expect(await rig.probe.sentPaths == ["/threads/server-group/messages"])
+        #expect(try await rig.sidebar.cacheActor.call { try $0.pending(threadID: local).isEmpty })
+    }
+
+    @Test func failedCreateKeepsQueuedMessageInMemory() async throws {
+        let rig = try await Rig()
+        defer { rig.close() }
+        let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: nil,
+                                       sidebar: rig.sidebar, client: rig.client)
+        let local = try #require(launch.thread?.id)
+        let store = ChatStore(client: rig.client, actor: rig.sidebar.cacheActor,
+                              threadID: local, sidebar: rig.sidebar)
+        await store.ready()
+        async let result = launch.finish()
+        await rig.probe.waitUntilEntered()
+        let sending = Task { await store.send(text: "Keep my draft") }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while store.messages.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!store.messages.isEmpty)
+        #expect(await result != nil)
+        await sending.value
+        #expect(store.messages.first?.text == "Keep my draft")
+        #expect(store.messages.first?.status == "failed")
+        #expect(await rig.probe.sentPaths.isEmpty)
+        #expect(try await rig.sidebar.cacheActor.call { try $0.messages(threadID: local).isEmpty })
+    }
+
 }
 
 @MainActor
@@ -169,12 +219,17 @@ private struct Rig {
 
     init(seedThreads: Bool = true, failCreates: Bool = true) async throws {
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("polymux-instant-\(UUID())")
-        cache = try LocalCache(url: folder.appendingPathComponent("cache.sqlite"))
         let threads = seedThreads ? [
             Thread(id: arlo.id, agentID: arlo.id, title: arlo.name, agentIDs: [arlo.id]),
             Thread(id: milo.id, agentID: milo.id, title: milo.name, agentIDs: [milo.id]),
         ] : []
-        try cache.save(agents: [arlo, milo], threads: threads)
+        let url = folder.appendingPathComponent("cache.sqlite")
+        let agents = [arlo, milo]
+        cache = try await Task.detached {
+            let cache = try LocalCache(url: url)
+            try cache.save(agents: agents, threads: threads)
+            return cache
+        }.value
         let created = FailProbe(agents: [arlo, milo], threads: threads, failCreates: failCreates)
         probe = created
         let host = InstantProtocol.routes.add { try await created.handle($0) }
@@ -197,6 +252,7 @@ private struct Rig {
 
 private actor FailProbe {
     private(set) var calls = 0
+    private(set) var sentPaths: [String] = []
     private var entered = 0
     private let agents: [Agent]
     private let threads: [PolymuxKit.Thread]
@@ -227,6 +283,10 @@ private actor FailProbe {
             }
             let agent = Agent(id: "server-agent", name: "Nova")
             return (201, try JSONEncoder().encode(agent))
+        }
+        if request.httpMethod == "POST", path.hasSuffix("/messages") {
+            sentPaths.append(path)
+            return (200, Data("{}".utf8))
         }
         if request.httpMethod == "GET", path == "/threads" {
             var listed = threads

@@ -197,7 +197,6 @@ struct NewChatView: View {
                 error = failure
                 return
             }
-
         }
     }
 
