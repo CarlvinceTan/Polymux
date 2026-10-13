@@ -92,9 +92,9 @@ step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 lane_files_changed "${TI_BASE:-origin/main}" && step lane-tests bash "$(lane_tests_path "$ROOT" "$SD")"
 if [ -d apps/server ] && [ -z "$GO_PKGS" ]; then skip go-vet; skip go-test; skip fixture-off
 elif [ -d apps/server ]; then
-  step go-vet sh -c 'cd apps/server && go vet -tags sqlite_fts5 $1 && go vet -tags "sqlite_fts5 verifyfixture" $1' _ "$GO_PKGS"
+  step go-vet sh -c 'cd apps/server && GOMAXPROCS=4 go vet -tags sqlite_fts5 $1 && GOMAXPROCS=4 go vet -tags "sqlite_fts5 verifyfixture" $1' _ "$GO_PKGS"
   # -json keeps per-test times (go-test.json); the text log stays readable for failures.txt.
-  step go-test sh -c 'cd apps/server && go test -tags "sqlite_fts5 verifyfixture" -count=1 -json $1 > "$2" ; rc=$?; python3 -c "import json,sys
+  step go-test sh -c 'cd apps/server && GOMAXPROCS=4 go test -p 4 -tags "sqlite_fts5 verifyfixture" -count=1 -json $1 > "$2" ; rc=$?; python3 -c "import json,sys
 for l in open(sys.argv[1]):
   try: e=json.loads(l)
   except ValueError: continue
@@ -104,7 +104,7 @@ for l in open(sys.argv[1]):
 fi
 NEED_SLOT=1; [ "$APP" = 0 ] && [ -z "$SWIFT" ] && NEED_SLOT=0
 if [ "$APP" = 1 ]; then python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }; fi
-XC=(-derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
+XC=(-jobs 6 -derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
 [ $NEED_SLOT = 1 ] && { acquire; echo "verify: slot $SLOT"; }
 if [ -z "$SWIFT" ]; then skip packages
