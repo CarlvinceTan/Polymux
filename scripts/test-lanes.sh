@@ -521,6 +521,44 @@ git worktree remove --force "$LANES_WT/laneA-chat-lane-labels" 2>/dev/null
 printf '# Good\nneeds: none\nexpected_min: 5\ntype: bug\narea: ui, area:server\n' > "$T/qh1.task"; printf '# Bad\nneeds: none\nexpected_min: 5\ntype: chore\narea: web\n' > "$T/qh2.task"
 OK1=$(bash scripts/queue-write.sh --check "$T/qh1.task" 2>&1; echo rc=$?); OUT=$(bash scripts/queue-write.sh --check "$T/qh2.task" 2>&1); RC=$?
 check "queue-write --check accepts valid type:/area: headers and rejects unknown values" 'grep -q "^rc=0$" <<< "$OK1" && [ $RC = 2 ] && grep -q "type: \"chore\" is not one of" <<< "$OUT" && grep -q "area: \"web\" is not one of" <<< "$OUT"'
+# 30 opencode: a stopped, killed or fast-failed unit ends its session on the shared serve (stubbed CLI), serve untouched
+OCB="$T/ocbin"; mkdir -p "$OCB"; : > "$T/oc.log"
+cat > "$OCB/opencode" <<OCSTUB
+#!/bin/bash
+echo "\$*" >> "$T/oc.log"
+case "\$1 \$2" in
+"session list") d=\$(pwd -P); echo "[{\"id\":\"ses_other\",\"directory\":\"/elsewhere\",\"created\":\$(( \$(date +%s) * 1000 ))},{\"id\":\"ses_\$(basename "\$d" | tr -c 'a-z0-9\n' _)\",\"directory\":\"\$d\",\"created\":\$(( \$(date +%s) * 1000 ))}]";;
+"session export") echo "{\"id\":\"\$3\"}";;
+"session delete") echo "deleted \$3";;
+esac
+OCSTUB
+chmod +x "$OCB/opencode"
+OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_IDLE_S=2 LANE_DRY=1 LANE_STUB_CMD='sleep 300' $RL laneA "$(task 'Oc fastfail' oc1)" 2>&1); RC=$?
+OL=$(ls "$LANES_HOME"/logs/*oc-fastfail*laneA.log 2>/dev/null | head -1)
+check "opencode fast-fail: session id recorded, exported, deleted on the serve; other sessions untouched" '[ -n "$OL" ] && grep -q "^opencode session: ses_" "$OL" && grep -q "^session delete ses_.*oc_fastfail" "$T/oc.log" && ! grep -q "delete ses_other" "$T/oc.log" && ls "$OL".oc-ses_*.json >/dev/null 2>&1 && grep -q "ended on the shared serve" "$OL" && ! grep -qiE "serve|restart|kill" <(grep -v "^session " "$T/oc.log")'
+: > "$T/oc.log"
+LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='sleep 300' $RL laneA "$(task 'Oc killed' oc2)" >/dev/null 2>&1 & P=$!
+for k in $(seq 1 100); do grep -q "session list" "$T/oc.log" 2>/dev/null && break; sleep 0.1; done; sleep 1; kill -TERM $P; wait $P 2>/dev/null
+check "opencode unit killed (TERM): its session is deleted on the serve" 'grep -q "^session delete ses_.*oc_killed" "$T/oc.log"'
+: > "$T/oc.log"
+OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Oc happy' oc3)" 2>&1); RC=$?
+check "opencode unit that finishes by itself: no session delete" '[ $RC = 0 ] && ! grep -q "session delete" "$T/oc.log"'
+# 31 no-progress watchdog: no commit for N s, or the same test failing N times -> clean stop (opencode-aware), one retry on the OTHER agent
+QD="$LANES_HOME/queue"; rm -f "$QD"/*.task; : > "$T/oc.log"
+OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_NOCOMMIT_S=3 LANE_STUB_CMD='while :; do echo x >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd nocommit' wd1)" 2>&1); RC=$?
+WQ=$(ls "$QD"/*wd-nocommit*-retry.task 2>/dev/null | head -1)
+check "watchdog: no commit within the limit -> stopped, opencode session ended, retry pinned to codex with a note" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "^## Watchdog" "$WQ" && grep -q "no new commit" "$WQ" && [ "$(head -1 "$WQ")" = "# Wd nocommit (attempt 2)" ] && grep -q "session delete ses_.*wd_nocommit" "$T/oc.log" && bash scripts/queue-write.sh --check "$WQ" >/dev/null'
+rm -f "$QD"/*.task
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; echo "--- FAIL: TestOther$i (0.01s)"; done; while :; do echo y >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd testloop' wd2)" 2>&1); RC=$?
+WQ=$(ls "$QD"/*wd-testloop*-retry.task 2>/dev/null | head -1)
+check "watchdog: the same test failing 3 times -> stopped, retry on the other agent names the test" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "test .TestLoopy. failed 3+ times" "$WQ"'
+rm -f "$QD"/*.task
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=0 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; done; sleep 2; '"$STUB_OK" $RL laneA "$(task 'Wd disabled' wd3)" 2>&1); RC=$?
+check "watchdog limits are configurable: LANE_WD_TESTFAIL_N=0 disables the test-loop stop" '[ $RC = 0 ] && ! grep -q watchdog "$LANES_HOME"/logs/*wd-disabled-laneA.log'
+printf '# Wd pinned\nneeds: none\nexpected_min: 5\nagent: codex\n' > "$T/wdp.task"
+OA=$(LANE_NO_CHAIN=1 $RL --check laneA "$T/wdp.task" 2>&1); RA=$?; OB=$(LANE_NO_CHAIN=1 $RL --check laneB "$T/wdp.task" 2>&1); RB=$?
+check "agent: header pins the retry: --check refuses the opencode lane (5), the codex lane is not refused for agent" '[ $RA = 5 ] && echo "$OA" | grep -q "wants agent .codex." && ! echo "$OB" | grep -q "wants agent"'
+rm -f "$QD"/*.task
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"
