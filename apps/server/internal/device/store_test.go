@@ -223,7 +223,7 @@ func TestPairCodeSingleUse(t *testing.T) {
 	urls := []string{"https://mac.example:7339"}
 	first := appCode(t, s, urls)
 	code := codeOf(t, appCode(t, s, urls))
-	if _, err := s.RedeemApp(t.Context(), codeOf(t, first)); !errors.Is(err, ErrUsed) {
+	if _, err := s.RedeemApp(t.Context(), "peer", codeOf(t, first)); !errors.Is(err, ErrUsed) {
 		t.Fatal(err)
 	}
 	var wins atomic.Int32
@@ -232,7 +232,7 @@ func TestPairCodeSingleUse(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := s.RedeemApp(context.Background(), code); err == nil {
+			if _, err := s.RedeemApp(context.Background(), "peer", code); err == nil {
 				wins.Add(1)
 			}
 		}()
@@ -251,12 +251,12 @@ func TestPairCodeExpiry(t *testing.T) {
 	urls := []string{"https://mac.example:7339"}
 	uri := appCode(t, s, urls)
 	now = now.Add(9 * time.Minute)
-	if _, err := s.RedeemApp(t.Context(), codeOf(t, uri)); err != nil {
+	if _, err := s.RedeemApp(t.Context(), "peer", codeOf(t, uri)); err != nil {
 		t.Fatal(err)
 	}
 	uri = appCode(t, s, urls)
 	now = now.Add(10*time.Minute + time.Second)
-	if _, err := s.RedeemApp(t.Context(), codeOf(t, uri)); !errors.Is(err, ErrExpired) {
+	if _, err := s.RedeemApp(t.Context(), "peer", codeOf(t, uri)); !errors.Is(err, ErrExpired) {
 		t.Fatal(err)
 	}
 }
@@ -278,24 +278,44 @@ func TestQRPayloadNoLoopback(t *testing.T) {
 
 func TestPairLockout(t *testing.T) {
 	t.Parallel()
-	s := openStore(t)
+	dir := t.TempDir()
 	now := time.Unix(1_700_000_000, 0)
-	s.clock = func() time.Time { return now }
+	open := func() *Store {
+		t.Helper()
+		s, err := Open(t.Context(), dir, "127.0.0.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.clock = func() time.Time { return now }
+		return s
+	}
+	s := open()
 	urls := []string{"https://mac.example:7339"}
 	code := codeOf(t, appCode(t, s, urls))
-	for range 5 {
-		if _, err := s.RedeemApp(t.Context(), strings.Repeat("b", 43)); !errors.Is(err, ErrUsed) {
+	bad := strings.Repeat("b", 43)
+	for range 3 {
+		if _, err := s.RedeemApp(t.Context(), "a", bad); !errors.Is(err, ErrUsed) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.RedeemApp(t.Context(), code); !errors.Is(err, ErrLocked) {
+	s.Close()
+	s = open()
+	for range 2 {
+		if _, err := s.RedeemApp(t.Context(), "a", bad); !errors.Is(err, ErrUsed) {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.RedeemApp(t.Context(), "a", code); !errors.Is(err, ErrLocked) {
 		t.Fatal(err)
+	}
+	if agent, err := s.RedeemApp(t.Context(), "b", code); err != nil || agent != "assistant" {
+		t.Fatalf("other caller: %v", err)
 	}
 	now = now.Add(15*time.Minute + time.Second)
-	if _, err := s.RedeemApp(t.Context(), code); !errors.Is(err, ErrExpired) {
-		t.Fatal(err)
-	}
-	if agent, err := s.RedeemApp(t.Context(), codeOf(t, appCode(t, s, urls))); err != nil || agent != "assistant" {
+	s.Close()
+	s = open()
+	defer s.Close()
+	if agent, err := s.RedeemApp(t.Context(), "a", codeOf(t, appCode(t, s, urls))); err != nil || agent != "assistant" {
 		t.Fatal(err)
 	}
 }
@@ -312,6 +332,26 @@ func TestLinkHasNoPolymuxHost(t *testing.T) {
 	uri := appCode(t, s, []string{"https://connect.polymux.com", "https://mac.example:7339"})
 	if strings.Contains(strings.ToLower(uri), "polymux.com") {
 		t.Fatal(uri)
+	}
+}
+
+func TestEnrollSkipsAppTicket(t *testing.T) {
+	t.Parallel()
+	s := openStore(t)
+	code := codeOf(t, appCode(t, s, []string{"https://mac.example:7339"}))
+	_, err := s.Enroll(t.Context(), code, "Mac", []string{"native"})
+	if err == nil || err.Error() != "pairing code expired or already used" {
+		t.Fatal(err)
+	}
+	if _, err := s.RedeemApp(t.Context(), "peer", code); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIdentityRejectsUnspecified(t *testing.T) {
+	t.Parallel()
+	if _, err := Open(t.Context(), t.TempDir(), "0.0.0.0"); err == nil {
+		t.Fatal("accepted unspecified host")
 	}
 }
 

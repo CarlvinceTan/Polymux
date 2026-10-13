@@ -166,7 +166,7 @@ func servePair(w http.ResponseWriter, r *http.Request, dir, port string, tailsca
 		writePair(w, http.StatusBadRequest, "invalid", "Invalid pairing request.")
 		return
 	}
-	name := identityHost("0.0.0.0")
+	name := lanHost()
 	if tailscale {
 		if tip, err := tailnet(); err == nil {
 			name = identityHost(tip)

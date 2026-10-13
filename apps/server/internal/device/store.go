@@ -59,8 +59,6 @@ type Store struct {
 	issuer *x509.Certificate
 	key    *ecdsa.PrivateKey
 	clock  func() time.Time
-	fails  int
-	until  time.Time
 }
 
 func Open(ctx context.Context, dir, hostname string) (*Store, error) {
@@ -91,7 +89,8 @@ func Open(ctx context.Context, dir, hostname string) (*Store, error) {
 	s := &Store{db: db}
 	_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS identity(id INTEGER PRIMARY KEY CHECK(id=1), certificate BLOB NOT NULL, key BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS tickets(hash TEXT PRIMARY KEY, agent TEXT NOT NULL, capabilities TEXT NOT NULL, expires INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT NOT NULL, agent TEXT NOT NULL, capabilities TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);`)
+CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT NOT NULL, agent TEXT NOT NULL, capabilities TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS app_lock(caller TEXT PRIMARY KEY, fails INTEGER NOT NULL, until INTEGER NOT NULL);`)
 	if err == nil {
 		err = s.identity(ctx, hostname)
 	}
@@ -154,6 +153,9 @@ func (s *Store) identity(ctx context.Context, hostname string) error {
 	var certificate, key []byte
 	err := s.db.QueryRowContext(ctx, `SELECT certificate,key FROM identity WHERE id=1`).Scan(&certificate, &key)
 	if errors.Is(err, sql.ErrNoRows) {
+		if ip := net.ParseIP(hostname); ip != nil && ip.IsUnspecified() {
+			return errors.New("device identity needs a concrete host")
+		}
 		private, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if e != nil {
 			return e
@@ -255,7 +257,8 @@ func (s *Store) Enroll(ctx context.Context, code, name string, caps []string) (E
 	}
 	defer tx.Rollback()
 	var agent, encoded string
-	err = tx.QueryRowContext(ctx, `DELETE FROM tickets WHERE hash=? AND expires>? RETURNING agent,capabilities`, hash(code), time.Now().Unix()).Scan(&agent, &encoded)
+	// Control tickets are JSON arrays. App tickets are objects and must stay put.
+	err = tx.QueryRowContext(ctx, `DELETE FROM tickets WHERE hash=? AND expires>? AND capabilities LIKE '[%' RETURNING agent,capabilities`, hash(code), time.Now().Unix()).Scan(&agent, &encoded)
 	if err != nil {
 		return Enrollment{}, errors.New("pairing code expired or already used")
 	}
@@ -379,63 +382,70 @@ func (s *Store) IssueApp(ctx context.Context, candidates []string, agent string)
 	return formatPair(urls, hex.EncodeToString(sum[:]), code, agent), nil
 }
 
-func (s *Store) RedeemApp(ctx context.Context, code string) (string, error) {
-	if s.locked() {
-		return "", ErrLocked
-	}
-	if len(code) != 43 {
-		return "", s.reject(ErrUsed)
+// RedeemApp checks the caller lock and consumes the ticket in one transaction.
+// Lockout is per caller, so one peer cannot freeze pairing for the others.
+func (s *Store) RedeemApp(ctx context.Context, caller, code string) (string, error) {
+	if caller == "" || len(caller) > 128 || strings.ContainsRune(caller, 0) {
+		return "", errors.New("invalid caller")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
-	var agent string
-	err = tx.QueryRowContext(ctx, `DELETE FROM tickets WHERE hash=? AND capabilities=? AND expires>? RETURNING agent`, hash(code), appTicket, s.moment().Unix()).Scan(&agent)
-	if err == nil {
-		if err = tx.Commit(); err != nil {
-			return "", err
-		}
-		s.mu.Lock()
-		s.fails, s.until = 0, time.Time{}
-		s.mu.Unlock()
-		return agent, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO app_lock(caller,fails,until) VALUES(?,0,0) ON CONFLICT(caller) DO NOTHING`, caller); err != nil {
 		return "", err
 	}
-	var expires int64
-	qerr := tx.QueryRowContext(ctx, `SELECT expires FROM tickets WHERE hash=? AND capabilities=?`, hash(code), appTicket).Scan(&expires)
-	if qerr == nil && expires <= s.moment().Unix() {
-		return "", s.reject(ErrExpired)
+	var fails int
+	var until int64
+	if err = tx.QueryRowContext(ctx, `SELECT fails, until FROM app_lock WHERE caller=?`, caller).Scan(&fails, &until); err != nil {
+		return "", err
 	}
-	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
-		return "", qerr
-	}
-	return "", s.reject(ErrUsed)
-}
-
-func (s *Store) locked() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return !s.until.IsZero() && s.moment().Before(s.until)
-}
-
-func (s *Store) reject(reason error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.moment()
-	if !s.until.IsZero() && now.Before(s.until) {
-		return ErrLocked
+	if until > now.Unix() {
+		return "", ErrLocked
 	}
-	s.until = time.Time{}
-	s.fails++
-	if s.fails >= 5 {
-		s.fails = 0
-		s.until = now.Add(15 * time.Minute)
+	if until != 0 {
+		fails = 0
 	}
-	return reason
+	reason := ErrUsed
+	var agent string
+	if len(code) == 43 {
+		err = tx.QueryRowContext(ctx, `DELETE FROM tickets WHERE hash=? AND capabilities=? AND expires>? RETURNING agent`, hash(code), appTicket, now.Unix()).Scan(&agent)
+		if err == nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE app_lock SET fails=0, until=0 WHERE caller=?`, caller); err != nil {
+				return "", err
+			}
+			if err = tx.Commit(); err != nil {
+				return "", err
+			}
+			return agent, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		var expires int64
+		qerr := tx.QueryRowContext(ctx, `SELECT expires FROM tickets WHERE hash=? AND capabilities=?`, hash(code), appTicket).Scan(&expires)
+		if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
+			return "", qerr
+		}
+		if qerr == nil && expires <= now.Unix() {
+			reason = ErrExpired
+		}
+	}
+	fails++
+	lockUntil := int64(0)
+	if fails >= 5 {
+		fails = 0
+		lockUntil = now.Add(15 * time.Minute).Unix()
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE app_lock SET fails=?, until=? WHERE caller=?`, fails, lockUntil, caller); err != nil {
+		return "", err
+	}
+	if err = tx.Commit(); err != nil {
+		return "", err
+	}
+	return "", reason
 }
 
 func (s *Store) moment() time.Time {
