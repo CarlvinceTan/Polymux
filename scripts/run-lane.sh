@@ -150,11 +150,32 @@ git -C "$REPO" fetch -q origin; TRIED=""
 # No in-process failover (it stacked units onto busy lanes): one lane per run. On a first failure the
 # brief goes back to $OPS/queue/ as "<title> (attempt 2)" and we exit; lane-guard --dispatch (chained
 # at exit) starts it on a free lane. A failed attempt 2+ goes to failures.tsv + NEEDS_CODY.
+# free_branch BRANCH WT: another worktree holding refs/heads/BRANCH makes `git worktree add` fail. If no live
+# process has its cwd in it (and we hold the branch lock), it is stale: a clean one is removed, a dirty one is
+# detached (changes kept). A local branch that has diverged from origin/BRANCH is kept as
+# cody-stale/<branch>-<sha7> and the local branch is moved to origin/BRANCH.
+free_branch() {
+  local b=$1 me=$2 p="" cur="" sha
+  while IFS= read -r line; do case $line in "worktree "*) cur=${line#worktree };; "branch refs/heads/$b") p=$cur;; esac; done \
+    < <(git -C "$REPO" worktree list --porcelain)
+  if [ -n "$p" ] && [ "$p" != "$me" ]; then
+    if lsof -d cwd -Fn 2>/dev/null | grep -qE "^n$p(/|\$)"; then echo "branch $b is checked out in $p by a live process; leaving it" >> "$LOG"
+    elif [ -z "$(git -C "$p" status --porcelain 2>/dev/null)" ]; then git -C "$REPO" worktree remove "$p" >> "$LOG" 2>&1 && echo "removed stale worktree $p (held $b)" >> "$LOG"
+    else git -C "$p" checkout -q --detach >> "$LOG" 2>&1 && echo "detached stale dirty worktree $p (held $b; changes kept)" >> "$LOG"; fi
+  fi
+  git -C "$REPO" show-ref -q "refs/heads/$b" && git -C "$REPO" show-ref -q "refs/remotes/origin/$b" || return 0
+  git -C "$REPO" merge-base --is-ancestor "refs/heads/$b" "refs/remotes/origin/$b" && return 0   # behind or equal: fine
+  git -C "$REPO" merge-base --is-ancestor "refs/remotes/origin/$b" "refs/heads/$b" && return 0   # only ahead: unpushed work, keep
+  sha=$(git -C "$REPO" rev-parse --short=7 "refs/heads/$b")
+  git -C "$REPO" worktree list --porcelain | grep -qx "branch refs/heads/$b" && { echo "branch $b diverged but is still checked out; leaving it" >> "$LOG"; return 0; }
+  git -C "$REPO" branch -q "cody-stale/$b-$sha" "refs/heads/$b" && git -C "$REPO" branch -q -f "$b" "refs/remotes/origin/$b" &&
+    echo "local $b diverged from origin; kept as cody-stale/$b-$sha, $b now at origin/$b" >> "$LOG"; }
 L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   B=$BRANCH; WT="$WTR/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
   TRIED="$TRIED $L"; BL=$(branch_lock_dir "$B")
   lock_take "$BL" || { ev failed "$L" "branch $B has another writer (pid $(lock_holder "$BL"))"; continue; }; BLS="$BLS $BL"
   ev running "$L" "$WT"
+  [ -d "$WT" ] || free_branch "$B" "$WT"
   if [ ! -d "$WT" ]; then  # reuse an existing local branch, else track origin/<B> (continuing a PR), else create from BASE
     if git -C "$REPO" show-ref -q "refs/heads/$B"; then git -C "$REPO" worktree add -q "$WT" "$B"
     elif git -C "$REPO" show-ref -q "refs/remotes/origin/$B"; then git -C "$REPO" worktree add -q -b "$B" "$WT" "origin/$B"
