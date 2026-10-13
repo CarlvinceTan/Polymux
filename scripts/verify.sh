@@ -1,6 +1,8 @@
 #!/bin/bash
-# The one build contract for agents: build+test macOS and iOS in this worktree, capture
-# screenshots/video, write .build/proof/summary.md. Exit 0 only when everything passed.
+# The one build contract for agents: Go server vet+test, Swift packages, macOS and iOS
+# build/test in this worktree, readiness UI test (proof = its XCUITest attachments), optional
+# allowed-files check (VERIFY_SCOPE="glob,glob" from the task brief's scope: line),
+# write .build/proof/summary.md. Exit 0 only when everything passed.
 # Builds wait for a slot in the shared lock dir (max_builds; 1 while ~/ops/pr-verify builds).
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd)   # scripts may live in another checkout (cloud PRs)
@@ -9,19 +11,16 @@ ROOT=$(git rev-parse --show-toplevel); cd "$ROOT"
 . .build/env
 # One verify per worktree at a time. An agent may start verify.sh in the background and exit,
 # then run-lane.sh starts its own; both use $DD and xcodebuild fails "build.db is locked".
-WL="$ROOT/.build/verify.lock"; WT0=$SECONDS
-until mkdir "$WL" 2>/dev/null; do
-  op=$(cat "$WL/pid" 2>/dev/null); [ -z "$op" ] && { sleep 2; op=$(cat "$WL/pid" 2>/dev/null); }
-  if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then
-    [ $((SECONDS-WT0)) -gt 2700 ] && { echo "verify: another verify (pid $op) still running here after 45m"; exit 1; }
-    echo "verify: waiting for verify pid $op in this worktree"; sleep 10
-  else rm -rf "$WL"; fi
+. "$SD/lanelib.sh"; WL="$ROOT/.build/verify.lock"; WT0=$SECONDS
+until lock_take "$WL"; do
+  [ $((SECONDS-WT0)) -gt 2700 ] && { echo "verify: another verify (pid $(lock_holder "$WL")) still running here after 45m"; exit 1; }
+  echo "verify: waiting for verify pid $(lock_holder "$WL") in this worktree"; sleep 10
 done
-echo $$ > "$WL/pid"
 P=.build/proof; L=.build/logs; R=.build/results
 VD="$ROOT/.build/verify-data"; rm -rf "$P" "$R" "$VD"; mkdir -p "$P" "$L" "$R" "$VD"
-export POLYMUX_DATA_DIR="$VD" POLYMUX_SEED=1   # own app data + seeded sessions per worktree
-export TEST_RUNNER_POLYMUX_DATA_DIR="$VD" TEST_RUNNER_POLYMUX_SEED=1 SIMCTL_CHILD_POLYMUX_DATA_DIR="$VD" SIMCTL_CHILD_POLYMUX_SEED=1
+# Own app data per worktree; the seed switch is the app launch argument --verify-fixture
+# (verify-polymux-features.md Part 2), passed by ReadinessTests, not an env var.
+export POLYMUX_DATA_DIR="$VD" TEST_RUNNER_POLYMUX_DATA_DIR="$VD" SIMCTL_CHILD_POLYMUX_DATA_DIR="$VD"
 LOCKS=$(python3 "$SD/lanes.py" get lock_dir); MAX=${VERIFY_MAX_BUILDS:-$(python3 "$SD/lanes.py" get max_builds)}
 mkdir -p "$LOCKS"; SLOT=""; VPID=""
 cleanup() { [ -n "$VPID" ] && kill -INT "$VPID" 2>/dev/null
@@ -36,8 +35,7 @@ acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
     if :; then
       for i in $(seq 1 "$m"); do
         s="$LOCKS/slot$i"
-        if mkdir "$s" 2>/dev/null; then echo $$ > "$s/pid"; echo "$ROOT" > "$s/wt"; SLOT=$s; return; fi
-        kill -0 "$(cat "$s/pid" 2>/dev/null)" 2>/dev/null || rm -rf "$s"
+        if lock_take "$s"; then echo "$ROOT" > "$s/wt"; SLOT=$s; return; fi
       done
     fi
     [ $((SECONDS - t0)) -gt 7200 ] && { echo "verify: no build slot after 2h"; echo blocked > "$P/level"; exit 3; }
@@ -54,6 +52,13 @@ step() {  # step NAME cmd...
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
+scope_check() {  # every changed file must match one VERIFY_SCOPE glob
+  local bad=0 f g ok; for f in $(git diff --name-only "${TI_BASE:-origin/main}"...HEAD); do ok=0
+    for g in $(echo "$VERIFY_SCOPE" | tr ',' ' '); do case $f in $g) ok=1; break;; esac; done
+    [ $ok = 1 ] || { echo "outside scope: $f"; bad=1; }; done; return $bad; }
+[ -n "${VERIFY_SCOPE:-}" ] && { export -f scope_check; export VERIFY_SCOPE TI_BASE="${TI_BASE:-origin/main}"; step allowed-files bash -c scope_check; }
+[ -d apps/server ] && { step go-vet sh -c 'cd apps/server && go vet -tags sqlite_fts5 ./...'
+  step go-test sh -c 'cd apps/server && go test -tags sqlite_fts5 -count=1 ./...'; }
 python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }
 XC=(-derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
@@ -68,48 +73,36 @@ ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcsharedd
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1
 step ios-$ACT xcodebuild $ACT -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination "id=$SIM_UDID" $([ $ACT = test ] && echo -resultBundlePath "$R/ios.xcresult") "${XC[@]}"
-# Readiness: a UI test waits on accessibility ids (sidebar.sessions + seeded rows), never sleeps.
+# Readiness: a UI test waits on chats.list + all 12 sidebar.row.<id> and the plan's waits, never sleeps.
 READY=unavailable; UT=apps/Polymux/PolymuxUITests/ReadinessTests.swift
 if [ -f "$UT" ]; then step ios-ready xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination "id=$SIM_UDID" -only-testing:PolymuxUITests/ReadinessTests -resultBundlePath "$R/ready.xcresult" "${XC[@]}"
   grep -q '^| ios-ready | PASS' <(printf '%s\n' "${ROWS[@]}") && READY=yes || READY=no
 else echo "verify: readiness unavailable (no $UT; see scripts/templates/ReadinessTests.swift); caps level below UI-verified"; fi
-rm -rf "$SLOT"; SLOT=""   # heavy work done; media capture doesn't need the slot
-# Media: iOS sim screenshots + short video, macOS screenshot, XCUITest attachments.
-APP=$(find "$DD/Build/Products" -path "*iphonesimulator/*.app" -maxdepth 3 | head -1)
-if [ -n "$APP" ]; then
-  xcrun simctl install "$SIM_UDID" "$APP" >/dev/null 2>&1
-  BID=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Info.plist" 2>/dev/null)
-  xcrun simctl io "$SIM_UDID" recordVideo --codec=h264 --force "$P/ios.mp4" >"$L/video.log" 2>&1 & VPID=$!
-  xcrun simctl launch "$SIM_UDID" "$BID" >/dev/null 2>&1; sleep 6
-  xcrun simctl io "$SIM_UDID" screenshot "$P/ios-1.png" >/dev/null 2>&1; sleep 6
-  xcrun simctl io "$SIM_UDID" screenshot "$P/ios-2.png" >/dev/null 2>&1
-  kill -INT $VPID; wait $VPID 2>/dev/null; VPID=""
-fi
-MAC=$(find "$DD/Build/Products" -path "*Debug/*.app" -maxdepth 3 | grep -v iphone | head -1)
-if [ -n "$MAC" ]; then open -n --env POLYMUX_DATA_DIR="$VD" --env POLYMUX_SEED=1 "$MAC" 2>/dev/null; sleep 6
-  screencapture -x "$P/macos.png" 2>"$L/screencapture.log"
-  screencapture -x -v -V 8 "$P/macos.mov" >>"$L/screencapture.log" 2>&1
-  pkill -f "$MAC/Contents/MacOS" 2>/dev/null; fi
+rm -rf "$SLOT"; SLOT=""
+# Proof = XCUITest attachments (readiness screenshots taken after every wait held). No sleep-N
+# simctl shots and no macOS screencapture (unreliable over SSH on cvmini).
 for r in mac ios ready; do [ -d "$R/$r.xcresult" ] && xcrun xcresulttool export attachments \
   --path "$R/$r.xcresult" --output-path "$P/att-$r" >/dev/null 2>&1; done
+[ -d "$P/att-ready" ] && find "$P/att-ready" -name '*.png' | while read -r f; do cp "$f" "$P/ready-$(basename "$f")"; done
+[ -f "$P/att-ready/ready.json" ] && cp "$P/att-ready/ready.json" "$P/ready.json"
 grep -hE "error: .*(failed|XCTAssert)|Test Case .* failed" "$L"/*.log | sort -u | head -20 > "$P/failures.txt"
 MEDIA=$(cd "$P" && ls *.png *.mp4 *.mov 2>/dev/null | tr '\n' ' ')
 # Verification level (exact names): UI-verified | unit-test-verified | build-only | blocked | failed
 ok() { printf '%s\n' "${ROWS[@]}" | grep -q "^| $1 | PASS | [1-9]"; }
 LEVEL=build-only; ok packages && LEVEL=unit-test-verified
-{ [ $READY = yes ] || ok ios-test; } && ls "$P"/*.png >/dev/null 2>&1 && LEVEL=UI-verified
+[ $READY = yes ] && ls "$P"/ready-*.png >/dev/null 2>&1 && LEVEL=UI-verified   # readiness is required
 [ $FAIL = 1 ] && LEVEL=failed
 echo $LEVEL > "$P/level"
 { echo "## verify.sh: $([ $FAIL = 0 ] && echo PASS || echo FAIL)"
   echo "commit \`$(git rev-parse --short HEAD)\` on $(hostname -s), $(date '+%F %T %Z'), worktree $WT_NAME"
-  echo "level: **$LEVEL**, ready (sidebar + seeded sessions): $READY"
+  echo "level: **$LEVEL**, ready (chats.list + 12 sidebar rows + waits): $READY"
   echo; echo "| step | result | tests | time |"; echo "|---|---|---|---|"; printf '%s\n' "${ROWS[@]}"
-  echo; echo "media: ${MEDIA:-none (see logs; Screen Recording permission?)}"
+  echo; echo "media: ${MEDIA:-none (readiness test attachments only)}"
   [ -s "$P/failures.txt" ] && { echo; echo '```'; cat "$P/failures.txt"; echo '```'; }
 } > "$P/summary.md"
-BRN=$(git rev-parse --abbrev-ref HEAD); [ "$BRN" = HEAD ] && { git merge-base --is-ancestor origin/main HEAD 2>/dev/null && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && BRN=main || BRN="detached-$(git rev-parse --short HEAD)"; }
-EV="$HOME/verify-evidence/$(echo "$BRN" | tr / -)/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$EV"
+# Evidence layout (verify-polymux-features.md): ~/verify-evidence/<worktree>/<run-id>
+EV="$HOME/verify-evidence/$WT_NAME/$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)"; mkdir -p "$EV"
 cp -R "$P" "$EV/proof"; cp -R "$L" "$EV/logs"
 for x in "$R"/*.xcresult; do [ -d "$x" ] && xcrun xcresulttool get test-results summary --path "$x" \
   > "$EV/$(basename "$x" .xcresult)-summary.json" 2>/dev/null; done

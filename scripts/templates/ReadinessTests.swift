@@ -1,22 +1,63 @@
 // Template for apps/Polymux/PolymuxUITests/ReadinessTests.swift (app PR, not infra).
-// verify.sh treats a run as "ready" only when this passes. It needs the app to:
-//  - read POLYMUX_DATA_DIR (own data dir per worktree) and POLYMUX_SEED=1 (load fixture sessions),
-//  - tag the sidebar list `sidebar.sessions` and each row `session.row.<id>`.
+// verify.sh grants UI-verified only when this passes; its screenshots are the proof media.
+// Identifiers and waits follow /workspace/polymux-merge/verify-polymux-features.md:
+//  - launch argument --verify-fixture (DEBUG seed: 6 agents, 12 sessions), POLYMUX_DATA_DIR per worktree,
+//  - list `chats.list`, rows `sidebar.row.<threadID>` (all 12 seeded ids),
+//  - optional server health (POLYMUX_VERIFY_PORT), hidden `app.status` value (connected=1, cache=warm),
+//  - no activity indicators / "Loading" labels for 2 polls, app running in the foreground.
+// Each wait's elapsed ms goes to ready.json (attachment) for ~/verify-evidence/<worktree>/<run-id>/.
 import XCTest
 
 final class ReadinessTests: XCTestCase {
+    static let seededIDs = ["t-chief", "t-aria", "t-milo", "t-nova", "t-long", "t-stream", "t-approval",
+                            "grp-trip", "t-media", "t-activity", "t-fern", "grp-empty"]
+    var waits: [String: Int] = [:]
+
+    func timed(_ name: String, timeout: TimeInterval = 30, _ ok: () -> Bool) {
+        let t0 = Date()
+        while !ok() {
+            if Date().timeIntervalSince(t0) > timeout { XCTFail("readiness wait '\(name)' timed out"); return }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        waits[name] = Int(Date().timeIntervalSince(t0) * 1000)
+    }
+
     func testSidebarAndSeededSessionsLoad() throws {
         let app = XCUIApplication()
         let env = ProcessInfo.processInfo.environment
         app.launchEnvironment["POLYMUX_DATA_DIR"] = env["POLYMUX_DATA_DIR"]
-        app.launchEnvironment["POLYMUX_SEED"] = "1"
+        app.launchArguments += ["--verify-fixture"]
+        if let port = env["POLYMUX_VERIFY_PORT"] {
+            app.launchArguments += ["-PolymuxServer", "http://127.0.0.1:\(port)"]
+            timed("server.health") {
+                var ok = false; let s = DispatchSemaphore(value: 0)
+                URLSession.shared.dataTask(with: URL(string: "http://127.0.0.1:\(port)/health")!) { _, r, _ in
+                    ok = (r as? HTTPURLResponse)?.statusCode == 200; s.signal() }.resume()
+                _ = s.wait(timeout: .now() + 2); return ok
+            }
+        }
         app.launch()
-        let sidebar = app.descendants(matching: .any)["sidebar.sessions"]
-        XCTAssertTrue(sidebar.waitForExistence(timeout: 30), "sidebar.sessions never appeared")
-        let rows = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'session.row.'"))
-        let loaded = expectation(for: NSPredicate(format: "count >= 3"), evaluatedWith: rows)
-        wait(for: [loaded], timeout: 30)
+        timed("foreground") { app.wait(for: .runningForeground, timeout: 1) }
+        let any = app.descendants(matching: .any)
+        timed("chats.list") { any["chats.list"].exists }
+        timed("sidebar.rows.12") { Self.seededIDs.allSatisfy { any["sidebar.row.\($0)"].exists } }
+        let rows = any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.' AND NOT identifier CONTAINS '.unread'"))
+        XCTAssertEqual(rows.count, Self.seededIDs.count, "sidebar shows \(rows.count) rows, seed has 12")
+        let status = any["app.status"]
+        if status.exists {
+            timed("stream.connected") { (status.value as? String ?? "").contains("connected=1") }
+            timed("cache.warm") { (status.value as? String ?? "").contains("cache=warm") }
+        }
+        var quiet = 0
+        timed("no.spinner") {
+            let busy = app.activityIndicators.count > 0 ||
+                any.matching(NSPredicate(format: "label CONTAINS 'Loading'")).count > 0
+            quiet = busy ? 0 : quiet + 1; return quiet >= 2
+        }
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "ready"; shot.lifetime = .keepAlways; add(shot)
+        let json = XCTAttachment(data: try JSONSerialization.data(withJSONObject: waits, options: [.sortedKeys]),
+                                 uniformTypeIdentifier: "public.json")
+        json.name = "ready.json"; json.lifetime = .keepAlways; add(json)
     }
 }
