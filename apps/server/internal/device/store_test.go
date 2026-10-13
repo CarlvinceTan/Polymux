@@ -2,10 +2,14 @@ package device
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,6 +202,166 @@ func TestExpiredCode(t *testing.T) {
 	if _, err := s.Enroll(t.Context(), strings.Repeat("x", 43), "Mac", []string{"native"}); err == nil {
 		t.Fatal("unknown ticket accepted")
 	}
+}
+
+func appCode(t *testing.T, s *Store, urls []string) string {
+	t.Helper()
+	uri, err := s.IssueApp(t.Context(), urls, "assistant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(uri)
+	if err != nil || len(u.Query().Get("c")) != 43 {
+		t.Fatal(uri)
+	}
+	return uri
+}
+
+func TestPairCodeSingleUse(t *testing.T) {
+	t.Parallel()
+	s := openStore(t)
+	urls := []string{"https://mac.example:7339"}
+	first := appCode(t, s, urls)
+	code := codeOf(t, appCode(t, s, urls))
+	if _, err := s.RedeemApp(t.Context(), "peer", codeOf(t, first)); !errors.Is(err, ErrUsed) {
+		t.Fatal(err)
+	}
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.RedeemApp(context.Background(), "peer", code); err == nil {
+				wins.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins.Load() != 1 {
+		t.Fatalf("winners = %d", wins.Load())
+	}
+}
+
+func TestPairCodeExpiry(t *testing.T) {
+	t.Parallel()
+	s := openStore(t)
+	now := time.Unix(1_700_000_000, 0)
+	s.clock = func() time.Time { return now }
+	urls := []string{"https://mac.example:7339"}
+	uri := appCode(t, s, urls)
+	now = now.Add(9 * time.Minute)
+	if _, err := s.RedeemApp(t.Context(), "peer", codeOf(t, uri)); err != nil {
+		t.Fatal(err)
+	}
+	uri = appCode(t, s, urls)
+	now = now.Add(10*time.Minute + time.Second)
+	if _, err := s.RedeemApp(t.Context(), "peer", codeOf(t, uri)); !errors.Is(err, ErrExpired) {
+		t.Fatal(err)
+	}
+}
+
+func TestQRPayloadNoLoopback(t *testing.T) {
+	t.Parallel()
+	s := openStore(t)
+	uri := appCode(t, s, []string{"https://127.0.0.1:7339", "https://[::1]:7339", "https://localhost:7339", "https://mac.example:7339"})
+	q, _ := url.Parse(uri)
+	sum := sha256.Sum256(s.issuer.Raw)
+	params := q.Query()
+	if params.Get("v") != "2" || params.Get("fp") != hex.EncodeToString(sum[:]) || len(params["u"]) != 1 || !strings.Contains(params["u"][0], "mac.example") {
+		t.Fatal(uri)
+	}
+	if strings.Contains(uri, "127.0.0.1") || strings.Contains(uri, "localhost") || strings.Contains(uri, "::1") || strings.Contains(uri, "%3A%3A1") {
+		t.Fatal(uri)
+	}
+}
+
+func TestPairLockout(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	now := time.Unix(1_700_000_000, 0)
+	open := func() *Store {
+		t.Helper()
+		s, err := Open(t.Context(), dir, "127.0.0.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.clock = func() time.Time { return now }
+		return s
+	}
+	s := open()
+	urls := []string{"https://mac.example:7339"}
+	code := codeOf(t, appCode(t, s, urls))
+	bad := strings.Repeat("b", 43)
+	for range 3 {
+		if _, err := s.RedeemApp(t.Context(), "a", bad); !errors.Is(err, ErrUsed) {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	s = open()
+	for range 2 {
+		if _, err := s.RedeemApp(t.Context(), "a", bad); !errors.Is(err, ErrUsed) {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.RedeemApp(t.Context(), "a", code); !errors.Is(err, ErrLocked) {
+		t.Fatal(err)
+	}
+	if agent, err := s.RedeemApp(t.Context(), "b", code); err != nil || agent != "assistant" {
+		t.Fatalf("other caller: %v", err)
+	}
+	now = now.Add(15*time.Minute + time.Second)
+	s.Close()
+	s = open()
+	defer s.Close()
+	if agent, err := s.RedeemApp(t.Context(), "a", codeOf(t, appCode(t, s, urls))); err != nil || agent != "assistant" {
+		t.Fatal(err)
+	}
+}
+
+func TestLinkHasNoPolymuxHost(t *testing.T) {
+	t.Parallel()
+	s := openStore(t)
+	if _, err := s.IssueApp(t.Context(), nil, "assistant"); !errors.Is(err, ErrNoAddress) {
+		t.Fatal(err)
+	}
+	if _, err := s.IssueApp(t.Context(), []string{"https://connect.polymux.com"}, "assistant"); !errors.Is(err, ErrNoAddress) {
+		t.Fatal(err)
+	}
+	uri := appCode(t, s, []string{"https://connect.polymux.com", "https://mac.example:7339"})
+	if strings.Contains(strings.ToLower(uri), "polymux.com") {
+		t.Fatal(uri)
+	}
+}
+
+func TestEnrollSkipsAppTicket(t *testing.T) {
+	t.Parallel()
+	s := openStore(t)
+	code := codeOf(t, appCode(t, s, []string{"https://mac.example:7339"}))
+	_, err := s.Enroll(t.Context(), code, "Mac", []string{"native"})
+	if err == nil || err.Error() != "pairing code expired or already used" {
+		t.Fatal(err)
+	}
+	if _, err := s.RedeemApp(t.Context(), "peer", code); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIdentityRejectsUnspecified(t *testing.T) {
+	t.Parallel()
+	if _, err := Open(t.Context(), t.TempDir(), "0.0.0.0"); err == nil {
+		t.Fatal("accepted unspecified host")
+	}
+}
+
+func codeOf(t *testing.T, uri string) string {
+	t.Helper()
+	u, err := url.Parse(uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Query().Get("c")
 }
 
 func TestCapabilities(t *testing.T) {

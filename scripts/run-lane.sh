@@ -53,7 +53,7 @@ fi
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
-TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-32 | sed 's/-$//')
+TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32 | sed 's/-*$//')   # '# SA1: x' -> sa1-x (no leading '-')
 ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
 prompt() { echo "Task: $TASK
 Rules: work only in this worktree. Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
@@ -129,6 +129,12 @@ for L in $(cfg order "$LANE"); do
     elif git -C "$REPO" show-ref -q "refs/remotes/origin/$B"; then git -C "$REPO" worktree add -q -b "$B" "$WT" "origin/$B"
     else git -C "$REPO" worktree add -q -b "$B" "$WT" "$BASE"; fi >> "$LOG" 2>&1 || { ev failed "$L" "worktree add failed"; continue; }
   fi
+  if git -C "$REPO" show-ref -q "refs/remotes/origin/$B" && [ "$(git -C "$WT" rev-parse HEAD)" != "$(git -C "$REPO" rev-parse "origin/$B")" ]; then
+    if git -C "$WT" merge-base --is-ancestor HEAD "origin/$B"; then   # local branch behind origin: fast-forward, never reset
+      git -C "$WT" merge -q --ff-only "origin/$B" >> "$LOG" 2>&1 && echo "fast-forwarded $B to origin/$B" >> "$LOG" || { ev failed "$L" "fast-forward of $B failed"; continue; }
+    elif ! git -C "$REPO" merge-base --is-ancestor "origin/$B" "$(git -C "$WT" rev-parse HEAD)"; then
+      ev failed "$L" "local $B and origin/$B have diverged; not force-pushing"; continue; fi
+  fi
   [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash "$SD/wt-setup.sh") >> "$LOG" 2>&1
   [ -n "${LANE_PREV:-}" ] && sleep "${LANE_STAGGER:-20}"   # stagger agent launches (keychain race)
   LANE_PREV=$L; FREED=$L
@@ -157,11 +163,15 @@ for L in $(cfg order "$LANE"); do
   LV=$(cat "$WT/.build/proof/level" 2>/dev/null || echo build-only); DRAFT=""
   case $LV in UI-verified|unit-test-verified) ;; build-only) ;; *) ev failed "$L" "level $LV"; continue;; esac
   [ "$LV" = build-only ] && { DRAFT=--draft; BODY="**Verification level: build-only, so this is NOT ready for review (draft).**"$'\n\n'"$BODY"; }
+  BODY+=$'\n\n'"Release Notes:"$'\n\n'"- N/A"   # PR validator: body (and lane comments) end with this
   # Continuing an existing PR (--branch with an open PR): no new PR; comment the new head + summary on it.
-  EX=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG")
+  EX=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG") ||
+    { ev failed "$L" "gh pr list failed (pushed $B; no PR created or commented)"; continue; }
   if [ -n "$EX" ]; then URL=$EX; NH=$(git -C "$WT" rev-parse HEAD)
     (cd "$WT" && gh pr comment "$URL" -R "$SLUG_REPO" --body "Lane update: new head $NH (from $START)"$'\n\n'"$BODY") >> "$LOG" 2>&1 ||
       echo "warn: comment on existing PR $URL failed (push succeeded)" | tee -a "$LOG"
+    [ -n "$DRAFT" ] && { (cd "$WT" && gh pr ready --undo "$URL" -R "$SLUG_REPO") >> "$LOG" 2>&1 ||
+      echo "warn: could not mark existing PR $URL as draft (build-only)" | tee -a "$LOG"; }
   else
     URL=$(cd "$WT" && gh pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG")
     [ -n "$URL" ] || { ev failed "$L" "gh pr create failed"; continue; }
