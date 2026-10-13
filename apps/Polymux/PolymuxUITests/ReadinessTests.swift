@@ -13,11 +13,17 @@ final class ReadinessTests: XCTestCase {
                             "grp-trip", "t-media", "t-activity", "t-fern", "grp-empty"]
     var waits: [String: Int] = [:]
 
+    override func setUp() {
+        super.setUp()
+        continueAfterFailure = false
+    }
+
     func testApprovalStates() {
         for theme in ["light", "dark"] {
             let app = XCUIApplication()
             app.launchArguments = ["--verify-approval"] + (theme == "dark" ? ["--approval-dark"] : [])
             app.launch()
+            capture(app, theme: theme, state: "launch")
             let option = app.buttons["A. Plan my day"]
             XCTAssertTrue(option.waitForExistence(timeout: 10))
             capture(app, theme: theme, state: "unanswered")
@@ -64,6 +70,7 @@ final class ReadinessTests: XCTestCase {
         }
         app.launch()
         timed("foreground") { app.wait(for: .runningForeground, timeout: 1) }
+        capture(app, theme: "system", state: "sidebar-launch")
         let any = app.descendants(matching: .any)
         timed("chats.list") { any["chats.list"].exists }
         var observed = Set<String>()
