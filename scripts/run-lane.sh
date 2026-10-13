@@ -129,6 +129,11 @@ echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
 UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE; CF="$OPS/chain-fails"
 [ -f "$CF" ] && rm -f "$CF"; mkdir -p "$CF"   # old global streak file -> per-task dir
 base_title() { echo "$1" | sed -E 's/ \(attempt [0-9]+\)$//'; }
+deferred_hit() {  # $1 base title, $2 slug: print the $OPS/deferred/*.task (parked by policy, e.g. dogfood-first) that is this unit
+  local f t st; for f in "$OPS"/deferred/*.task; do [ -f "$f" ] || continue
+    st=$(basename "$f" .task | sed -E 's/^[0-9]+-+//; s/-retry(-[0-9]+)?$//')
+    t=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|queue-note):' "$f" | head -1)
+    { [ "$(base_title "$t")" = "$1" ] || [ "$st" = "$2" ]; } && { echo "$f"; return 0; }; done; return 1; }
 hold_retries() {  # move queued retries of this task to queue-hold/
   local f t bt; bt=$(base_title "$TITLE"); mkdir -p "$OPS/queue-hold"
   for f in "$OPS"/queue/*.task; do [ -f "$f" ] || continue
@@ -291,18 +296,26 @@ done
 BT=$(base_title "$TITLE"); AT=$(echo "$TITLE" | sed -nE 's/.* \(attempt ([0-9]+)\)$/\1/p'); AT=${AT:-1}
 if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to place on a free lane
   QD="$OPS/queue"; mkdir -p "$QD"; DUP=""
-  for f in "$QD"/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have re-queued it
-    [ "$(base_title "$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
+  for f in "$QD"/*.task "$OPS"/deferred/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have written the retry
+    t=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)
+    case $f in "$OPS"/deferred/*) echo "$t" | grep -qE ' \(attempt [0-9]+\)$' || continue;; esac   # deferred/: only retries, not the parked brief
+    [ "$(base_title "$t")" = "$BT" ] && DUP=$f; done
+  DEF=$(deferred_hit "$BT" "$SLUG") && QD="$OPS/deferred"   # deferred by policy: park the retry beside it, never back in queue/
   if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)-$SLUG-retry.task"
     QB=$(mktemp); { echo "$BT (attempt 2)"; echo "needs: ${NEEDS:-none}"; echo "expected_min: $EXP"   # title first (queue-write rule)
       [ -n "$TASKF" ] && grep -E '^(unit|scope|card|after):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
       echo "$TASK" | tail -n +2; } > "$QB"
     sleep 1   # file newer than our events (lane-guard drop rule)
-    if QW --name "$(basename "$Q")" "$QB" >/dev/null 2>"$QB.err"; then ev requeued "$L" "failed on $L; brief back in queue ($Q)"
+    if [ -n "$DEF" ]; then
+      if QW --dir "$QD" --name "$(basename "$Q")" "$QB" >/dev/null 2>"$QB.err"; then ev deferred "$L" "failed on $L; unit is deferred ($(basename "$DEF")), retry parked in deferred/ ($Q)"
+        echo "$(date '+%F %T') $SLUG: retry parked in deferred/ ($(basename "$Q")), matches $(basename "$DEF")" >> "$OPS/logs/dispatch-chain.log"
+      else ev failed "$L" "deferred retry write rejected: $(tr '\n' ' ' < "$QB.err" | cut -c1-200)"; fi
+    elif QW --name "$(basename "$Q")" "$QB" >/dev/null 2>"$QB.err"; then ev requeued "$L" "failed on $L; brief back in queue ($Q)"
     else ev failed "$L" "requeue rejected: $(tr '\n' ' ' < "$QB.err" | cut -c1-200)"
       echo "$(date '+%F %T') $ID: requeue of '$BT' rejected by queue-write: $(tr '\n' ' ' < "$QB.err")" >> "$OPS/NEEDS_CODY"; fi
     rm -f "$QB" "$QB.err"
   else ev requeued "$L" "failed on $L; already re-queued ($DUP)"; fi
+  [ -n "$DEF" ] && { echo "DEFERRED after: $L -> $QD (unit is deferred by policy; not re-queued)"; exit 1; }
   echo "REQUEUED after: $L -> $OPS/queue (lane-guard dispatches it to a free lane)"; exit 1; fi
 ERR=$(tail -n 5 "$LOG" | tr '\t\n' '  ')
 printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$TITLE" "${TRIED# }" "$ERR" "$LOG" >> "$OPS/failures.tsv"
