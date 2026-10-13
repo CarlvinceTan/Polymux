@@ -14,7 +14,7 @@ Polymux is a local desktop application, but the services and models you connect 
 
 ## Local data
 
-Chats, run history, workspace state, memory, and connected-service configuration are stored locally by the desktop app. Cloud storage, messaging services, and hosted model providers receive only the information needed for the action you request through that service.
+Polymux has no account to sign in to. Chats, run history, workspace state, memory, and connected-service configuration stay on your devices. An agent’s MCP connections are yours. Cloud storage, messaging services, and hosted model providers receive only the information needed for the action you request through that service.
 
 Read the full [privacy policy](/privacy-policy/) for the current product and browser-extension details.
 
