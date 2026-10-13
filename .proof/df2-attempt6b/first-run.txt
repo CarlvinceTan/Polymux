@@ -1,0 +1,6 @@
+  PID ELAPSED STAT COMMAND
+82939   05:27 S    /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl diagnose -l -b --timeout=600 --log-option=--last --log-option=3m --output=/Users/carlvincetan/code/wt/lane3-df2-fix-pr-39-ar-at-785d9dd-inli/.build/results/ios.xcresult/Staging/1_Test/Diagnostics/simctl_diagnostics --no-archive --udid=2C7277CF-3B7D-4021-BDAE-6B8AF165A0AD
+
+/Users/carlvincetan/code/wt/lane3-df2-fix-pr-39-ar-at-785d9dd-inli/apps/Polymux/PolymuxUITests/ReadinessTests.swift:55: error: -[PolymuxUITests.ReadinessTests testInlineActivity] : failed - readiness wait 'activity.rows.light' timed out
+/Users/carlvincetan/code/wt/lane3-df2-fix-pr-39-ar-at-785d9dd-inli/apps/Polymux/PolymuxUITests/ReadinessTests.swift:42: error: -[PolymuxUITests.ReadinessTests testInlineActivity] : Failed to tap Button (First Match): No matches found for first query match sequence: `Descendants matching type Button` -> `Elements matching predicate 'label CONTAINS "Saved memory Rollout plan"'`, given input App element pid: 73898
+Diagnostic subprocess stopped after the suite completed; no tests bypassed.
