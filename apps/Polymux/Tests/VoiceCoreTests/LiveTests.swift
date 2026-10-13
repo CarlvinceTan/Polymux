@@ -82,9 +82,12 @@ private struct LiveRig {
 
 @MainActor
 private func settle(_ condition: () -> Bool) async {
-    for _ in 0..<200 {
-        if condition() { return }
-        await Task.yield()
+    // Fixed yields are not a wall-clock wait: under build load the store's main-actor tasks
+    // can miss the window, so poll on a deadline instead.
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while !condition() {
+        guard !Task.isCancelled, ContinuousClock.now < deadline else { break }
+        try? await Task.sleep(for: .milliseconds(2))
     }
     #expect(condition())
 }
