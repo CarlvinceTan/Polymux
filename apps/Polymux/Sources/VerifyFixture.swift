@@ -30,6 +30,26 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
         configuration.protocolClasses = [VerifyFixture.self]
         return URLSession(configuration: configuration)
     }
+    static let activity: [Event] = {
+        let thread = "t-activity"
+        let at = "2026-10-13T12:00:00Z"
+        let message = Message(id: "fixture-request", threadID: thread, role: "user",
+                              parts: [Part(kind: "text", text: "Review the release and remember the rollout plan.")],
+                              createdAt: at, status: "done", seq: 1)
+        let rows = [
+            Activity(kind: "tool.called", verb: "Checked", objectLabel: "release status", iconOrAgentID: "terminal", at: at),
+            Activity(kind: "agent.messaged", verb: "Messaged", at: at, agentIDs: ["t-chief", "t-milo"]),
+            Activity(kind: "tool.called", verb: "Searched", iconOrAgentID: "magnifyingglass", at: at),
+            Activity(kind: "tool.called", verb: "Searched", iconOrAgentID: "magnifyingglass", at: at),
+            Activity(kind: "tool.called", verb: "Searched", iconOrAgentID: "magnifyingglass", at: at),
+            Activity(kind: "memory.created", verb: "Saved", objectID: "rollout-plan", objectLabel: "Rollout plan", at: at)
+        ]
+        return [Event(seq: 1, conversationID: thread, type: "message.done", message: message, createdAt: at)]
+            + rows.enumerated().map { index, row in
+                Event(seq: Int64(index + 2), conversationID: thread, type: "activity", agentID: "t-chief",
+                      createdAt: at, payload: row)
+            }
+    }()
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -39,6 +59,12 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
             case "agents": data = try JSONEncoder().encode(Self.agents)
             case "threads": data = try JSONEncoder().encode(Self.threads)
             case "settings": data = try JSONEncoder().encode(Settings(appearance: "system", sidebarWidth: 360))
+            case "messages": data = try JSONEncoder().encode([Message]())
+            case "events":
+                let after = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first { $0.name == "after" }?.value.flatMap(Int64.init) ?? 0
+                let seeded = request.url?.path.contains("/t-activity/") == true ? Self.activity : []
+                data = try JSONEncoder().encode(seeded.filter { $0.seq > after })
             default: data = Data("{}".utf8)
             }
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
