@@ -53,7 +53,7 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "device" {
 		return runDevice(os.Args[2:])
 	}
-	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "unauthenticated backend IP:port; should stay on loopback (defaults to 127.0.0.1:7337)")
+	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "authenticated backend IP:port (loopback, private LAN or Tailscale; defaults to 127.0.0.1:7337)")
 	dev := flag.Bool("dev", os.Getenv("POLYMUX_DEV") == "1", "development mode (loopback is always allowed)")
 	dir := flag.String("data", os.Getenv("POLYMUX_DATA_DIR"), "data directory")
 	deviceListen := flag.String("device-listen", "", "TLS device listener (defaults to backend port + 2)")
@@ -128,6 +128,9 @@ func run() error {
 		return err
 	}
 	defer pairings.Close()
+	if _, err := localCredential(ctx, pairings, *dir); err != nil {
+		return err
+	}
 	devices := device.New(pairings)
 	defer devices.Close()
 	deviceSocket, err := net.Listen("tcp", *deviceListen)
@@ -203,7 +206,7 @@ func run() error {
 			return err
 		}
 	}
-	api, err := server.New(ctx, s, server.Config{DataDir: *dir, Model: model, Definitions: definitions, Factory: runtime, Index: index, Log: log, Push: sender, Devices: devices})
+	api, err := server.New(ctx, s, server.Config{MergeLane: strings.TrimSpace(os.Getenv("POLYMUX_MERGE_LANE")), DataDir: *dir, Model: model, Definitions: definitions, Factory: runtime, Index: index, Log: log, Push: sender, Devices: devices})
 	if err != nil {
 		return err
 	}
@@ -213,7 +216,7 @@ func run() error {
 			return err
 		}
 	}
-	httpServer := &http.Server{Addr: *listen, Handler: api, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	httpServer := &http.Server{Addr: *listen, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
@@ -302,9 +305,11 @@ func instanceName(hostname string) string {
 }
 
 func defaults(model string) []agentruntime.Definition {
+	coding := agentruntime.Definition{Agent: contract.Agent{ID: "coding", Name: "Coding", Role: "Software engineer", Model: model}, Prompt: "You are a pragmatic software engineer. Make focused changes, preserve unrelated work, and verify your results. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "write", "edit", "bash", "find", "ls"}}
+	coding.Workspace = strings.TrimSpace(os.Getenv("POLYMUX_CODING_REPO"))
 	return []agentruntime.Definition{
 		{Agent: contract.Agent{ID: "assistant", Name: "Assistant", Role: "Personal assistant", Model: model}, Prompt: "You are Polymux, a helpful persistent personal assistant. Write replies as natural plain text without Markdown formatting. Be concise and candid. Tools have the user's OS permissions; use them only when needed to fulfill the user's request.", Tools: []string{"read", "write", "edit", "bash", "find", "ls"}},
 		{Agent: contract.Agent{ID: "research", Name: "Research", Role: "Research assistant", Model: model}, Prompt: "You are a careful research assistant. Distinguish verified facts from uncertainty and provide sources when available. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "bash", "find", "ls"}},
-		{Agent: contract.Agent{ID: "coding", Name: "Coding", Role: "Software engineer", Model: model}, Prompt: "You are a pragmatic software engineer. Make focused changes, preserve unrelated work, and verify your results. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "write", "edit", "bash", "find", "ls"}},
+		coding,
 	}
 }

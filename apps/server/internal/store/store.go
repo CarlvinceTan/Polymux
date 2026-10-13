@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +24,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	vec.Auto()
-	db, err := sql.Open("sqlite3", "file:"+path+"?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000")
+	db, err := sql.Open("sqlite3", "file:"+url.PathEscape(path)+"?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000")
 	if err != nil {
 		return nil, err
 	}
@@ -577,6 +578,9 @@ func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *co
 	if err == nil && event.Run != nil && endsChildren(event.Run.Status) {
 		err = cancelDescendants(ctx, tx, event.Run.ID)
 	}
+	if err == nil && event.Run != nil && Terminal(event.Run.Status) {
+		err = releaseSteers(ctx, tx, event.Run.ID)
+	}
 	return event, err
 }
 
@@ -809,12 +813,28 @@ func (s *Store) Accept(ctx context.Context, input SendInput) (contract.Message, 
 	if _, err := appendTx(ctx, tx, contract.Event{ConversationID: thread, Type: "message.done", MessageID: &m.ID}, &m); err != nil {
 		return m, false, err
 	}
-	work, err := json.Marshal(Work{Trigger: "message", Message: m, Targets: targets, Routing: input.Routing})
+	var parent *string
+	if len(targets) == 1 {
+		var id string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM runs WHERE thread_id=? AND agent_id=? AND status='running' ORDER BY rowid DESC LIMIT 1`, thread, targets[0]).Scan(&id)
+		if err == nil {
+			parent = &id
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return m, false, err
+		}
+	}
+	work, err := json.Marshal(Work{Trigger: "message", Message: m, Targets: targets, Routing: input.Routing, ParentRunID: parent})
 	if err != nil {
 		return m, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,thread_id,request,input) VALUES(?,?,?,?)`, request.ID, thread, string(encoded), string(work)); err != nil {
 		return m, false, err
+	}
+	if parent != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='steer' WHERE id=?`, request.ID); err != nil {
+			return m, false, err
+		}
+		return m, true, tx.Commit()
 	}
 	for _, target := range targets {
 		run := NewRun(request.ID, thread, target, "message")

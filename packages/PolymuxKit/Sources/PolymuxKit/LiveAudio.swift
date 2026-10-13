@@ -139,10 +139,13 @@ final class LiveWebSocket: LiveSocket {
     private let task: URLSessionWebSocketTask
     var closeReason: String? { task.closeReason.flatMap { String(data: $0, encoding: .utf8) } }
 
-    init(url: URL) {
+    init(url: URL, token: String? = nil) {
         session = URLSession(configuration: .ephemeral)
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         task = session.webSocketTask(with: request)
         task.resume()
     }

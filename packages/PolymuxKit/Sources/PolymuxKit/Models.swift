@@ -29,6 +29,13 @@ extension Message: Identifiable {
     }
 }
 extension Attachment: Identifiable {}
+extension Attachment {
+    /// The composer's file while the upload is still in flight. Server attachments never use file URLs.
+    public var localURL: URL? {
+        let file = URL(string: url)
+        return file?.isFileURL == true ? file : nil
+    }
+}
 extension SearchHit: Identifiable {
     public var id: String { message.id }
 }
@@ -69,6 +76,32 @@ public enum WireDate {
 
 public enum DeliveryFailure: Error, Sendable {
     case interrupted
+}
+
+/// A composer file handed to `ChatStore.send` before the server knows about it.
+public struct LocalFile: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let url: URL
+    public let name: String
+    public let kind: String
+    public let mimeType: String
+    public let size: Int64
+
+    public init(id: String = UUID().uuidString, url: URL, name: String? = nil, kind: String = "",
+                mimeType: String = "", size: Int64 = 0) {
+        self.id = id
+        self.url = url
+        self.name = name ?? url.lastPathComponent
+        self.kind = kind
+        self.mimeType = mimeType
+        self.size = size
+    }
+
+    /// The optimistic attachment the bubble renders until the upload replaces it.
+    public var placeholder: Attachment {
+        Attachment(id: id, kind: kind, name: name, mimeType: mimeType, size: size,
+                   url: url.absoluteString, indexingState: "pending")
+    }
 }
 
 public enum ClientError: LocalizedError, Sendable {

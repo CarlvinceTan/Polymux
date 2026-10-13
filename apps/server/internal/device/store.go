@@ -53,12 +53,14 @@ type Enrollment struct {
 }
 
 type Store struct {
-	db     *sql.DB
-	cert   tls.Certificate
-	mu     sync.Mutex
-	issuer *x509.Certificate
-	key    *ecdsa.PrivateKey
-	clock  func() time.Time
+	access   sync.Mutex
+	requests map[*responseGuard]string
+	db       *sql.DB
+	cert     tls.Certificate
+	mu       sync.Mutex
+	issuer   *x509.Certificate
+	key      *ecdsa.PrivateKey
+	clock    func() time.Time
 }
 
 func Open(ctx context.Context, dir, hostname string) (*Store, error) {
@@ -322,6 +324,8 @@ func (s *Store) List(ctx context.Context) ([]Pairing, error) {
 }
 
 func (s *Store) Revoke(ctx context.Context, id string) error {
+	s.access.Lock()
+	defer s.access.Unlock()
 	result, err := s.db.ExecContext(ctx, `UPDATE devices SET revoked=1 WHERE id=?`, id)
 	if err != nil {
 		return err
@@ -329,6 +333,13 @@ func (s *Store) Revoke(ctx context.Context, id string) error {
 	n, err := result.RowsAffected()
 	if err == nil && n != 1 {
 		return errors.New("device not found")
+	}
+	if err == nil {
+		for request, device := range s.requests {
+			if device == id {
+				request.revoke()
+			}
+		}
 	}
 	return err
 }
