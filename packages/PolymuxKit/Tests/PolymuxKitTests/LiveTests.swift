@@ -16,7 +16,7 @@ struct LiveTests {
         #expect(threads.contains { $0.id == "research" })
         let cache = try await CacheWork.open(url)
         try await cache.offMain { try $0.save(agents: agents, threads: threads) }
-        let chat = ChatStore(client: client, cache: cache, threadID: "research")
+        let chat = ChatStore(client: client, actor: LocalCacheActor(cache), threadID: "research")
         defer { chat.stop() }
         await chat.start()
         for _ in 0..<200 {
@@ -54,12 +54,13 @@ struct LiveTests {
         #expect(try await relaunched.offMain { try $0.cursor(threadID: "research") } == seq)
         #expect(try await relaunched.offMain { try $0.messages(threadID: "research") }.contains { $0.text == response })
         let offline = APIClient(baseURL: URL(string: "http://127.0.0.1:1")!)
-        let search = SearchStore(client: offline, cache: relaunched, threadID: "research")
+        let actor = LocalCacheActor(relaunched)
+        let search = SearchStore(client: offline, actor: actor, threadID: "research")
         search.query = "integration verified"
         await search.search()
         #expect(search.isOffline)
         #expect(search.results.contains { $0.message.text == response })
-        let offlineChat = ChatStore(client: offline, cache: relaunched, threadID: "research")
+        let offlineChat = ChatStore(client: offline, actor: actor, threadID: "research")
         await offlineChat.send(text: "Offline probe stays in this temporary cache.")
         #expect(offlineChat.messages.last?.status == "failed")
         let thirdLaunch = try await CacheWork.open(url)

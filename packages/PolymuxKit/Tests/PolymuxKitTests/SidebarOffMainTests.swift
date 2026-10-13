@@ -60,16 +60,22 @@ struct SidebarOffMainTests {
 
     @Test func burstOfEventsSavesAtMostFiveTimes() async throws {
         let rig = try await Rig()
-        for index in 1...100 {
-            let event = rig.event(seq: Int64(index + 1), threadID: "arlo", text: "Burst \(index)")
-            rig.sidebar.note(event)
-        }
+        try await noteBurst(rig)
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.unreadCount == 100)
         await rig.sidebar.settled()
         let saves = await rig.sidebar.cacheActor.saveCount
         #expect(saves <= 5)
         #expect(saves >= 1)
         #expect(try await rig.cache.offMain { try $0.threads() }.first { $0.id == "arlo" }?.unreadCount == 100)
+    }
+
+    @Test func burstWithoutAGapSavesMoreThanFiveTimes() async throws {
+        let rig = try await Rig()
+        rig.sidebar.saveGap = .zero
+        await rig.sidebar.cacheActor.setInstant(true)
+        try await noteBurst(rig)
+        await rig.sidebar.settled()
+        #expect(await rig.sidebar.cacheActor.saveCount > 5)
     }
 
     @Test func renameShowsTheNewTitleOnTheSameTurn() async throws {
@@ -95,34 +101,78 @@ struct SidebarOffMainTests {
     @Test func renameStaysVisibleWhileTheSaveIsStalled() async throws {
         let rig = try await Rig()
         await rig.sidebar.cacheActor.setStall(.milliseconds(70))
+        await rig.sidebar.cacheActor.setFailing(true)
         let started = ContinuousClock().now
         rig.sidebar.rename("arlo", to: "Arlo West")
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
         #expect(started.duration(to: ContinuousClock().now) < InstantUI.feedbackBudget)
         try await Task.sleep(for: .milliseconds(20))
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
-        await rig.sidebar.cacheActor.setFailing(true)
         await CacheWork.untilSaved(rig.sidebar)
         #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo")
         #expect(rig.sidebar.editIssues["arlo"] == "Couldn’t save the new name. Retry")
     }
 
+    @Test func failedEditKeepsTheRenameAndRetriesTheSave() async throws {
+        let rig = try await Rig()
+        await rig.sidebar.cacheActor.setFailing(true)
+        var thread = try #require(rig.sidebar.threads.first { $0.id == "arlo" })
+        thread.title = "Arlo West"
+        await rig.sidebar.edit(thread, delay: .seconds(3600))
+        #expect(rig.sidebar.threads.first { $0.id == "arlo" }?.title == "Arlo West")
+        #expect(rig.sidebar.editIssues["arlo"] == "Changes couldn’t be saved on this device.")
+        await rig.sidebar.cacheActor.setFailing(false)
+        await rig.sidebar.edit(thread, delay: .seconds(3600))
+        #expect(rig.sidebar.editIssues["arlo"] == nil)
+        #expect(try await rig.cache.offMain { try $0.threads() }.first { $0.id == "arlo" }?.title == "Arlo West")
+    }
+
+    @Test func streamedSaveFailureKeepsTheAgentError() async throws {
+        let rig = try await Rig()
+        await rig.sidebar.cacheActor.parkNext()
+        await rig.sidebar.cacheActor.setFailing(true)
+        let agent = Agent(id: "nova", name: "Nova")
+        async let accepting: Void = rig.sidebar.accept(agent)
+        while await !rig.sidebar.cacheActor.isParked { await Task.yield() }
+        rig.sidebar.note(rig.event(seq: 3, threadID: "arlo", text: "While saving"))
+        await rig.sidebar.cacheActor.release()
+        await accepting
+        #expect(rig.sidebar.agents.contains { $0.id == "nova" })
+        #expect(rig.sidebar.error == "Couldn’t save this agent. Retry")
+        await rig.sidebar.reload()
+        #expect(rig.sidebar.agents.contains { $0.id == "nova" })
+        #expect(rig.sidebar.error == "Couldn’t save this agent. Retry")
+    }
+
     @Test func actorStallDoesNotBlockTheMainHeartbeat() async throws {
         let rig = try await Rig()
-        await rig.sidebar.cacheActor.setStall(.milliseconds(70))
+        await rig.sidebar.cacheActor.setStall(.milliseconds(250))
         let clock = ContinuousClock()
         let gaps = GapLog()
+        let started = clock.now
+        var previous = started
         async let stalled: Void = rig.sidebar.cacheActor.touch()
         await Task.yield()
-        var previous = clock.now
-        for _ in 0..<5 {
+        gaps.add(previous.duration(to: clock.now))
+        previous = clock.now
+        while started.duration(to: clock.now) < .milliseconds(100) {
             await Task.yield()
             let now = clock.now
             gaps.add(previous.duration(to: now))
             previous = now
         }
         try await stalled
+        #expect(started.duration(to: clock.now) >= .milliseconds(100))
         #expect(gaps.max() < InstantUI.feedbackBudget)
+    }
+
+    @Test func blockedMainThreadMissesTheHeartbeat() {
+        let clock = ContinuousClock()
+        let gaps = GapLog()
+        let started = clock.now
+        while started.duration(to: clock.now) < .milliseconds(70) {}
+        gaps.add(started.duration(to: clock.now))
+        #expect(gaps.max() > InstantUI.feedbackBudget)
     }
 
     @Test func stalledHeartbeatReportsAMiss() {
@@ -136,6 +186,19 @@ struct SidebarOffMainTests {
         #expect(span?.withinBudget == false)
         #expect((span?.duration ?? .zero) > InstantUI.feedbackBudget)
         #expect(trace.meetsBudgets == false)
+    }
+}
+
+/// One hundred row updates spread across about one second.
+@MainActor
+private func noteBurst(_ rig: Rig) async throws {
+    let clock = ContinuousClock()
+    let start = clock.now
+    for index in 0..<100 {
+        let deadline = start + .milliseconds(10 * index)
+        let remaining = clock.now.duration(to: deadline)
+        if remaining > .zero { try await Task.sleep(for: remaining) }
+        rig.sidebar.note(rig.event(seq: Int64(index + 2), threadID: "arlo", text: "Burst \(index)"))
     }
 }
 
@@ -168,7 +231,7 @@ private struct Rig {
         await sidebar.load()
         self.cache = cache
         self.sidebar = sidebar
-        self.chat = ChatStore(client: client, cache: cache, threadID: "arlo", sidebar: sidebar)
+        self.chat = ChatStore(client: client, actor: sidebar.cacheActor, threadID: "arlo", sidebar: sidebar)
         await self.chat.ready()
     }
 

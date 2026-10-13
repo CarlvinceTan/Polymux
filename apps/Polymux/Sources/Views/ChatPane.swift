@@ -50,7 +50,7 @@ struct ChatPane: View {
         self.showHeader = showHeader
         self.onSent = onSent
         self.drops = drops
-        _store = State(initialValue: ChatStore(client: session.client, cache: session.cache, threadID: thread.id, sidebar: session.sidebar))
+        _store = State(initialValue: ChatStore(client: session.client, actor: session.sidebar.cacheActor, threadID: thread.id, sidebar: session.sidebar))
     }
 
     var body: some View {

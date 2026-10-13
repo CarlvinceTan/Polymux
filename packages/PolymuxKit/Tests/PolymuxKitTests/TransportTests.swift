@@ -667,7 +667,7 @@ struct TransportTests {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let cache = try await CacheWork.open(url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         #expect(!chat.isConnected)
         #expect(try await interrupted(chat.voiceReply(text: "Keep this spoken message")))
         let unsent = try #require(chat.messages.first)
@@ -675,7 +675,7 @@ struct TransportTests {
         #expect(unsent.status == (failure == 400 ? "error" : "failed"))
         let reopened = try await CacheWork.open(url)
         #expect(try await reopened.offMain { try $0.messages(threadID: "one") } == [unsent])
-        let resumed = ChatStore(client: client(host: host), cache: reopened, threadID: "one")
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(reopened), threadID: "one")
         await probe.reconnect()
         await resumed.retry(messageID: unsent.id)
         let requests = await probe.requests
@@ -693,7 +693,7 @@ struct TransportTests {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let cache = try await CacheWork.open(url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         defer { chat.stop() }
         await chat.start()
         #expect(try await interrupted(chat.voiceReply(text: "One spoken turn")))
@@ -712,7 +712,7 @@ struct TransportTests {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let cache = try await CacheWork.open(url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         let first = chat.voiceReply(text: "First queued voice")
         let second = chat.voiceReply(text: "Second queued voice")
         async let firstFailed = interrupted(first)
@@ -732,13 +732,13 @@ struct TransportTests {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let cache = try await CacheWork.open(url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         await chat.send(text: "Keep this unsent message")
         let unsent = try #require(chat.messages.first)
         #expect(unsent.status == (failure == 400 ? "error" : "failed"))
         #expect(try await cache.offMain { try $0.pending(threadID: "one") }.count == (failure == 400 ? 0 : 1))
         let reopened = try await CacheWork.open(url)
-        let resumed = ChatStore(client: client(host: host), cache: reopened, threadID: "one")
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(reopened), threadID: "one")
         await resumed.ready()
         #expect(resumed.messages.first?.status == unsent.status)
         await probe.reconnect()
@@ -758,11 +758,12 @@ struct TransportTests {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let cache = try await CacheWork.open(url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         await chat.send(text: "Retry after the server returns")
         let unsent = try #require(chat.messages.first)
         #expect(unsent.status == "failed")
-        let resumed = ChatStore(client: client(host: host), cache: try await CacheWork.open(url), threadID: "one")
+        let resumedCache = try await CacheWork.open(url)
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(resumedCache), threadID: "one")
         defer { resumed.stop() }
         await probe.reconnect()
         await resumed.start()
@@ -897,15 +898,15 @@ struct TransportTests {
         let sidebar = SidebarStore(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!), cache: cache)
         let agent = Agent(id: "new", name: "New agent")
         await sidebar.accept(agent)
-        #expect(sidebar.agents.isEmpty)
-        #expect(sidebar.thread(for: agent) == nil)
+        #expect(sidebar.agents == [agent])
+        #expect(sidebar.thread(for: agent)?.id == agent.id)
         #expect(sidebar.error == "Couldn’t save this agent. Retry")
         await sidebar.reload()
-        #expect(sidebar.agents.isEmpty)
+        #expect(sidebar.agents == [agent])
+        #expect(sidebar.thread(for: agent)?.id == agent.id)
         #expect(sqlite3_exec(db, "DROP TRIGGER fail_metadata", nil, nil, nil) == SQLITE_OK)
         await sidebar.accept(agent)
         #expect(sidebar.error == nil)
-        #expect(sidebar.agents == [agent])
         let reopened = try await CacheWork.open(url)
         #expect(try await reopened.offMain { try $0.agents() } == [agent])
         #expect(try await reopened.offMain { try $0.threads() }.first?.id == agent.id)
@@ -924,7 +925,7 @@ struct TransportTests {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let cache = try await CacheWork.open(url)
-        let chat = ChatStore(client: api, cache: cache, threadID: created.id)
+        let chat = ChatStore(client: api, actor: LocalCacheActor(cache), threadID: created.id)
         await chat.send(text: "@A review this", mentions: ["a"])
         let request = try #require((try await cache.offMain { try $0.pending(threadID: created.id) }).first)
         #expect(request.mentions == ["a"])
@@ -958,7 +959,7 @@ struct TransportTests {
                             parts: [Part(kind: "text", text: "Keep this reply")],
                             createdAt: "2026-10-09T10:00:00Z", status: "done", seq: 1, agentID: "b")
         try await cache.offMain { try $0.apply(Event(seq: 1, conversationID: group.id, type: "message.done", message: reply, createdAt: reply.createdAt)) }
-        let chat = ChatStore(client: api, cache: cache, threadID: group.id)
+        let chat = ChatStore(client: api, actor: LocalCacheActor(cache), threadID: group.id)
         await chat.send(text: "@B queued before removal", mentions: ["b"])
         let queued = try #require((try await cache.offMain { try $0.pending(threadID: group.id) }).first)
         let sidebar = SidebarStore(client: api, cache: cache)
@@ -999,7 +1000,7 @@ struct TransportTests {
         try await cache.offMain { try $0.save(agents: [Agent(id: "a"), Agent(id: "b"), Agent(id: "c")], threads: [initial]) }
         let sidebar = SidebarStore(client: api, cache: cache)
         await sidebar.load()
-        let chat = ChatStore(client: api, cache: cache, threadID: initial.id, sidebar: sidebar)
+        let chat = ChatStore(client: api, actor: sidebar.cacheActor, threadID: initial.id, sidebar: sidebar)
         var updated = initial
         updated.agentIDs = ["a", "c"]
         await sidebar.edit(updated, delay: .seconds(10))
@@ -1033,7 +1034,7 @@ struct TransportTests {
                              createdAt: "2026-10-09T10:00:00Z", status: "done", seq: 1)
         try await cache.offMain { try $0.apply(Event(seq: 1, conversationID: "one", type: "message.start", message: target,
                               createdAt: target.createdAt)) }
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         await chat.send(text: "The blue one", reply: target.replyContext)
         let optimistic = try #require(chat.messages.first { $0.role == "user" })
         #expect(optimistic.status == "failed")
@@ -1045,7 +1046,7 @@ struct TransportTests {
         #expect(await probe.requests == [request])
 
         let relaunched = try await CacheWork.open(url)
-        let resumed = ChatStore(client: client(host: host), cache: relaunched, threadID: "one")
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(relaunched), threadID: "one")
         await resumed.ready()
         #expect(resumed.messages.first { $0.id == optimistic.id }?.reply?.attachment == attachment)
         #expect(try await relaunched.offMain { try $0.pending(threadID: "one") } == [request])
@@ -1062,7 +1063,8 @@ struct TransportTests {
         try await relaunched.offMain { try $0.apply(event) }
         try await relaunched.offMain { try $0.apply(event) }
         try await relaunched.offMain { try $0.acknowledge(id: accepted.id) }
-        let replayed = ChatStore(client: client(host: host), cache: try await CacheWork.open(url), threadID: "one")
+        let replayCache = try await CacheWork.open(url)
+        let replayed = ChatStore(client: client(host: host), actor: LocalCacheActor(replayCache), threadID: "one")
         await replayed.ready()
         #expect(replayed.messages.count == 2)
         #expect(replayed.messages.first { $0.id == accepted.id } == accepted)
@@ -1085,7 +1087,7 @@ struct TransportTests {
                              createdAt: "2026-10-09T10:00:00Z", status: "done", seq: 1, agentID: "research")
         try await cache.offMain { try $0.apply(Event(seq: 1, conversationID: "chat", type: "message.done", message: source, createdAt: source.createdAt)) }
         let quote = try #require(source.replyContext(part: 2))
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "chat")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "chat")
         await chat.send(text: "This image", attachments: [first, second], reply: quote)
         let optimistic = try #require(chat.messages.first { $0.role == "user" })
         let request = try #require((try await cache.offMain { try $0.pending(threadID: "chat") }).first)
@@ -1095,7 +1097,7 @@ struct TransportTests {
         #expect(optimistic.reply == quote)
         let reopened = try await CacheWork.open(url)
         #expect(try await reopened.offMain { try $0.pending(threadID: "chat") } == [request])
-        let resumed = ChatStore(client: client(host: host), cache: reopened, threadID: "chat")
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(reopened), threadID: "chat")
         await probe.reconnect()
         await resumed.retry(messageID: optimistic.id)
         #expect(await probe.requests == [request, request])
@@ -1118,7 +1120,7 @@ struct TransportTests {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let cache = try await CacheWork.open(url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         let first = Task { await chat.send(text: "First send") }
         for _ in 0..<100 {
             if await probe.requests.count == 1 { break }
@@ -1157,7 +1159,7 @@ struct TransportTests {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let cache = try await CacheWork.open(url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         defer { chat.stop() }
         await chat.start()
         for _ in 0..<200 {
@@ -1198,7 +1200,7 @@ struct TransportTests {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let cache = try await CacheWork.open(url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         defer { chat.stop() }
         await chat.start()
         for _ in 0..<200 {

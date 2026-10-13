@@ -29,9 +29,9 @@ public final class ChatStore {
         let continuation: AsyncThrowingStream<VoiceFragment, any Error>.Continuation
     }
 
-    public init(client: APIClient, cache: LocalCache, threadID: String, sidebar: SidebarStore? = nil) {
+    public init(client: APIClient, actor: LocalCacheActor, threadID: String, sidebar: SidebarStore? = nil) {
         self.client = client
-        self.cacheActor = sidebar?.cacheActor ?? LocalCacheActor(cache)
+        self.cacheActor = actor
         self.threadID = threadID
         self.sidebar = sidebar
         activity = sidebar?.activity ?? ActivityStore()

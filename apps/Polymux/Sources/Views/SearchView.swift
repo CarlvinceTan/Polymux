@@ -20,7 +20,7 @@ struct SearchView: View {
         self.close = close
         self.select = select
         _query = query
-        _store = State(initialValue: SearchStore(client: session.client, cache: session.cache, actor: session.sidebar.cacheActor, threadID: threadID))
+        _store = State(initialValue: SearchStore(client: session.client, actor: session.sidebar.cacheActor, threadID: threadID))
     }
 
     var body: some View {

@@ -9,6 +9,9 @@ public actor LocalCacheActor {
     private var marks = 0
     private var stall: Duration = .zero
     private var failing = false
+    private var instant = false
+    private var parkNextEntry = false
+    private var parked: CheckedContinuation<Void, Never>?
 
     public init(_ cache: LocalCache) {
         self.cache = cache
@@ -20,6 +23,18 @@ public actor LocalCacheActor {
     public func setStall(_ duration: Duration) { stall = duration }
     public func setFailing(_ enabled: Bool) { failing = enabled }
 
+    /// Counts the save and returns before SQLite, so a coalesce test is not limited by disk.
+    public func setInstant(_ enabled: Bool) { instant = enabled }
+
+    /// Holds the next cache entry until `release()`. Tests overlap a save with a stream or reload.
+    public func parkNext() { parkNextEntry = true }
+    public var isParked: Bool { parked != nil }
+    public func release() {
+        parkNextEntry = false
+        parked?.resume()
+        parked = nil
+    }
+
     /// Holds the actor without touching SQLite. Used to prove the main actor keeps running.
     public func touch() async throws {
         try await enter()
@@ -29,6 +44,7 @@ public actor LocalCacheActor {
         try await enter()
         saves += 1
         if failing { throw ClientError.cache("forced") }
+        if instant { return }
         if let edits { try cache.saveEdits(edits) }
         try cache.save(agents: agents, threads: threads, pins: pins)
     }
@@ -44,11 +60,22 @@ public actor LocalCacheActor {
         return try body(cache)
     }
 
+    private func block(_ duration: Duration) {
+        let clock = ContinuousClock()
+        let start = clock.now
+        while start.duration(to: clock.now) < duration {}
+    }
+
     private func enter() async throws {
         #if DEBUG
         // Debug builds trap if a cache call is still on the main queue.
         dispatchPrecondition(condition: .notOnQueue(.main))
         #endif
-        if stall > .zero { try await Task.sleep(for: stall) }
+        if parkNextEntry {
+            parkNextEntry = false
+            await withCheckedContinuation { parked = $0 }
+        }
+        // A sleep would yield, so a stall on the main thread would not miss the heartbeat.
+        if stall > .zero { block(stall) }
     }
 }

@@ -13,9 +13,9 @@ public final class SearchStore {
     @ObservationIgnored private let threadID: String
     @ObservationIgnored private var generation = 0
 
-    public init(client: APIClient, cache: LocalCache, actor: LocalCacheActor? = nil, threadID: String) {
+    public init(client: APIClient, actor: LocalCacheActor, threadID: String) {
         self.client = client
-        self.cacheActor = actor ?? LocalCacheActor(cache)
+        self.cacheActor = actor
         self.threadID = threadID
     }
 

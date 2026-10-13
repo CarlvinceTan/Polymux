@@ -63,14 +63,15 @@ final class AppSession {
             throw URLError(.badURL)
         }
         client = APIClient(baseURL: url)
-        let support = try FileManager.default.url(
-            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        )
         let key = address.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
-        let directory = support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let database = directory.appending(path: "cache.sqlite")
-        cache = try await Task.detached { try LocalCache(url: database) }.value
+        cache = try await Task.detached {
+            let support = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+            )
+            let directory = support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            return try LocalCache(url: directory.appending(path: "cache.sqlite"))
+        }.value
         sidebar = SidebarStore(client: client, cache: cache)
         await sidebar.load()
         settings = SettingsStore(client: client)

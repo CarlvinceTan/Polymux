@@ -26,7 +26,8 @@ public final class SidebarStore {
     @ObservationIgnored private var committedEdits: [String: Thread] = [:]
     @ObservationIgnored private var staged: [SaveFault] = []
     @ObservationIgnored private var epoch: UInt64 = 0
-    private let saveGap: Duration = .milliseconds(250)
+    /// Coalesces disk writes. Tests set this to zero to prove the cap can fail.
+    var saveGap: Duration = .milliseconds(250)
     @ObservationIgnored private var revision: UInt64 = 0
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var acceptedAgents: [String: Agent] = [:]
@@ -307,6 +308,9 @@ public final class SidebarStore {
                 acceptedThreads[thread.id] = thread
                 merge(thread, into: &threads)
             }
+            // A failed accept is still only in memory. Reloading disk must not drop that row.
+            for agent in acceptedAgents.values { merge(agent, into: &agents) }
+            for thread in acceptedThreads.values { merge(thread, into: &threads) }
             for thread in threads { activity.reconcile(thread) }
             remember()
         } catch {
@@ -472,8 +476,14 @@ public final class SidebarStore {
                     }
                 }
             } catch {
-                guard epoch == savedEpoch else { continue }
-                restore()
+                // A stream or reload moved the epoch. Keep the faults for the retry.
+                if epoch != savedEpoch {
+                    staged.insert(contentsOf: faults, at: 0)
+                    dirty = true
+                    continue
+                }
+                if keepsRows(faults) { rollbackRenames(faults) }
+                else { restore() }
                 report(faults)
             }
         }
@@ -493,6 +503,24 @@ public final class SidebarStore {
         committedThreads = threads
         committedPins = pinned
         committedEdits = pendingThreads
+    }
+
+    private func keepsRows(_ faults: [SaveFault]) -> Bool {
+        faults.contains { fault in
+            switch fault {
+            case .agent, .chat, .edit: return true
+            case .rename: return false
+            }
+        }
+    }
+
+    private func rollbackRenames(_ faults: [SaveFault]) {
+        for fault in faults {
+            guard case .rename(let id) = fault else { continue }
+            guard let previous = renames[id], let index = threads.firstIndex(where: { $0.id == id }) else { continue }
+            threads[index].title = previous
+            renames[id] = nil
+        }
     }
 
     private func restore() {
