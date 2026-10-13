@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
-@Suite @MainActor
+@Suite(.serialized) @MainActor
 struct SidebarOffMainTests {
     @Test func incomingEventPatchesTheRowInsideTheStateBudget() async throws {
         let rig = try await Rig()

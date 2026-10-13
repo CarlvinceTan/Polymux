@@ -7,8 +7,10 @@
 #          proof-dir that pass media-check.py, deduped by sha256 (ledger $OPS/board/<unit>.media and
 #          a "proof sha256:" caption on the card), appended as image/video blocks at url-base/<file>.
 #          Only files listed (one name per line) in proof-dir/approved are appended; no list = no media;
-#          .mov is never appended.
+#          .mov is never appended; only files publish_proof uploaded (proof-dir/uploaded) are appended.
+#          media-check exit != 0 (missing Pillow/ffmpeg) -> board_error, nothing appended.
 #   merged <unit>                      Status -> "Completed" (caller confirms mergedAt first)
+# merged/verify on a card shared by several units wait for all of them (see "Shared cards" below).
 # Ships disabled: live only when $OPS/BOARD_LIVE exists AND $GOAL_LOOP_HOME/RELAY_HOLD exists (old relay
 # held, so never two writers); otherwise logs the exact intended write. Read-before-write: a failed read
 # skips the write. One write per event, per-unit lanelib lock. Always exits 0; errors become board_error
@@ -44,6 +46,25 @@ case $EVT in
             *) err "level '$VAL' is not a board option; not written"; exit 0;; esac;;
   *) err "unknown event"; exit 0;;
 esac
+# Shared cards: several units can map to one card (cards/<unit> holds the same page id). 'merged' and
+# 'verify' write only once every unit on the card has reached that state, and Verification is the
+# weakest level (failed/blocked < build-only < unit-test-verified < UI-verified). 'start'/'pr' write
+# on the first unit. Ledger: $OPS/board/card-<page>.tsv (unit<TAB>event<TAB>value), per-card lock.
+rank() { case $1 in UI-verified) echo 3;; unit-test-verified) echo 2;; build-only) echo 1;; *) echo 0;; esac; }
+HOLD=""
+if [ "$EVT" = merged ] || [ "$EVT" = verify ]; then
+  CL="$OPS/board/card-$PAGE.lock"; CLED="$OPS/board/card-$PAGE.tsv"; n=0
+  until lock_take "$CL"; do n=$((n+1)); [ $n -ge "${BOARD_LOCK_TRIES:-10}" ] && { err "card lock busy (pid $(lock_holder "$CL")); not written"; exit 0; }; sleep 1; done
+  touch "$CLED"; { awk -F'\t' -v u="$UNIT" -v e="$EVT" '!($1==u&&$2==e)' "$CLED"; printf '%s\t%s\t%s\n' "$UNIT" "$EVT" "$VAL"; } > "$CLED.tmp" && mv "$CLED.tmp" "$CLED"
+  WAITU=""; LOW=""; MEM=()
+  for f in "$OPS"/cards/*; do case $f in *.wt) continue;; esac; [ -f "$f" ] && [ "$(cat "$f")" = "$PAGE" ] && MEM+=("${f##*/}"); done
+  for m in "${MEM[@]}"; do v=$(awk -F'\t' -v u="$m" -v e="$EVT" '$1==u&&$2==e{print $3}' "$CLED")
+    if [ -z "$v" ]; then WAITU="$WAITU $m"; elif [ -z "$LOW" ] || [ "$(rank "$v")" -lt "$(rank "$LOW")" ]; then LOW=$v; fi; done
+  lock_drop "$CL"
+  if [ -n "$WAITU" ]; then HOLD=1; log "hold: $PROP not written; card $PAGE waits for unit(s):$WAITU"
+    [ "$EVT" = verify ] && [ -n "$PDIR" ] || exit 0
+  elif [ "$EVT" = verify ] && [ "$LOW" != "$VAL" ]; then log "card $PAGE shared by ${#MEM[@]} units: Verification '$LOW' (weakest), not '$VAL'"; VAL=$LOW; fi
+fi
 [ $DRY = 0 ] && [ ! -f "$GL/RELAY_HOLD" ] && { err "refusing live write: $GL/RELAY_HOLD is missing (old relay may be writing)"; exit 0; }
 TOK=$(vault get "$VAULT_ITEM" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || TOK=""
 [ -n "$TOK" ] || { err "vault read failed ($VAULT_ITEM); nothing read or written"; exit 0; }
@@ -58,6 +79,7 @@ blocks() { local cur="" j; while :; do   # every child block, following next_cur
 L="$OPS/board/$UNIT.lock"; n=0
 until lock_take "$L"; do n=$((n+1)); [ $n -ge "${BOARD_LOCK_TRIES:-10}" ] && { err "unit lock busy (pid $(lock_holder "$L")); not written"; exit 0; }; sleep 1; done
 trap 'lock_drop "$L"' EXIT
+if [ -z "$HOLD" ]; then
 CUR=$(api GET "pages/$PAGE" | python3 -c '
 import json,sys; p=json.load(sys.stdin)["properties"][sys.argv[1]]
 v=p.get("select") if p["type"]=="select" else p.get(p["type"])
@@ -69,15 +91,19 @@ elif [ "$EVT" = start ] && case $CUR in Backlog|Proposals|"Not started"|"") fals
   log "skip: Status is '$CUR'; start only moves cards out of Backlog/Proposals, never backwards"
 elif [ $DRY = 1 ]; then log "DRY-RUN would PATCH pages/$PAGE $PROP: '$CUR' -> '$VAL' body=$BODY"
 else api PATCH "pages/$PAGE" --data "$BODY" >/dev/null && log "wrote $PROP: '$CUR' -> '$VAL'" || err "write $PROP='$VAL' failed"; fi
+fi
 [ -n "$PDIR" ] || exit 0
 [ -d "$PDIR" ] && case $PBASE in https://*) true;; *) false;; esac || { log "no proof media (dir '$PDIR', base '$PBASE')"; exit 0; }
 LED="$OPS/board/$UNIT.media"; touch "$LED"; CAND=()
+MC=$(python3 "$SD/media-check.py" "$PDIR" 2>&1); MRC=$?
+[ $MRC = 0 ] || { err "media-check failed (rc=$MRC): $(echo "$MC" | tail -1); no media appended"; exit 0; }
 while IFS=$'\t' read -r st x f; do [ -n "$f" ] || continue
   if [ "$st" != PASS ]; then log "held media (pre-publish check failed: $x): $f"; continue; fi
   case $f in *.[mM][oO][vV]) log "held media (.mov is not uploaded by publish_proof): $f"; continue;; esac
   grep -qxF "$f" "$PDIR/approved" 2>/dev/null || { log "held media (not in $PDIR/approved): $f"; continue; }
+  grep -qxF "$f" "$PDIR/uploaded" 2>/dev/null || { log "held media (not uploaded by publish_proof, $PDIR/uploaded): $f"; continue; }
   grep -qx "$x" "$LED" && { log "skip media: sha256 $x already published ($f)"; continue; }
-  CAND+=("$x $f"); done < <(python3 "$SD/media-check.py" "$PDIR" 2>&1)
+  CAND+=("$x $f"); done <<< "$MC"
 [ ${#CAND[@]} -gt 0 ] || exit 0
 HAVE=$(blocks) || { err "blocks read failed; media skipped (nothing appended)"; exit 0; }
 NEW=(); for c in "${CAND[@]}"; do printf '%s' "$HAVE" | grep -qF "proof sha256:${c%% *}" && { log "skip media: sha256 ${c%% *} already on card"; continue; }; NEW+=("$c"); done
