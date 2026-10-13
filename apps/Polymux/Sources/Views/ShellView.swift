@@ -32,6 +32,13 @@ struct ShellView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #endif
 
+    private var selectionBinding: Binding<String?> {
+        Binding(get: { selection }, set: { value in
+            if let value { SwitchTrace.click(threadID: value) }
+            selection = value
+        })
+    }
+
     private var sidebarWidth: Double { session.settings.value?.sidebarWidth ?? SidebarWidth.initial }
     private var widthBinding: Binding<Double> {
         Binding(get: { sidebarWidth }, set: { value in
@@ -43,7 +50,7 @@ struct ShellView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $visibility) {
-            List(selection: $selection) {
+            List(selection: selectionBinding) {
                 ForEach(conversations) { thread in
                     chatLink(thread)
                 }
@@ -184,7 +191,13 @@ struct ShellView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .background {
+            Color.clear.frame(width: 1, height: 1)
+                .accessibilityIdentifier("switch.samples")
+                .accessibilityLabel(SwitchTrace.state.samples.isEmpty ? "none" : SwitchTrace.state.samples.joined(separator: ","))
+        }
         .onChange(of: selection, initial: true) { _, value in
+            session.chats.activate(value)
             Notifications.shared.visible(scenePhase == .active ? value : nil, window: windowID)
         }
         .onChange(of: scenePhase) { _, phase in
@@ -261,6 +274,7 @@ struct ShellView: View {
             Button("OK") { deleteError = nil }
         } message: { Text(deleteError ?? "") }
         .task {
+            if AppSession.switchFixture { return }
             while !Task.isCancelled {
                 await session.sidebar.refresh()
                 if session.sidebar.isConnected {
@@ -603,6 +617,7 @@ private struct SidebarChatLink<Content: View>: View {
 
     var body: some View {
         NavigationLink(value: threadID) { content() }
+            .accessibilityIdentifier("sidebar.row.\(threadID)")
             .navigationLinkIndicatorVisibility(.hidden)
             .listRowBackground(
                 ZStack {

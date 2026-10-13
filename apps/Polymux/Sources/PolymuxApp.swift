@@ -55,8 +55,35 @@ final class AppSession {
     let client: APIClient
     let cache: LocalCache
     let sidebar: SidebarStore
+    let chats: ChatStoreCache
     let settings: SettingsStore
     let avatars: AvatarStore
+
+    nonisolated static var switchFixture: Bool {
+        #if DEBUG
+        CommandLine.arguments.contains("--chat-switch-fixture")
+        #else
+        false
+        #endif
+    }
+
+    #if DEBUG
+    nonisolated private static func switchCache() throws -> LocalCache {
+        let cache = try LocalCache(url: URL(fileURLWithPath: ":memory:"), memory: true)
+        let agents = (0..<10).map { Agent(id: "chat-switch-\($0)", name: "Chat \($0)", active: true) }
+        let threads = agents.map { PolymuxKit.Thread(id: $0.id, agentID: $0.id, title: $0.name, agentIDs: [$0.id]) }
+        try cache.save(agents: agents, threads: threads)
+        for thread in threads {
+            let messages = (1...100).map { seq in
+                Message(id: "\(thread.id)-\(seq)", threadID: thread.id, role: "assistant",
+                        parts: [Part(kind: "text", text: "Message \(seq)")],
+                        createdAt: WireDate.string(), status: "done", seq: Int64(seq))
+            }
+            try cache.merge(messages)
+        }
+        return cache
+    }
+    #endif
 
     init(address: String) async throws {
         guard let url = ServerAddress.parse(address) else {
@@ -65,6 +92,9 @@ final class AppSession {
         client = APIClient(baseURL: url)
         let key = address.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
         cache = try await Task.detached {
+            #if DEBUG
+            if AppSession.switchFixture { return try AppSession.switchCache() }
+            #endif
             let support = try FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
             )
@@ -74,6 +104,7 @@ final class AppSession {
         }.value
         sidebar = SidebarStore(client: client, cache: cache)
         await sidebar.load()
+        chats = ChatStoreCache(client: client, cache: cache, sidebar: sidebar)
         settings = SettingsStore(client: client)
         avatars = AvatarStore(sidebar: sidebar)
     }
@@ -108,7 +139,7 @@ struct AppRoot: View {
             do {
                 session = try await AppSession(address: address)
                 error = nil
-                if let session {
+                if let session, !AppSession.switchFixture {
                     Notifications.shared.connect(session.client)
                     while !Task.isCancelled {
                         await session.settings.refresh()

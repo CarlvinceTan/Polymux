@@ -12,14 +12,35 @@ public final class ChatStore {
     public private(set) var isSending = false
     public private(set) var error: String?
     public private(set) var hasEarlier = true
+    private(set) var isPaused = false
     @ObservationIgnored public var onUpdate: (@MainActor (Event, ContinuousClock.Instant) -> Void)?
     @ObservationIgnored private let client: APIClient
     @ObservationIgnored private let cacheActor: LocalCacheActor
     @ObservationIgnored private weak var sidebar: SidebarStore?
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var loading: Task<Void, Never>?
+    @ObservationIgnored private var enqueuing = 0
     @ObservationIgnored private var isFlushing = false
     @ObservationIgnored private var voices: [UUID: VoiceReply] = [:]
+    @ObservationIgnored private var scrollAnchor: ScrollAnchor?
+
+    private struct ScrollAnchor {
+        var messageID: String
+        var atBottom: Bool
+    }
+
+    /// Eviction skips a chat that is still sending. Pause may drop voices once the send has landed.
+    var canEvict: Bool {
+        !isSending && !isFlushing && enqueuing == 0 && voices.isEmpty
+            && !messages.contains { $0.status == "pending" || $0.status == "failed" }
+    }
+
+    var voiceCount: Int { voices.count }
+
+    public var scrollTarget: String? {
+        guard let scrollAnchor, !scrollAnchor.atBottom else { return nil }
+        return scrollAnchor.messageID
+    }
 
     private struct VoiceReply {
         let userID: String
@@ -48,9 +69,53 @@ public final class ChatStore {
         runs = stored
         activity.restore(stored)
         messages = (try? await cacheActor.call { try $0.messages(threadID: threadID, limit: 100) }) ?? []
+        trim()
+    }
+
+    public func rememberScroll(messageID: String?, atBottom: Bool) {
+        if atBottom {
+            scrollAnchor = ScrollAnchor(messageID: messages.last?.id ?? messageID ?? "", atBottom: true)
+            return
+        }
+        guard let messageID, messages.contains(where: { $0.id == messageID }) else { return }
+        scrollAnchor = ScrollAnchor(messageID: messageID, atBottom: false)
+    }
+
+    /// Keeps the transcript for a later reselect. In-flight sends keep their stream until they finish.
+    public func pause() {
+        isPaused = true
+        failVoices(CancellationError())
+        trim()
+        guard canEvict else { return }
+        streamTask?.cancel()
+        streamTask = nil
+        isConnected = false
+    }
+
+    private func trim() {
+        guard isPaused else { return }
+        runs.removeAll()
+        guard messages.count > 200 else { return }
+        let tailStart = messages.count - 200
+        var windowLower = messages.count
+        var windowUpper = messages.count
+        if let anchor = scrollTarget, let index = messages.firstIndex(where: { $0.id == anchor }) {
+            windowLower = max(0, index - 20)
+            windowUpper = min(messages.count, index + 21)
+        }
+        var kept: [Message] = []
+        kept.reserveCapacity(min(messages.count, windowUpper - windowLower + 200))
+        for (offset, message) in messages.enumerated() {
+            if offset >= tailStart || (offset >= windowLower && offset < windowUpper)
+                || message.status == "pending" || message.status == "failed" {
+                kept.append(message)
+            }
+        }
+        messages = kept
     }
 
     public func start() async {
+        isPaused = false
         guard streamTask == nil else { return }
         await ready()
         streamTask = Task { [weak self] in await self?.connect() }
@@ -138,6 +203,11 @@ public final class ChatStore {
     private func send(text: String, attachments: [Attachment], id: String, reply: ReplyContext? = nil, mentions: [String] = []) async {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return }
+        enqueuing += 1
+        defer {
+            enqueuing -= 1
+            if isPaused { pause() }
+        }
         do {
             let request = SendRequest(id: id, text: text, attachmentIDs: attachments.map(\.id), replyToID: reply?.messageID,
                                       replyPart: reply?.partIndex, mentions: mentions.isEmpty ? nil : mentions)
@@ -165,7 +235,13 @@ public final class ChatStore {
                     for event in replay { try await receive(event, live: false) }
                     cursor = try await cacheActor.call { try $0.cursor(threadID: threadID) }
                 }
-                messages = try await cacheActor.call { try $0.messages(threadID: threadID, limit: visibleCount) }
+                let refreshed = try await cacheActor.call { try $0.messages(threadID: threadID, limit: visibleCount) }
+                if scrollTarget != nil {
+                    for message in refreshed { update(message) }
+                } else {
+                    messages = refreshed
+                }
+                if isPaused { trim() }
                 runs = try await cacheActor.call { try $0.runs(threadID: threadID) }
                 activity.restore(runs)
                 isConnected = true
@@ -221,27 +297,38 @@ public final class ChatStore {
         if event.run != nil { runs = try await cacheActor.call({ try $0.runs(threadID: threadID) }) }
         if live { isConnected = true }
         forwardVoice(event)
+        trim()
     }
 
-    private func update(_ message: Message) {
+    func adopt(_ incoming: [Message]) { messages = incoming }
+
+    func update(_ message: Message) {
         if let index = messages.firstIndex(where: { $0.id == message.id }) {
             messages[index] = message
         } else {
+            let ordered = message.seq > 0 && (messages.last.map { $0.seq > 0 && $0.seq < message.seq } ?? true)
             messages.append(message)
-            messages.sort {
-                if $0.seq == 0 && $1.seq == 0 { return $0.createdAt < $1.createdAt }
-                if $0.seq == 0 { return false }
-                if $1.seq == 0 { return true }
-                return $0.seq < $1.seq
+            if !ordered {
+                messages.sort {
+                    if $0.seq == 0 && $1.seq == 0 { return $0.createdAt < $1.createdAt }
+                    if $0.seq == 0 { return false }
+                    if $1.seq == 0 { return true }
+                    return $0.seq < $1.seq
+                }
             }
         }
+        trim()
     }
 
     private func flush() async {
         guard !isFlushing else { return }
         isFlushing = true
         isSending = true
-        defer { isFlushing = false; isSending = false }
+        defer {
+            isFlushing = false
+            isSending = false
+            if isPaused { pause() }
+        }
         do {
             while let request = try await cacheActor.call({ try $0.pending(threadID: threadID) }).first {
                 do {
@@ -318,5 +405,53 @@ public final class ChatStore {
             }
             voices[token] = reply
         }
+    }
+}
+
+/// Keeps the last few chats resident so a reselect paints the transcript it already has.
+@MainActor
+public final class ChatStoreCache {
+    public static let capacity = 8
+    public private(set) var activeID: String?
+    private var stores: [String: ChatStore] = [:]
+    private var order: [String] = []
+    private let client: APIClient
+    private let cacheActor: LocalCacheActor
+    private weak var sidebar: SidebarStore?
+
+    public init(client: APIClient, cache: LocalCache, sidebar: SidebarStore?) {
+        self.client = client
+        self.cacheActor = sidebar?.cacheActor ?? LocalCacheActor(cache)
+        self.sidebar = sidebar
+    }
+
+    public var count: Int { stores.count }
+    public func contains(_ threadID: String) -> Bool { stores[threadID] != nil }
+
+    public func store(for threadID: String) -> ChatStore {
+        if let existing = stores[threadID] {
+            touch(threadID)
+            return existing
+        }
+        let created = ChatStore(client: client, actor: cacheActor, threadID: threadID, sidebar: sidebar)
+        stores[threadID] = created
+        order.append(threadID)
+        while stores.count > Self.capacity, let oldest = order.first(where: { $0 != threadID && stores[$0]?.canEvict == true }) {
+            order.removeAll { $0 == oldest }
+            stores.removeValue(forKey: oldest)?.stop()
+        }
+        return created
+    }
+
+    public func activate(_ threadID: String?) {
+        activeID = threadID
+        for (id, store) in stores where id != threadID { store.pause() }
+        guard let threadID else { return }
+        _ = store(for: threadID)
+    }
+
+    private func touch(_ threadID: String) {
+        order.removeAll { $0 == threadID }
+        order.append(threadID)
     }
 }

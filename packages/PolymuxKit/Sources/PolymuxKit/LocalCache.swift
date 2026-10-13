@@ -5,9 +5,9 @@ import Foundation
 private final class Connection: @unchecked Sendable {
     let db: OpaquePointer
 
-    init(url: URL) throws {
+    init(url: URL, memory: Bool) throws {
         var pointer: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &pointer, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
+        guard sqlite3_open_v2(memory ? ":memory:" : url.path, &pointer, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
               let pointer else {
             if let pointer { sqlite3_close(pointer) }
             throw ClientError.cache("Could not open the database.")
@@ -27,9 +27,9 @@ public final class LocalCache: @unchecked Sendable {
     /// Counts `threads()` calls, including the one inside `save`.
     public private(set) var threadReads = 0
 
-    public init(url: URL) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        connection = try Connection(url: url)
+    public init(url: URL, memory: Bool = false) throws {
+        if !memory { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true) }
+        connection = try Connection(url: url, memory: memory)
         try execute("PRAGMA journal_mode=WAL")
         try execute("PRAGMA synchronous=NORMAL")
         try execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, json TEXT NOT NULL)")
