@@ -21,7 +21,8 @@ cmd = "true"
 agent = "codex"
 cmd = "true"
 TOML
-echo .build/ > .gitignore; echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
+printf '.build/\n' > .gitignore   # same ignore as the real repo: scratch homes stay invisible to git status
+echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
 export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" LANE_SKIP_SETUP=1 LANE_TARGET=testmac
 export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
@@ -361,6 +362,29 @@ OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" CURSOR_API_KEY=main-should-
 check "lane2 runs with its own HOME and only its own vault key (inherited key stripped)" '[ "$(cat "$T/vault.log")" = "get student key" ] && grep -qx "HOME=$T/lane2home KEY=lanekey-test" "$T/agent.rec" && ! grep -q main-should-not-leak "$T/agent.rec"'
 OUT=$(env LANES_TOML="$T/gate.toml" CURSOR_API_KEY=main-should-not-leak LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo "SH=$HOME K=${CURSOR_API_KEY:-unset}" > "$HOME/../stub.rec"; echo s >> s.txt && git add s.txt && git commit -qm s -m "Lane: $LANE/$AGENT"' $RL lane4 "$(task 'Gate strip' g6)" 2>&1)
 check "non-cursor lane child never inherits CURSOR_API_KEY" 'grep -q "K=unset" "$HOME/../stub.rec"'
+# 22b codex lane child: HOME is a per-unit scratch dir inside the worktree (TCC: no $HOME scans of
+# the real Downloads/Documents/Music/Photos); auth/config stay reachable via explicit env vars.
+CXC="$T/codexbin"; mkdir -p "$CXC"
+cat > "$CXC/codex" <<'X'
+#!/bin/bash
+{ echo "HOME=$HOME"; echo "CODEX_HOME=$CODEX_HOME"; echo "GH_CONFIG_DIR=$GH_CONFIG_DIR"; echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL"; echo "PWD=$PWD"; echo "ARGV=$*"; } > "$REC"
+echo z >> c.txt && git add c.txt && git commit -qm "stub change" -m "Lane: laneC/codex"
+X
+chmod +x "$CXC/codex"
+cat > "$T/codex.toml" <<TOML
+max_builds = 1
+lock_dir = "~/ops/lanes/locks"
+mac_hosts = ["testmac"]
+[laneC]
+agent = "codex"
+cmd = "$CXC/codex"
+TOML
+: > "$T/codex.rec"
+OUT=$(env LANES_TOML="$T/codex.toml" REC="$T/codex.rec" LANE_NO_CHAIN=1 LANE_DRY=1 $RL laneC "$(task 'Codex home' cx1)" 2>&1); RC=$?
+CWT="$LANES_WT/laneC-codex-home"
+check "codex lane: HOME is the worktree scratch dir, cwd is the worktree, sandbox unchanged" '[ $RC = 0 ] && grep -qx "HOME=$CWT/.build/lanehome" "$T/codex.rec" && grep -qx "PWD=$CWT" "$T/codex.rec" && grep -q -- "-s danger-full-access" "$T/codex.rec"'
+check "codex lane: CODEX_HOME/GH_CONFIG_DIR/GIT_CONFIG_GLOBAL point at the real home" 'grep -qx "CODEX_HOME=$HOME/.codex" "$T/codex.rec" && grep -qx "GH_CONFIG_DIR=$HOME/.config/gh" "$T/codex.rec" && grep -qx "GIT_CONFIG_GLOBAL=$HOME/.gitconfig" "$T/codex.rec"'
+check "codex lane: scratch HOME is ignored, worktree git status stays clean" '[ -z "$(git -C "$CWT" status --porcelain)" ] && { [ -e "$CWT/.build/lanehome/.local" ] || [ -L "$CWT/.build/lanehome/.local" ]; }'
 # 23 main-account key guard up front (#72 round 3): exit 5 before claim/worktree/vault, case-insensitive
 cat >> "$T/gate.toml" <<TOML
 [lane6]
@@ -418,6 +442,7 @@ rm -f "$LANES_HOME/queue/"*.task
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='printf "%s" "$PROMPT" > "$HOME/../prompt.txt"; '"$STUB_OK" $RL laneA "$(task 'Prompt start' p1)" 2>&1)
 PS0=$(git -C "$LANES_WT/laneA-prompt-start" rev-parse HEAD~1)
 check "prompt has size cap and the run's start commit (size base == START)" 'grep -q "Size cap: 300 changed lines" "$T/prompt.txt" && grep -q "git diff --stat $PS0..HEAD" "$T/prompt.txt"'
+check "prompt forbids searching or listing outside the worktree" 'grep -q "Never search or list outside it" "$T/prompt.txt"'
 # 25 idle agent: whole process group stopped, no surviving grandchild
 OUT=$(LANE_NO_CHAIN=1 LANE_IDLE_S=2 LANE_KILL_WAIT=1 LANE_STUB_CMD='trap "" TERM; (trap "" TERM; sleep 300) & echo $! > "$HOME/../gc.pid"; sleep 300' $RL laneA "$(task 'Idle group' p2)" 2>&1)
 GC=$(cat "$T/gc.pid" 2>/dev/null); sleep 0.5
