@@ -80,12 +80,12 @@ step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 # Lane scripts changed -> run their hermetic tests too.
 # From the worktree under test, so --verify-only checks the PR's own scripts and tests.
 lane_files_changed "${TI_BASE:-origin/main}" && step lane-tests bash "$(lane_tests_path "$ROOT" "$SD")"
-[ -d apps/server ] && { step go-vet sh -c 'cd apps/server && go vet -tags sqlite_fts5 ./... && go vet -tags "sqlite_fts5 verifyfixture" ./...'
-  step go-test sh -c 'cd apps/server && go test -tags "sqlite_fts5 verifyfixture" -count=1 ./...'
+[ -d apps/server ] && { step go-vet sh -c 'cd apps/server && GOMAXPROCS=4 go vet -tags sqlite_fts5 ./... && GOMAXPROCS=4 go vet -tags "sqlite_fts5 verifyfixture" ./...'
+  step go-test sh -c 'cd apps/server && GOMAXPROCS=4 go test -p 4 -tags "sqlite_fts5 verifyfixture" -count=1 ./...'
   # Opt-in fixture: a default-tag build must compile and must not advertise --verify-fixture.
   step fixture-off sh -c 'cd apps/server && out=$(go run ./cmd/server -h 2>&1) || { printf "%s\n" "$out"; exit 1; }; printf "%s" "$out" | grep -q verify-fixture && { echo "default build advertises --verify-fixture"; exit 1; }; exit 0'; }
 python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }
-XC=(-derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
+XC=(-jobs 6 -derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
 acquire; echo "verify: slot $SLOT"
 step packages swift test --scratch-path .build/swiftpm --cache-path .build/SPM-cache
