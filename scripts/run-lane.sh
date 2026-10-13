@@ -31,9 +31,16 @@ if [ "${1:-}" = "--verify-only" ]; then
   gh pr comment "$BR" -R CarlvinceTan/Polymux --body "Mac proof (cvmini):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
 fi
-LANE=$1; TASK=$2; shift 2; BASE=origin/main; BRANCH=""
+LANE=$1; TASK=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60
+if [ -f "$TASK" ]; then  # task file: "needs: xcode|ios-sim|none", "expected_min: N", rest is the brief
+  NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
+  TASK=$(grep -vE '^(needs|expected_min):' "$TASK"); NEEDS=${NEEDS:-}; EXP=${EXP:-60}
+  [ -n "$NEEDS" ] || { echo "refusing: task file has no needs: line"; exit 4; }
+fi
+case $NEEDS in *xcode*|*ios-sim*) command -v xcodebuild >/dev/null && [ "$(hostname -s)" = cvmini ] || \
+  { echo "refusing: needs $NEEDS: run on cvmini"; exit 4; };; esac
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
-SLUG=$(echo "$TASK" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-32 | sed 's/-$//')
+TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-32 | sed 's/-$//')
 ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
 PROMPT="Task: $TASK
 Rules: work only in this worktree. Keep the change small and scoped. Build and test ONLY via
@@ -53,12 +60,12 @@ run_agent() {  # $1 lane, $2 worktree, $3 log
   esac
 }
 # Stop rule: a brief that already failed twice goes to Cody, never straight back to an agent.
-grep -qF "	$TASK	" "$OPS/failures.tsv" 2>/dev/null && { echo "refusing: '$TASK' already failed twice (see $OPS/failures.tsv); fix the brief"; exit 2; }
+grep -qF "	$TITLE	" "$OPS/failures.tsv" 2>/dev/null && { echo "refusing: '$TITLE' already failed twice (see $OPS/failures.tsv); fix the brief"; exit 2; }
 # One writer per unit: a second lane cannot start the same unit while this one holds it.
 UL="$OPS/units/$SLUG.lock"; mkdir -p "$OPS/units"
 if ! mkdir "$UL" 2>/dev/null; then kill -0 "$(cat "$UL/pid" 2>/dev/null)" 2>/dev/null && \
   { echo "unit '$SLUG' already has a writer (pid $(cat "$UL/pid")); not starting"; exit 3; }; rm -rf "$UL"; mkdir "$UL"; fi
-ev queued "$LANE" "$TASK"; echo $$ > "$UL/pid"; trap 'rm -rf "$UL"' EXIT
+ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"; echo $$ > "$UL/pid"; trap 'rm -rf "$UL"' EXIT
 git -C "$REPO" fetch -q origin; TRIED=""; N=0
 for L in $(cfg order "$LANE"); do
   N=$((N+1)); [ $N -gt 2 ] && break
@@ -71,7 +78,13 @@ for L in $(cfg order "$LANE"); do
   (cd "$WT" && bash "$REPO/scripts/wt-setup.sh") >> "$LOG" 2>&1
   [ -n "${LANE_PREV:-}" ] && sleep "${LANE_STAGGER:-20}"   # stagger agent launches (keychain race)
   LANE_PREV=$L
-  run_agent "$L" "$WT" "$LOG"; rc=$?
+  run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; LAST=$(date +%s); SIG=""
+  while kill -0 $AP 2>/dev/null; do sleep 30   # liveness = new commit/push/check, not log mtime
+    S=$(git -C "$WT" rev-parse HEAD; git -C "$WT" ls-remote origin "$B" 2>/dev/null; git -C "$WT" status --porcelain | shasum)
+    [ "$S" != "$SIG" ] && { SIG=$S; LAST=$(date +%s); }
+    if [ $(( $(date +%s) - LAST )) -gt $((EXP * 60)) ]; then ev STUCK "$L" "no commit/push/change for ${EXP}m; requeue"
+      pkill -P $AP 2>/dev/null; kill $AP 2>/dev/null; break; fi
+  done; wait $AP; rc=$?
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
   [ -n "$(git -C "$WT" log --oneline "$BASE"..HEAD)" ] || { echo "agent made no commit" >> "$LOG"; ev failed "$L" "no commit"; continue; }
   CH=$(git -C "$WT" diff --shortstat "$BASE"...HEAD | awk '{print $4+$6}')
@@ -80,13 +93,16 @@ for L in $(cfg order "$LANE"); do
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && TI_BASE=$BASE bash "$REPO/scripts/verify.sh") >> "$LOG" 2>&1 || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
-  BODY="Task: $TASK"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
+  BODY="Task: $TITLE"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
   BODY+="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID")"
-  URL=$(cd "$WT" && gh pr create -R CarlvinceTan/Polymux --head "$B" --base main --title "$TASK" --body "$BODY" 2>>"$LOG")
+  LV=$(cat "$WT/.build/proof/level" 2>/dev/null || echo build-only); DRAFT=""
+  [ "$LV" = build-only ] && { DRAFT=--draft; BODY="**Verification level: build-only, so this is NOT ready for review (draft).**"$'\n\n'"$BODY"; }
+  URL=$(cd "$WT" && gh pr create $DRAFT -R CarlvinceTan/Polymux --head "$B" --base main --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG")
   [ -n "$URL" ] || { ev failed "$L" "gh pr create failed"; continue; }
-  ev pr "$L" "$URL"; echo "$URL"; exit 0
+  ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV" >> "$OPS/results.tsv"
+  echo "$URL ($LV)"; exit 0
 done
 ERR=$(tail -n 5 "$LOG" | tr '\t\n' '  ')
-printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$TASK" "${TRIED# }" "$ERR" "$LOG" >> "$OPS/failures.tsv"
-echo "$(date '+%F %T') $ID: $TASK (lanes:$TRIED) log $LOG" >> "$OPS/NEEDS_CODY"
+printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$TITLE" "${TRIED# }" "$ERR" "$LOG" >> "$OPS/failures.tsv"
+echo "$(date '+%F %T') $ID: $TITLE (lanes:$TRIED) log $LOG" >> "$OPS/NEEDS_CODY"
 ev needs_cody "${TRIED# }" "$LOG"; echo "FAILED after:$TRIED -> $OPS/NEEDS_CODY"; exit 1

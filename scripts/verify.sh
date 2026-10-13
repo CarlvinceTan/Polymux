@@ -8,7 +8,9 @@ ROOT=$(git rev-parse --show-toplevel); cd "$ROOT"
 [ -f .build/env ] || bash "$SD/wt-setup.sh" >/dev/null
 . .build/env
 P=.build/proof; L=.build/logs; R=.build/results
-rm -rf "$P" "$R"; mkdir -p "$P" "$L" "$R"
+VD="$ROOT/.build/verify-data"; rm -rf "$P" "$R" "$VD"; mkdir -p "$P" "$L" "$R" "$VD"
+export POLYMUX_DATA_DIR="$VD" POLYMUX_SEED=1   # own app data + seeded sessions per worktree
+export TEST_RUNNER_POLYMUX_DATA_DIR="$VD" TEST_RUNNER_POLYMUX_SEED=1 SIMCTL_CHILD_POLYMUX_DATA_DIR="$VD" SIMCTL_CHILD_POLYMUX_SEED=1
 LOCKS=$(python3 "$SD/lanes.py" get lock_dir); MAX=${VERIFY_MAX_BUILDS:-$(python3 "$SD/lanes.py" get max_builds)}
 mkdir -p "$LOCKS"; SLOT=""; VPID=""
 cleanup() { [ -n "$VPID" ] && kill -INT "$VPID" 2>/dev/null
@@ -55,6 +57,12 @@ ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcsharedd
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1
 step ios-$ACT xcodebuild $ACT -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination "id=$SIM_UDID" $([ $ACT = test ] && echo -resultBundlePath "$R/ios.xcresult") "${XC[@]}"
+# Readiness: a UI test waits on accessibility ids (sidebar.sessions + seeded rows), never sleeps.
+READY=unavailable; UT=apps/Polymux/PolymuxUITests/ReadinessTests.swift
+if [ -f "$UT" ]; then step ios-ready xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+  -destination "id=$SIM_UDID" -only-testing:PolymuxUITests/ReadinessTests -resultBundlePath "$R/ready.xcresult" "${XC[@]}"
+  grep -q '^| ios-ready | PASS' <(printf '%s\n' "${ROWS[@]}") && READY=yes || READY=no
+else echo "verify: readiness unavailable (no $UT; see scripts/templates/ReadinessTests.swift)"; FAIL=1; fi
 rm -rf "$SLOT"; SLOT=""   # heavy work done; media capture doesn't need the slot
 # Media: iOS sim screenshots + short video, macOS screenshot, XCUITest attachments.
 APP=$(find "$DD/Build/Products" -path "*iphonesimulator/*.app" -maxdepth 3 | head -1)
@@ -68,18 +76,30 @@ if [ -n "$APP" ]; then
   kill -INT $VPID; wait $VPID 2>/dev/null; VPID=""
 fi
 MAC=$(find "$DD/Build/Products" -path "*Debug/*.app" -maxdepth 3 | grep -v iphone | head -1)
-if [ -n "$MAC" ]; then open -n "$MAC" 2>/dev/null; sleep 6
+if [ -n "$MAC" ]; then open -n --env POLYMUX_DATA_DIR="$VD" --env POLYMUX_SEED=1 "$MAC" 2>/dev/null; sleep 6
   screencapture -x "$P/macos.png" 2>"$L/screencapture.log"
   screencapture -x -v -V 8 "$P/macos.mov" >>"$L/screencapture.log" 2>&1
   pkill -f "$MAC/Contents/MacOS" 2>/dev/null; fi
-for r in mac ios; do [ -d "$R/$r.xcresult" ] && xcrun xcresulttool export attachments \
+for r in mac ios ready; do [ -d "$R/$r.xcresult" ] && xcrun xcresulttool export attachments \
   --path "$R/$r.xcresult" --output-path "$P/att-$r" >/dev/null 2>&1; done
 grep -hE "error: .*(failed|XCTAssert)|Test Case .* failed" "$L"/*.log | sort -u | head -20 > "$P/failures.txt"
 MEDIA=$(cd "$P" && ls *.png *.mp4 *.mov 2>/dev/null | tr '\n' ' ')
+# Verification level: build-only < unit < ui < proof-media (highest that actually passed).
+ok() { printf '%s\n' "${ROWS[@]}" | grep -q "^| $1 | PASS | [1-9]"; }
+LEVEL=build-only; ok packages && LEVEL=unit
+{ [ $READY = yes ] || ok ios-test; } && LEVEL=ui
+[ $LEVEL = ui ] && ls "$P"/*.png "$P"/*.mp4 >/dev/null 2>&1 && LEVEL=proof-media
+echo $LEVEL > "$P/level"
 { echo "## verify.sh: $([ $FAIL = 0 ] && echo PASS || echo FAIL)"
   echo "commit \`$(git rev-parse --short HEAD)\` on $(hostname -s), $(date '+%F %T %Z'), worktree $WT_NAME"
+  echo "level: **$LEVEL**, ready (sidebar + seeded sessions): $READY"
   echo; echo "| step | result | tests | time |"; echo "|---|---|---|---|"; printf '%s\n' "${ROWS[@]}"
   echo; echo "media: ${MEDIA:-none (see logs; Screen Recording permission?)}"
   [ -s "$P/failures.txt" ] && { echo; echo '```'; cat "$P/failures.txt"; echo '```'; }
 } > "$P/summary.md"
+EV="$HOME/verify-evidence/$(git rev-parse --abbrev-ref HEAD | tr / -)/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$EV"
+cp -R "$P" "$EV/proof"; cp -R "$L" "$EV/logs"
+for x in "$R"/*.xcresult; do [ -d "$x" ] && xcrun xcresulttool get test-results summary --path "$x" \
+  > "$EV/$(basename "$x" .xcresult)-summary.json" 2>/dev/null; done
+echo "evidence: $EV" | tee -a "$P/summary.md"; echo "$EV" > "$P/evidence"
 cat "$P/summary.md"; exit $FAIL
