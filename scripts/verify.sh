@@ -108,7 +108,8 @@ echo $LEVEL > "$P/level"
   echo; echo "media: ${MEDIA:-none (see logs; Screen Recording permission?)}"
   [ -s "$P/failures.txt" ] && { echo; echo '```'; cat "$P/failures.txt"; echo '```'; }
 } > "$P/summary.md"
-EV="$HOME/verify-evidence/$(git rev-parse --abbrev-ref HEAD | tr / -)/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$EV"
+BRN=$(git rev-parse --abbrev-ref HEAD); [ "$BRN" = HEAD ] && { git merge-base --is-ancestor origin/main HEAD 2>/dev/null && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && BRN=main || BRN="detached-$(git rev-parse --short HEAD)"; }
+EV="$HOME/verify-evidence/$(echo "$BRN" | tr / -)/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$EV"
 cp -R "$P" "$EV/proof"; cp -R "$L" "$EV/logs"
 for x in "$R"/*.xcresult; do [ -d "$x" ] && xcrun xcresulttool get test-results summary --path "$x" \
   > "$EV/$(basename "$x" .xcresult)-summary.json" 2>/dev/null; done
