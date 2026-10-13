@@ -937,7 +937,8 @@ struct TransportTests {
         var accepted = try #require(chat.messages.first)
         accepted.seq = 1
         accepted.status = "done"
-        try await reopened.offMain { try $0.apply(Event(seq: 1, conversationID: created.id, type: "message.start", message: accepted, createdAt: accepted.createdAt)) }
+        let stored = accepted
+        try await reopened.offMain { try $0.apply(Event(seq: 1, conversationID: created.id, type: "message.start", message: stored, createdAt: stored.createdAt)) }
         #expect(try await reopened.offMain { try $0.messages(threadID: created.id) }.first?.mentions == ["a"])
         #expect(try await reopened.offMain { try $0.pending(threadID: created.id) }.isEmpty)
     }

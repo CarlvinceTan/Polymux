@@ -321,7 +321,8 @@ import Testing
         try await cache.offMain { try $0.apply(event) }
         var stale = thread
         stale.runs = [run(status: "queued", seq: 0)]
-        try await cache.offMain { try $0.save(agents: [agent], threads: [stale]) }
+        let queued = stale
+        try await cache.offMain { try $0.save(agents: [agent], threads: [queued]) }
         let reopened = try await CacheWork.open(url)
         #expect(try await reopened.offMain { try $0.runs(threadID: "group") }.first?.activity == "tool")
         #expect(try await reopened.offMain { try $0.cursor(threadID: "group") } == 1)
@@ -335,7 +336,8 @@ import Testing
         let cache = try await CacheWork.open(url)
         let agent = Agent(id: "a", name: "A")
         var thread = Thread(id: "group", agentID: "a", title: "Group", agentIDs: ["a"])
-        try await cache.offMain { try $0.save(agents: [agent], threads: [thread]) }
+        let seeded = thread
+        try await cache.offMain { try $0.save(agents: [agent], threads: [seeded]) }
         let activity = ActivityStore()
         let old = run("old", seq: 1)
         try await cache.offMain { try $0.apply(Event(seq: 1, conversationID: "group", type: "run.update", createdAt: old.updatedAt, run: old)) }
@@ -343,8 +345,9 @@ import Testing
         let done = run("done", status: "completed", seq: 2, created: "2026-10-09T12:01:00Z")
         thread.lastSeq = 2
         thread.runs = [done]
-        try await cache.offMain { try $0.reconcile(thread) }
-        activity.reconcile(thread)
+        let finished = thread
+        try await cache.offMain { try $0.reconcile(finished) }
+        activity.reconcile(finished)
         #expect(try await cache.offMain { try $0.runs(threadID: "group") }.map(\.id) == ["done"])
         #expect(activity.view(conversationID: "group", agentID: "a").animation == "idle")
         try await cache.offMain { try $0.apply(Event(seq: 2, conversationID: "group", type: "run.done", createdAt: done.updatedAt, run: done)) }
@@ -352,14 +355,16 @@ import Testing
         let live = Event(seq: 3, conversationID: "group", type: "run.update", createdAt: next.updatedAt, run: next)
         try await cache.offMain { try $0.apply(live) }
         activity.receive(live, live: true)
-        try await cache.offMain { try $0.reconcile(thread) }
-        activity.reconcile(thread)
+        let current = thread
+        try await cache.offMain { try $0.reconcile(current) }
+        activity.reconcile(current)
         #expect(activity.view(conversationID: "group", agentID: "a").animation == "swirl")
         #expect(try await cache.offMain { try $0.runs(threadID: "group") }.contains { $0.id == "next" })
         thread.lastSeq = 4
         thread.runs = []
-        try await cache.offMain { try $0.reconcile(thread) }
-        activity.reconcile(thread)
+        let cleared = thread
+        try await cache.offMain { try $0.reconcile(cleared) }
+        activity.reconcile(cleared)
         #expect(try await cache.offMain { try $0.threads() }.first?.runs.isEmpty == true)
         #expect(activity.view(conversationID: "group", agentID: "a").animation == "idle")
     }
