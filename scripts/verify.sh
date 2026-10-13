@@ -1,7 +1,7 @@
 #!/bin/bash
 # The one build contract for agents: build+test macOS and iOS in this worktree, capture
 # screenshots/video, write .build/proof/summary.md. Exit 0 only when everything passed.
-# Builds wait for a slot in the shared lock dir (max_builds) and for ~/ops/pr-verify builds.
+# Builds wait for a slot in the shared lock dir (max_builds; 1 while ~/ops/pr-verify builds).
 set -uo pipefail
 ROOT=$(git rev-parse --show-toplevel); cd "$ROOT"
 [ -f .build/env ] || bash scripts/wt-setup.sh >/dev/null
@@ -17,8 +17,10 @@ trap cleanup EXIT INT TERM
 acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
   local t0=$SECONDS
   while :; do
-    if ! pgrep -f "ops/pr-verify/.*xcodebuild|xcodebuild.*ops/pr-verify" >/dev/null; then
-      for i in $(seq 1 "$MAX"); do
+    local m=$MAX   # ~/ops/pr-verify busy -> share politely: at most one of ours at a time
+    pgrep -f "xcodebuild.*ops/pr-verify" >/dev/null && m=1
+    if :; then
+      for i in $(seq 1 "$m"); do
         s="$LOCKS/slot$i"
         if mkdir "$s" 2>/dev/null; then echo $$ > "$s/pid"; echo "$ROOT" > "$s/wt"; SLOT=$s; return; fi
         kill -0 "$(cat "$s/pid" 2>/dev/null)" 2>/dev/null || rm -rf "$s"
