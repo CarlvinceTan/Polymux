@@ -12,9 +12,9 @@ published: true
 
 Hub brings supported messaging platforms and email accounts into the Polymux workspace. You can read a conversation, write a reply, and let the agent work with the selected thread without constantly changing apps.
 
-## Connect an account
+## Connect a service
 
-Open **Settings → Hub** and choose a messaging platform or email provider. The exact sign-in flow depends on the service: it may use OAuth, a QR code, a pairing code, an app password, or provider-specific credentials.
+Open **Settings → Hub** and choose a messaging platform or email provider. How you connect depends on the service: a QR code, a pairing code, an app password, or credentials that provider gives you. That connection belongs to the service. Polymux has no account to sign in to.
 
 Some notable requirements:
 

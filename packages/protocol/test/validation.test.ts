@@ -96,9 +96,21 @@ test("validates account-scoped mail signatures without flattening their layout",
 });
 
 test("accepts only storage providers this build knows", () => {
-  assert.equal(driveProvider("google-drive"), "google-drive");
+  assert.equal(driveProvider("local"), "local");
   assert.throws(() => driveProvider("icloud"), /not a supported storage provider/);
   assert.throws(() => driveProvider(7), /not a supported storage provider/);
+});
+
+test("rejects Google Drive because this build has no sign-in for it", () => {
+  assert.throws(() => driveProvider("google-drive"), /not a supported storage provider/);
+});
+
+test("rejects OneDrive because this build has no sign-in for it", () => {
+  assert.throws(() => driveProvider("onedrive"), /not a supported storage provider/);
+});
+
+test("rejects Dropbox because this build has no sign-in for it", () => {
+  assert.throws(() => driveProvider("dropbox"), /not a supported storage provider/);
 });
 
 test("keeps every storage provider reachable in the save order", () => {
