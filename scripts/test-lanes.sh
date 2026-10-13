@@ -8,7 +8,7 @@ PASS=0; FAILS=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAILS=$((FAILS+1)); echo "FAIL $1"; fi; }
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/repo"; cd "$T/repo"
 git config user.name "Lane Test"; git config user.email lane@test.invalid
-mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup,board-update}.sh "$SRC"/scripts/lanes.py scripts/
+mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup,board-update}.sh "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
 cat > agents/lanes.toml <<'TOML'
 max_builds = 1
 lock_dir = "~/ops/lanes/locks"
@@ -115,31 +115,7 @@ check "--apply prunes old proof branch, keeps recent" '! git ls-remote --exit-co
 # 9 lanes.py per-host override
 printf '[l]\nkey = "neutral"\nkey@hostx = "special"\n' > "$T/o.toml"
 check "lanes.py host override" '[ "$(LANES_TOML=$T/o.toml LANES_HOST=hostx python3 scripts/lanes.py lane l key)" = special ] && [ "$(LANES_TOML=$T/o.toml LANES_HOST=y python3 scripts/lanes.py lane l key)" = neutral ]'
-# 16 board-update.sh: stub vault + curl (no network); token never reaches curl argv
-B="$T/bb"; mkdir -p "$B"; BLOG="$LANES_HOME/board.log"; BU="bash scripts/board-update.sh"
-printf '#!/bin/sh\necho "{\\"password\\":\\"SECRET-TOK\\"}"\n' > "$B/vault"
-cat > "$B/curl" <<'STUB'
-#!/bin/bash
-cat > /dev/null; echo "$*" >> "$BOARD_T/curl.log"
-case "$*" in *"-X GET"*pages/*) printf '{"properties":{"Status":{"type":"select","select":{"name":"%s"}}}}' "$(cat "$BOARD_T/cur")";;
-  *"-X PATCH"*) [ -f "$BOARD_T/fail" ] && exit 22; echo '{}';; *) echo '{"results":[]}';; esac
-STUB
-chmod +x "$B/vault" "$B/curl"; export BOARD_T="$T"; BP="$B:$PATH"; : > "$T/curl.log"
-printf 'needs: none\ncard: https://app.notion.com/p/Fake-0123456789abcdef0123456789abcdef\nFake unit\n' > "$T/c.task"
-printf 'needs: none\nNo card unit\n' > "$T/nc.task"
-PATH=$BP $BU card fake-unit "$T/c.task"; PATH=$BP $BU card nocard "$T/nc.task"; PATH=$BP $BU start nocard; R0=$?
-check "board: missing card: line -> skip + log, exit 0" '[ $R0 = 0 ] && grep -q "nocard card: skip: no card: line" "$BLOG" && grep -q "nocard start: skip: no card for unit" "$BLOG" && grep -q "	nocard	board	start" "$LANES_HOME/events.tsv"'
-echo Backlog > "$T/cur"; PATH=$BP $BU start fake-unit
-check "board: dry-run when BOARD_LIVE absent (logs exact write, no PATCH)" 'grep -q "DRY-RUN would PATCH pages/01234567-89ab-cdef-0123-456789abcdef Status: .Backlog. -> .In Progress." "$BLOG" && ! grep -q PATCH "$T/curl.log"'
-touch "$LANES_HOME/BOARD_LIVE"; echo "In Progress" > "$T/cur"; PATH=$BP $BU start fake-unit
-check "board: idempotent skip when value already equal" 'grep -q "fake-unit start: skip: Status already .In Progress." "$BLOG" && ! grep -q PATCH "$T/curl.log"'
-echo Review > "$T/cur"; PATH=$BP $BU merged fake-unit
-check "board: live write is one PATCH to Completed" '[ "$(grep -c "X PATCH" "$T/curl.log")" = 1 ] && grep -q "wrote Status: .Review. -> .Completed." "$BLOG"'
-check "board: token never in curl argv or logs" '! grep -q SECRET-TOK "$T/curl.log" "$BLOG" "$LANES_HOME/events.tsv"'
-mkdir -p "$LANES_HOME/board/fake-unit.lock"; echo $$ > "$LANES_HOME/board/fake-unit.lock/pid"
-PATH=$BP BOARD_LOCK_TRIES=1 $BU verify fake-unit build-only; R1=$?; rm -rf "$LANES_HOME/board/fake-unit.lock"
-check "board: lock contention -> not written, logged, exit 0" '[ $R1 = 0 ] && grep -q "verify: error: unit lock busy" "$BLOG" && [ "$(grep -c "X PATCH" "$T/curl.log")" = 1 ]'
-touch "$T/fail"; PATH=$BP $BU verify fake-unit UI-verified; R2=$?; PATH=$BP $BU verify fake-unit bogus; rm -f "$T/fail" "$LANES_HOME/BOARD_LIVE"
-check "board: failed write never fails caller; bad level refused" '[ $R2 = 0 ] && grep -q "error: write Verification=.UI-verified. failed" "$BLOG" && grep -q "level .bogus. is not a board option" "$BLOG"'
+# 16 board-update.sh (Notion board) cases
+. "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"
 echo "test-lanes: $PASS passed, $FAILS failed"; [ $FAILS = 0 ]
