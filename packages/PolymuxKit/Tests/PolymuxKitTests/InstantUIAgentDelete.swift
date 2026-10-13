@@ -83,14 +83,21 @@ struct InstantUIAgentDelete {
 
     @Test func rollbackRespectsNavigation() {
         var pending = DeleteSelection(previous: "gone", replacement: "kept")
-        pending.navigate(to: "kept")
         #expect(pending.rollback(current: "kept") == "gone")
+        pending.navigate(to: "kept")
+        #expect(pending.rollback(current: "kept") == "kept")
         pending.navigate(to: nil)
         #expect(pending.rollback(current: nil) == nil)
         pending.navigate(to: "kept")
         #expect(pending.rollback(current: "kept") == "kept")
         let empty = DeleteSelection(previous: "gone", replacement: nil)
         #expect(empty.rollback(current: nil) == "gone")
+    }
+
+    @Test func explicitDeselectPreventsRollback() {
+        var pending = DeleteSelection(previous: "gone", replacement: nil)
+        pending.navigate(to: nil)
+        #expect(pending.rollback(current: nil) == nil)
     }
 
     @Test func deleteDiskWorkYieldsMainActor() async throws {

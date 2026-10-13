@@ -190,7 +190,9 @@ struct ShellView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .onChange(of: selection, initial: true) { _, value in
-            deleteSelection?.navigate(to: value)
+            if value != deleteSelection?.replacement {
+                deleteSelection?.navigate(to: value)
+            }
             Notifications.shared.visible(scenePhase == .active ? value : nil, window: windowID)
         }
         .onChange(of: scenePhase) { _, phase in
@@ -422,6 +424,7 @@ struct ShellView: View {
     }
 
     private func beginDelete(_ agent: Agent) {
+        guard deleting == nil else { return }
         let tap = ContinuousClock().now
         deleting = agent.id
         deleteError = nil

@@ -649,7 +649,7 @@ public struct DeleteSelection {
     }
 
     public mutating func navigate(to selection: String?) {
-        if selection != replacement { navigated = true }
+        navigated = true
     }
 
     public func rollback(current: String?) -> String? {
