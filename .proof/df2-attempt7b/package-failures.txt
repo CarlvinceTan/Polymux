@@ -1,0 +1,11 @@
+✘ Test testBubbleBudgetHoldsWhileFilesUpload() recorded an issue at InstantSendTests.swift:77:9: Expectation failed: span.withinBudget
+✘ Test testBubbleBudgetHoldsWhileFilesUpload() failed after 8.766 seconds with 1 issue.
+✘ Test failedVoiceFlushFinishesEveryQueuedTurn() recorded an issue at TransportTests.swift:764:6: Caught error: .response(408, "Voice delivery test timed out.")
+✘ Test voiceReplyInterruptionKeepsAcceptedMessage() recorded an issue at TransportTests.swift:745:6: Caught error: .response(408, "Voice delivery test timed out.")
+✘ Test failedVoiceFlushFinishesEveryQueuedTurn() failed after 10.314 seconds with 1 issue.
+✘ Test voiceReplyInterruptionKeepsAcceptedMessage() failed after 10.314 seconds with 1 issue.
+✘ Suite InstantSendTests failed after 11.878 seconds with 1 issue.
+✘ Test queuedVoiceRepliesUseTheirOwnUserIdentity() recorded an issue at TransportTests.swift:1211:6: Caught error: .response(408, "Voice correlation test timed out.")
+✘ Test queuedVoiceRepliesUseTheirOwnUserIdentity() failed after 16.755 seconds with 1 issue.
+✘ Suite TransportTests failed after 28.752 seconds with 3 issues.
+✘ Test run with 131 tests in 17 suites failed after 28.752 seconds with 4 issues.

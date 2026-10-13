@@ -1,0 +1,16 @@
+xcrun xctrace record --template 'Animation Hitches' --all-processes --time-limit 2s --no-prompt --output .build/preflight.trace
+Starting recording with the Animation Hitches template. Targeting All Processes. Time limit: 2.0 s
+Ctrl-C to stop the recording
+Reached specified time limit, ending recording...
+Recording completed. Saving output file...
+Output file saved as: preflight.trace
+Exit: 0
+xcrun xctrace export --input .build/preflight.trace --toc --output .proof/df2-attempt7b/preflight-toc.xml
+Finished export to the file: .proof/df2-attempt7b/preflight-toc.xml
+Exit: 0
+cua-driver list_windows '{"session":"df2-scroll-7b"}'
+Cua Driver daemon is not running on this worktree's .build/lanehome/Library/Caches/cua-driver/cua-driver.sock.
+cua.getApp('<worktree>/.build/DD/Build/Products/Release/Polymux.app')
+Sky Computer Use native pipe startup failed
+Repeated cua.getApp: Sky Computer Use native pipe startup failed
+No native scroll action was performed. This is an idle preflight, not scroll coverage.
