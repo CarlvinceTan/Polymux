@@ -83,8 +83,8 @@ final class ReadinessTests: XCTestCase {
         // Unread rows announce their state without a count; collect the announcement across viewports.
         var announced = Set<String>()
         timed("unread.rows") {
-            let rows = any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.' AND (value == 'Unread' OR value BEGINSWITH 'Unread, ')"))
-            announced.formUnion(rows.allElementsBoundByIndex.map(\.identifier))
+            let rows = any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.'"))
+            announced.formUnion(rows.allElementsBoundByIndex.filter(announces).map(\.identifier))
             if Self.unreadIDs.allSatisfy({ announced.contains("sidebar.row.\($0)") }) { return true }
             #if os(macOS)
             // The window can extend past the screen; never scroll a list without a hit point.
@@ -106,6 +106,15 @@ final class ReadinessTests: XCTestCase {
         }
     }
 
+    func announces(_ row: XCUIElement) -> Bool {
+        #if os(macOS)
+        return row.label.components(separatedBy: ", ").contains("Unread")
+        #else
+        let value = row.value as? String ?? ""
+        return value == "Unread" || value.hasPrefix("Unread, ")
+        #endif
+    }
+
     func capture(_ mode: String, app: XCUIApplication) {
         app.terminate()
         app.launchEnvironment["POLYMUX_VERIFY_APPEARANCE"] = mode
@@ -116,8 +125,7 @@ final class ReadinessTests: XCTestCase {
         }
         timed("unread.\(mode)") {
             let row = any["sidebar.row.t-aria"]
-            let value = row.value as? String ?? ""
-            return row.exists && (value == "Unread" || value.hasPrefix("Unread, "))
+            return row.exists && announces(row)
         }
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "unread-\(mode)"; shot.lifetime = .keepAlways; add(shot)

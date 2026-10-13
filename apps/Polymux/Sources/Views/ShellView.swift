@@ -389,10 +389,6 @@ struct ShellView: View {
             }
         }
         .accessibilityIdentifier("sidebar.row.\(thread.id)")
-        .accessibilityValue(UnreadAccess.value(count: thread.unreadCount,
-            activity: thread.isGroup ? "" : ActivityStore.present(runs: thread.runs,
-                conversationID: thread.id, agentID: thread.agentID,
-                connected: session.sidebar.isConnected).label))
         #if os(macOS)
         .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 12))
         .overlay {
@@ -459,6 +455,15 @@ struct ShellView: View {
     }
 }
 
+private func rowLabel(_ label: String, value: String) -> String {
+    #if os(macOS)
+    // Native navigation links discard AXValue; include the announcement in AXLabel.
+    return value.isEmpty ? label : "\(label), \(value)"
+    #else
+    return label
+    #endif
+}
+
 struct AgentRow: View {
     let agent: Agent
     let thread: PolymuxKit.Thread?
@@ -483,8 +488,12 @@ struct AgentRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(agent.name), \(agent.role), \(preview)")
-        .accessibilityValue(UnreadAccess.value(count: thread?.unreadCount ?? 0, activity: ActivityStore.present(runs: thread?.runs ?? [], conversationID: thread?.id ?? agent.id, agentID: agent.id, connected: connected).label))
+        .accessibilityLabel(rowLabel("\(agent.name), \(agent.role), \(preview)", value: announcement))
+        .accessibilityValue(announcement)
+    }
+
+    private var announcement: String {
+        UnreadAccess.value(count: thread?.unreadCount ?? 0, activity: presentation.label)
     }
 
     private var rowGap: CGFloat {
@@ -536,7 +545,8 @@ struct GroupRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(thread.title), \(members.map(\.name).joined(separator: ", ")), \(preview)")
+        .accessibilityLabel(rowLabel("\(thread.title), \(members.map(\.name).joined(separator: ", ")), \(preview)",
+                                     value: UnreadAccess.value(count: thread.unreadCount)))
         .accessibilityValue(UnreadAccess.value(count: thread.unreadCount))
     }
 
