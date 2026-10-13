@@ -37,6 +37,10 @@ final class ReadinessTests: XCTestCase {
             }
         }
         app.launch()
+        #if os(macOS)
+        // A GUI-session launch can leave the test runner in front.
+        app.activate()
+        #endif
         timed("foreground") { app.wait(for: .runningForeground, timeout: 1) }
         let any = app.descendants(matching: .any)
         timed("chats.list") { any["chats.list"].exists }
