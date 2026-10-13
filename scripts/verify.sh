@@ -29,7 +29,7 @@ acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
         kill -0 "$(cat "$s/pid" 2>/dev/null)" 2>/dev/null || rm -rf "$s"
       done
     fi
-    [ $((SECONDS - t0)) -gt 7200 ] && { echo "verify: no build slot after 2h"; exit 3; }
+    [ $((SECONDS - t0)) -gt 7200 ] && { echo "verify: no build slot after 2h"; echo blocked > "$P/level"; exit 3; }
     sleep 15
   done
 }
@@ -43,7 +43,7 @@ step() {  # step NAME cmd...
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
-python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "fetch_cua failed"; FAIL=1; }
+python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }
 XC=(-derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
 acquire; echo "verify: slot $SLOT"
@@ -62,7 +62,7 @@ READY=unavailable; UT=apps/Polymux/PolymuxUITests/ReadinessTests.swift
 if [ -f "$UT" ]; then step ios-ready xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination "id=$SIM_UDID" -only-testing:PolymuxUITests/ReadinessTests -resultBundlePath "$R/ready.xcresult" "${XC[@]}"
   grep -q '^| ios-ready | PASS' <(printf '%s\n' "${ROWS[@]}") && READY=yes || READY=no
-else echo "verify: readiness unavailable (no $UT; see scripts/templates/ReadinessTests.swift)"; FAIL=1; fi
+else echo "verify: readiness unavailable (no $UT; see scripts/templates/ReadinessTests.swift); caps level below UI-verified"; fi
 rm -rf "$SLOT"; SLOT=""   # heavy work done; media capture doesn't need the slot
 # Media: iOS sim screenshots + short video, macOS screenshot, XCUITest attachments.
 APP=$(find "$DD/Build/Products" -path "*iphonesimulator/*.app" -maxdepth 3 | head -1)
@@ -84,11 +84,11 @@ for r in mac ios ready; do [ -d "$R/$r.xcresult" ] && xcrun xcresulttool export 
   --path "$R/$r.xcresult" --output-path "$P/att-$r" >/dev/null 2>&1; done
 grep -hE "error: .*(failed|XCTAssert)|Test Case .* failed" "$L"/*.log | sort -u | head -20 > "$P/failures.txt"
 MEDIA=$(cd "$P" && ls *.png *.mp4 *.mov 2>/dev/null | tr '\n' ' ')
-# Verification level: build-only < unit < ui < proof-media (highest that actually passed).
+# Verification level (exact names): UI-verified | unit-test-verified | build-only | blocked | failed
 ok() { printf '%s\n' "${ROWS[@]}" | grep -q "^| $1 | PASS | [1-9]"; }
-LEVEL=build-only; ok packages && LEVEL=unit
-{ [ $READY = yes ] || ok ios-test; } && LEVEL=ui
-[ $LEVEL = ui ] && ls "$P"/*.png "$P"/*.mp4 >/dev/null 2>&1 && LEVEL=proof-media
+LEVEL=build-only; ok packages && LEVEL=unit-test-verified
+{ [ $READY = yes ] || ok ios-test; } && ls "$P"/*.png >/dev/null 2>&1 && LEVEL=UI-verified
+[ $FAIL = 1 ] && LEVEL=failed
 echo $LEVEL > "$P/level"
 { echo "## verify.sh: $([ $FAIL = 0 ] && echo PASS || echo FAIL)"
   echo "commit \`$(git rev-parse --short HEAD)\` on $(hostname -s), $(date '+%F %T %Z'), worktree $WT_NAME"

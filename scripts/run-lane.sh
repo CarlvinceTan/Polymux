@@ -31,14 +31,13 @@ if [ "${1:-}" = "--verify-only" ]; then
   gh pr comment "$BR" -R CarlvinceTan/Polymux --body "Mac proof (cvmini):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
 fi
-LANE=$1; TASK=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60
+LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60
 if [ -f "$TASK" ]; then  # task file: "needs: xcode|ios-sim|none", "expected_min: N", rest is the brief
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
-  TASK=$(grep -vE '^(needs|expected_min):' "$TASK"); NEEDS=${NEEDS:-}; EXP=${EXP:-60}
-  [ -n "$NEEDS" ] || { echo "refusing: task file has no needs: line"; exit 4; }
+  TASK=$(grep -vE '^(unit|needs|scope|expected_min):' "$TASK"); EXP=${EXP:-60}
 fi
-case $NEEDS in *xcode*|*ios-sim*) command -v xcodebuild >/dev/null && [ "$(hostname -s)" = cvmini ] || \
-  { echo "refusing: needs $NEEDS: run on cvmini"; exit 4; };; esac
+TARGET=${LANE_TARGET:-$(hostname -s)}   # dispatcher Xcode guard: refuse before any claim/worktree
+bash "$REPO/scripts/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
 TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-32 | sed 's/-$//')
 ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
@@ -96,6 +95,7 @@ for L in $(cfg order "$LANE"); do
   BODY="Task: $TITLE"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
   BODY+="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID")"
   LV=$(cat "$WT/.build/proof/level" 2>/dev/null || echo build-only); DRAFT=""
+  case $LV in UI-verified|unit-test-verified) ;; build-only) ;; *) ev failed "$L" "level $LV"; continue;; esac
   [ "$LV" = build-only ] && { DRAFT=--draft; BODY="**Verification level: build-only, so this is NOT ready for review (draft).**"$'\n\n'"$BODY"; }
   URL=$(cd "$WT" && gh pr create $DRAFT -R CarlvinceTan/Polymux --head "$B" --base main --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG")
   [ -n "$URL" ] || { ev failed "$L" "gh pr create failed"; continue; }
