@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v brew >/dev/null || { echo "install Homebrew first"; exit 1; }
 for f in gh xcbeautify tmux; do command -v $f >/dev/null || brew install $f; done
+{ command -v ffprobe >/dev/null && command -v ffmpeg >/dev/null; } || brew install ffmpeg   # media-check: video stream, length, frames
+python3 -c "import PIL" 2>/dev/null || python3 -m pip install --user Pillow || { echo "Pillow install failed; media-check needs it"; exit 1; }
 command -v opencode >/dev/null || brew install opencode || echo "warn: opencode not installed"
 command -v vault >/dev/null || { echo "vault CLI missing: install it from its repo (cargo build --release) first; lanes read keys from it"; exit 1; }
 if ! [ -x ~/.local/bin/cursor-agent ] && ! command -v cursor-agent >/dev/null; then   # pinned + checksummed, never curl|bash
