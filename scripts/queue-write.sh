@@ -27,7 +27,7 @@ SD=$(cd "$(dirname "$0")" && pwd)
 OPS=${LANES_HOME:-$HOME/ops/lanes}; Q=$OPS/queue
 LOCK=${QUEUE_LOCK:-$OPS/queue.lock}; WAIT=${QUEUE_LOCK_WAIT:-30}
 die() { echo "queue-write: $1" >&2; exit "${2:-1}"; }
-HDR='unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area'
+HDR='unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|agent'
 
 validate() {  # $1 file, $2 label -> problems on stdout, rc 1 if any
   awk -v L="$2" '
