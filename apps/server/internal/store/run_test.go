@@ -1,9 +1,11 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
@@ -172,6 +174,82 @@ func TestLeadPersists(t *testing.T) {
 	if *group.LeadAgentID != "a" {
 		t.Fatal("removed lead retained")
 	}
+}
+
+func TestResumeInterrupted(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		attempt int64
+		record  string
+		live    bool
+	}{
+		{name: "error result", attempt: 1, record: `{"kind":"pi.tool-result","model":[{"isError":true}]}`},
+		{name: "tool running", attempt: 1, record: `{"kind":"pi.tool-result","model":[{"isError":false}]}`, live: true},
+		{name: "second attempt", attempt: 2, record: `{"kind":"pi.tool-result","model":[{"isError":false}]}`},
+		{name: "missing durable", attempt: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := runStore(t)
+			req := contract.SendRequest{ID: "turn", Text: "Hello", AttachmentIDs: []string{}}
+			if _, _, err := s.Send(t.Context(), "a", req, []contract.Part{{Kind: "text", Text: &req.Text}}, "a"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Job(t.Context(), "a"); err != nil {
+				t.Fatal(err)
+			}
+			run, err := s.Run(t.Context(), NewRun("turn", "a", "a", "message").ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.Status, run.Attempt = "running", tc.attempt
+			if err := s.RunEvent(t.Context(), "run.update", &run, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SaveSession(t.Context(), "a", "durable:1"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.record != "" {
+				if err := writeDurable(t, s, tc.record, tc.live); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.Recover(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			run, err = s.Run(t.Context(), run.ID)
+			if err != nil || run.Status != "interrupted" || run.Error == nil || run.Error.Message == "" {
+				t.Fatalf("recovery %+v %v", run, err)
+			}
+		})
+	}
+}
+
+func writeDurable(t *testing.T, s *Store, record string, live bool) error {
+	t.Helper()
+	var file string
+	if err := s.DB.QueryRowContext(t.Context(), `SELECT file FROM pragma_database_list WHERE name='main'`).Scan(&file); err != nil {
+		return err
+	}
+	file = strings.TrimPrefix(file, "file:")
+	if cut := strings.IndexByte(file, '?'); cut >= 0 {
+		file = file[:cut]
+	}
+	db, err := sql.Open("sqlite3", "file:"+filepath.Join(filepath.Dir(file), "durable.db"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, head INTEGER, commit_seq INTEGER NOT NULL, record TEXT NOT NULL);
+CREATE TABLE tasks (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, abort_requested INTEGER NOT NULL, background INTEGER NOT NULL, record TEXT NOT NULL)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`INSERT INTO entries(id, conversation_id, head, commit_seq, record) VALUES (1, 1, NULL, 1, ?)`, record); err != nil {
+		return err
+	}
+	if live {
+		_, err = db.Exec(`INSERT INTO tasks(id, conversation_id, kind, status, abort_requested, background, record) VALUES (1, 1, 'pi.tool', 'running', 0, 0, '{}')`)
+	}
+	return err
 }
 
 func ptr(text string) *string { return &text }

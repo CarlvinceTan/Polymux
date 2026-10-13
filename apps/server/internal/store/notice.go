@@ -174,6 +174,14 @@ type Push struct {
 	Device contract.PushDevice
 }
 
+// PushResult is the outcome of one provider attempt.
+// HasAfter means After is a Retry-After delay, already capped by the caller deadline.
+type PushResult struct {
+	State    string
+	After    time.Duration
+	HasAfter bool
+}
+
 func (s *Store) ClaimPush(ctx context.Context) (Push, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -201,11 +209,12 @@ ORDER BY q.notice_seq,d.id LIMIT 1`, time.Now().Unix()).Scan(&data, &push.Device
 	return push, tx.Commit()
 }
 
-// PushAttempts bounds delivery retries; an ambiguous send is never replayed.
-const PushAttempts = 3
+// PushAttempts is the first try plus one retry. An ambiguous send is never replayed.
+const PushAttempts = 2
 
-func (s *Store) FinishPush(ctx context.Context, push Push, state string) error {
-	if state != "sent" && state != "failed" && state != "unknown" && state != "invalid" {
+func (s *Store) FinishPush(ctx context.Context, push Push, result PushResult) error {
+	state := result.State
+	if state != "sent" && state != "failed" && state != "unknown" && state != "invalid" && state != "rejected" {
 		return ErrDevice
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -213,7 +222,7 @@ func (s *Store) FinishPush(ctx context.Context, push Push, state string) error {
 		return err
 	}
 	defer tx.Rollback()
-	// A definite transport failure is worth retrying with backoff; an ambiguous one is not.
+	// Only a definite, retryable failure is queued again. 400 and 403 are rejected.
 	if state == "failed" {
 		var attempts int
 		if err := tx.QueryRowContext(ctx, `SELECT attempts FROM push_queue WHERE notice_seq=? AND device_id=?`, push.Notice.Seq, push.Device.ID).Scan(&attempts); err != nil {
@@ -221,6 +230,12 @@ func (s *Store) FinishPush(ctx context.Context, push Push, state string) error {
 		}
 		if attempts < PushAttempts {
 			backoff := time.Duration(1<<attempts) * time.Minute
+			if result.HasAfter {
+				backoff = result.After
+				if backoff < 0 {
+					backoff = 0
+				}
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE push_queue SET state='pending',retry_at=? WHERE notice_seq=? AND device_id=? AND state='sending'`,
 				time.Now().Add(backoff).Unix(), push.Notice.Seq, push.Device.ID); err != nil {
 				return err
