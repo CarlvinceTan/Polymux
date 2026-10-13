@@ -16,7 +16,7 @@ cfg() { python3 "$SD/lanes.py" "$@"; }
 BU() { bash "$SD/board-update.sh" "$@" >> "${LOG:-$OPS/logs/$ID-board.log}" 2>&1 || true; }   # board; errors -> board_error event + lane log
 started() { [ -n "$STARTED" ] && return; { [ -n "$(git -C "$WT" log --oneline "$BASE"..HEAD 2>/dev/null)" ] || [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; } && { STARTED=1; BU start "$SLUG"; }; }  # first real output
 publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own branch proof-media/<id>
-  local wt=$1 id=$2 idx c err ref="proof-media/$2-$(date +%Y%m%d%H%M%S)-$$" n=0; idx=$(mktemp)   # unique per run; never force
+  local wt=$1 id=$2 idx c err ref="proof-media-$2-$(date +%Y%m%d%H%M%S)-$$" n=0; idx=$(mktemp)   # unique per run; never force
   for f in "$wt"/.build/proof/*.png "$wt"/.build/proof/*.mp4; do [ -f "$f" ] && n=$((n+1)); done
   [ $n = 0 ] && { echo "_no media captured_"; return; }
   err=$( cd "$wt" && export GIT_INDEX_FILE=$idx && git read-tree --empty &&
