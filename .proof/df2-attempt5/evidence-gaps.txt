@@ -1,0 +1,45 @@
+DF2 attempt 5: incomplete UI/performance evidence
+
+Verifier exited 0; level is unit-test-verified, not UI-verified.
+No inline activity captures or readiness attachments were generated.
+No Release scrolling trace was recorded. Frame times and hitch ratio: unmeasured.
+
+Current main integrated by merge commit 53809cb; no product fixes authored in this run.
+The mandatory merge contributes 757 insertions and 24 deletions against the run start.
+The verifier builds Debug and has no Release configuration option.
+The app lacks readiness fixture/accessibility hooks and the scheme lacks a UI test action.
+Adding readiness infrastructure and a Release build path remains necessary.
+No push: the final lane instruction prohibits it.
+
+Current command evidence:
+
+$ git rev-parse HEAD origin/main
+53809cbc301ce2d569690ccebe54cdf15bb00a4d
+a2baec500e4b0e4dda1f8c952f5113002e92118b
+exit=0
+
+$ git merge-base --is-ancestor origin/main HEAD
+(no output)
+exit=1
+
+$ test -f apps/Polymux/PolymuxUITests/ReadinessTests.swift
+(no output)
+exit=1
+
+$ rg -n TestAction|TestableReference apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme
+(no output)
+exit=1
+
+$ rg -n verify-fixture|chats.list|sidebar.row|app.status apps/Polymux/Sources
+apps/Polymux/Sources/Views/ShellView.swift:590:/// Keeps hover highlight local so moving across sidebar rows does not rebuild `NavigationSplitView`.
+exit=0
+
+$ test -d .build/DD/Build/Products/Release/Polymux.app
+(no output)
+exit=1
+
+macos-build.log (first Debug product directory):
+CreateBuildDirectory /Users/carlvincetan/code/wt/lane3-df2-finish-pr-39-ar-inline-activ/.build/DD/Build/Products/Debug
+
+verify.sh output:
+verify: readiness unavailable (no apps/Polymux/PolymuxUITests/ReadinessTests.swift; see scripts/templates/ReadinessTests.swift); caps level below UI-verified
