@@ -72,21 +72,27 @@ brief_labels() {
   { echo "$n" | grep -qE '^00[0-9][0-9]--' || grep -qi 'dogfood' "$f"; } && out="$out,dogfood"
   grep -qiE 'de-?flake' "$f" && out="$out,flake"
   echo "$out"; }
-# Nothing written to GitHub may reference Notion: no notion.so / notion.site / app.notion.com links,
-# no "migrated from Notion" / "Notion card" lines, no Notion page ids (32 hex, dashed or not).
-NOTION_RE='notion\.so|notion\.site|app\.notion\.com|[Mm]igrated from [Nn]otion|[Nn]otion card|(^|[^0-9a-fA-F])[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}([^0-9a-fA-F]|$)'
-notion_ref() { grep -qE "$NOTION_RE"; }   # stdin has a Notion reference?
-notion_scrub() {  # stdin -> stdout: drop lines with Notion links/notes, blank out bare page ids
-  perl -ne 'next if /notion\.(so|site)|app\.notion\.com|migrated from notion|notion card/i;
-    s/(?<![0-9a-f])[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}(?![0-9a-f])/[id removed]/gi; print'; }
-# gh_write <gh args...>: the only way lane scripts write to GitHub. Scrubs --title/--body/--body-file
-# text, then refuses (rc 6, nothing sent) if any argument still references Notion. GH_CMD: test hook.
+# Nothing written to GitHub may carry a Notion link or a Notion page id. Narrow on purpose:
+#  - links: notion.so / notion.site / app.notion.com URLs (a markdown link keeps its text, a bare URL
+#    becomes "[Notion link removed]");
+#  - ids: 32-hex or dashed 8-4-4-4-12 ids ONLY when "notion" is within 40 characters on the same line.
+#    Other UUIDs, device UDIDs, MD5s and git SHAs pass through untouched.
+# Lines are never dropped and writes are never refused: only the link or id itself is scrubbed.
+NOTION_PERL='
+  my $H = qr/(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{32}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(?![0-9A-Fa-f])/;
+  my $U = qr{(?:https?://)?(?:[\w-]+\.)*(?:notion\.so|notion\.site)(?:/[^\s)\]>"`]*)?|(?:https?://)?app\.notion\.com(?:/[^\s)\]>"`]*)?}i;
+  sub scrub { my $l = shift;
+    $l =~ s{\[([^\]]*)\]\(\s*$U\s*\)}{$1}g;      # [text](notion url) -> text
+    $l =~ s{$U}{[Notion link removed]}g;
+    1 while $l =~ s{(notion.{0,40}?)$H}{$1\[id removed\]}is;   # id after "notion" (case-insensitive)
+    1 while $l =~ s{$H(?=.{0,40}?notion)}{[id removed]}is;     # id before "notion"
+    return $l; }'
+notion_ref() { perl -e "$NOTION_PERL"'; my $hit = 0; while (my $l = <STDIN>) { $hit = 1 if scrub($l) ne $l } exit($hit ? 0 : 1)'; }   # stdin has a Notion link/id?
+notion_scrub() { perl -e "$NOTION_PERL"'; while (my $l = <STDIN>) { print scrub($l) }'; }   # stdin -> stdout, only links/ids replaced
+# gh_write <gh args...>: the only way lane scripts write to GitHub. Every argument and any --body-file
+# text is scrubbed (notion_scrub) and the write always goes ahead. GH_CMD: test hook.
 gh_write() { local -a a=(); local v tmp=""
   while [ $# -gt 0 ]; do case $1 in
-    -t|--title|-b|--body) v=$(printf '%s\n' "$2" | notion_scrub); a+=("$1" "$v"); shift 2;;
     -F|--body-file) tmp=$(mktemp); if [ "$2" = - ]; then notion_scrub; else notion_scrub < "$2"; fi > "$tmp"; a+=("$1" "$tmp"); shift 2;;
-    *) a+=("$1"); shift;; esac; done
-  v=$(printf '%s\n' "${a[@]}"; [ -z "$tmp" ] || cat "$tmp")   # no pipe into grep -q: SIGPIPE + pipefail would hide a match
-  if notion_ref <<< "$v"; then
-    echo "gh_write: refused, text still references Notion (nothing sent to GitHub)" >&2; [ -n "$tmp" ] && rm -f "$tmp"; return 6; fi
+    *) v=$(printf '%s\n' "$1" | notion_scrub); a+=("$v"); shift;; esac; done
   ${GH_CMD:-gh} "${a[@]}"; local rc=$?; [ -n "$tmp" ] && rm -f "$tmp"; return $rc; }

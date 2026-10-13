@@ -18,7 +18,7 @@
 # Kill switch: live only while $OPS/BOARD_LIVE exists (rm it = dry run, the exact write is logged).
 # Reads: only what finds the item (issue/PR node id when not in the map). addProjectV2ItemById is
 # idempotent and returns the item's current Status, so "start never moves backwards" costs no extra read.
-# Guard: no value containing a Notion URL or page id is ever sent (notion_ref, lanelib.sh, shared with gh_write).
+# Guard: Notion URLs and Notion page ids are scrubbed from every value sent (notion_scrub, lanelib.sh, shared with gh_write).
 # Always exits 0; errors become board_error events (events.tsv + stdout for the lane log). Auth: gh's own.
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd); . "$SD/lanelib.sh"
@@ -72,7 +72,7 @@ case $EVT in
   *) err "unknown event"; exit 0;;
 esac
 [ -n "$ISSUE" ] || [ -n "$PRNODE" ] || [ -n "$PRURL" ] || { log "skip: no issue for unit (brief had no issue: header or mapped card:)"; exit 0; }
-if [ -n "$PRURL" ] && notion_ref <<< "$PRURL"; then err "refusing: PR value carries a Notion reference"; exit 0; fi
+[ -n "$PRURL" ] && PRURL=$(printf '%s\n' "$PRURL" | notion_scrub)   # scrub, never refuse
 rank() { case $1 in UI-verified) echo 3;; unit-test-verified) echo 2;; build-only) echo 1;; *) echo 0;; esac; }
 if [ -n "$ISSUE" ] && { [ "$EVT" = merged ] || [ "$EVT" = verify ]; }; then
   CL="$OPS/board/card-$ISSUE.lock"; CLED="$OPS/board/card-$ISSUE.tsv"; n=0
@@ -97,9 +97,9 @@ add_item() { gql -f query='mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{p
   -f p="$PROJ" -f c="$1" --jq '.data.addProjectV2ItemById.item | "\(.id)\t\(.fieldValueByName.name // "")"'; }
 set_select() { gql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}' \
   -f p="$PROJ" -f i="$1" -f f="$2" -f o="$3" >/dev/null; }
-set_text() { notion_ref <<< "$3" && return 1
+set_text() { local t; t=$(printf '%s\n' "$3" | notion_scrub)   # scrub Notion links/ids, never refuse
   gql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$t:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{text:$t}}){projectV2Item{id}}}' \
-  -f p="$PROJ" -f i="$1" -f f="$2" -f t="$3" >/dev/null; }
+  -f p="$PROJ" -f i="$1" -f f="$2" -f t="$t" >/dev/null; }
 issue_node() { local n; n=$(awk -F'\t' -v k="$1" '$2==k && $3!=""{print $3; exit}' "$BOARD_MAP" 2>/dev/null)
   [ -n "$n" ] || n=$(cat "$OPS/board/issue-$1.node" 2>/dev/null)
   [ -n "$n" ] || { n=$(gql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){id}}}' \

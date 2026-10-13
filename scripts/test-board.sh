@@ -70,13 +70,13 @@ check "board: rm BOARD_LIVE is the kill switch (no gh call at all)" '[ ! -s "$T/
 touch "$LANES_HOME/BOARD_LIVE"
 # Notion-reference guard (lanelib.sh): nothing written to GitHub may name Notion or carry a page id
 . scripts/lanelib.sh
-G=0; for s in "see https://www.notion.so/x" "notion.site/p" "https://app.notion.com/p/abc" "id $LID here" "3f70dbb6-e053-81b9-b0e0-f9992df9fa74"; do notion_ref <<< "$s" || G=1; done
-for s in "head 6a38594dce7c26dcd49c02517a2ca6bc424815a2" "Closes #42" "https://github.com/o/r/pull/9"; do notion_ref <<< "$s" && G=1; done
-check "guard (shared notion_ref): rejects Notion URLs/page ids, allows git shas and plain text" '[ $G = 0 ]'
-SN=$(printf 'card [x](https://app.notion.com/p/Fake-%s)\nid %s; sha 6a38594dce7c26dcd49c02517a2ca6bc424815a2\n' "$LID" 3f70dbb6-e053-81b9-b0e0-f9992df9fa74 | notion_scrub)
-check "guard: notion_scrub removes refs, keeps shas" '! notion_ref <<< "$SN" && echo "$SN" | grep -q "6a38594dce7c26dcd49c02517a2ca6bc424815a2" && echo "$SN" | grep -q "\[id removed\]"'
-: > "$T/ghb.log"; PATH=$BP $BU pr fake-unit "https://www.notion.so/p/$LID" >/dev/null
-check "guard: board refuses a value carrying a Notion reference" '[ ! -s "$T/ghb.log" ] && grep -q "refusing: PR value carries a Notion reference" "$BLOG"'
+G=0; for s in "see https://www.notion.so/x" "notion.site/p" "https://app.notion.com/p/abc" "Notion page $LID here" "notion id 3f70dbb6-e053-81b9-b0e0-f9992df9fa74"; do notion_ref <<< "$s" || G=1; done
+for s in "head 6a38594dce7c26dcd49c02517a2ca6bc424815a2" "Closes #42" "https://github.com/o/r/pull/9" "id $LID here" "3f70dbb6-e053-81b9-b0e0-f9992df9fa74"; do notion_ref <<< "$s" && G=1; done
+check "guard (shared notion_ref): Notion URLs and ids next to Notion; bare ids, shas, plain text are not refs" '[ $G = 0 ]'
+SN=$(printf 'Notion card [x](https://app.notion.com/p/Fake-%s)\nnotion id %s; sha 6a38594dce7c26dcd49c02517a2ca6bc424815a2\n' "$LID" 3f70dbb6-e053-81b9-b0e0-f9992df9fa74 | notion_scrub)
+check "guard: notion_scrub removes the link and id, keeps the line, link text and sha" '! notion_ref <<< "$SN" && echo "$SN" | grep -qx "Notion card x" && echo "$SN" | grep -q "6a38594dce7c26dcd49c02517a2ca6bc424815a2" && echo "$SN" | grep -q "notion id \[id removed\]"'
+: > "$T/ghb.log"; PATH=$BP $BU pr fake-unit "https://github.com/o/r/pull/9 https://www.notion.so/p/$LID" >/dev/null
+check "guard: board scrubs a Notion link out of a value and still writes it" 'grep -q "pull/9" "$T/ghb.log" && ! notion_ref < "$T/ghb.log" && ! grep -q "refusing" "$BLOG"'
 # media-check: video length, sampled frames, .mov, loud failure when Pillow/ffmpeg are missing
 FF() { ffmpeg -v error -f lavfi -i "$1" -t "$2" -pix_fmt yuv420p "$3"; }
 V="$T/vid"; mkdir -p "$V"; FF testsrc=size=320x240:rate=10 1 "$V/ok.mp4"; FF testsrc=size=320x240:rate=10 0.2 "$V/short.mp4"
