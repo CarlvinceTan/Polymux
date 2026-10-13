@@ -15,7 +15,9 @@
 #   queue-write.sh --rm FILE...      locked delete
 # A valid brief: line 1 is "# <title>"; it has "needs: <x>" and "expected_min: <minutes>"; no
 # "branch:" line above the title; "after:" refs are pr:<N> or branch-on-main:<branch> (or "none");
-# a "pr:" line is <N>, #<N> or a github.com/.../pull/<N> URL.
+# a "pr:" line is <N>, #<N> or a github.com/.../pull/<N> URL; optional "type:" is one of
+# feature|bug|infra|test|docs and optional "area:" lists one or more of pairing|chat|routines|server|
+# ui|lanes (comma or space separated; a "type:"/"area:" value prefix is allowed). Both feed GitHub labels.
 # Lock: flock(1) on $LANES_HOME/queue.lock when flock exists (Homebrew path tried too, since launchd
 # PATH lacks it), else a mkdir lock ($LANES_HOME/queue.lock.d, stale-pid reclaim from lanelib.sh).
 # Exit: 0 ok, 1 usage/io, 2 invalid brief, 3 lock timeout (QUEUE_LOCK_WAIT, 30 s), 4 target exists,
@@ -25,7 +27,7 @@ SD=$(cd "$(dirname "$0")" && pwd)
 OPS=${LANES_HOME:-$HOME/ops/lanes}; Q=$OPS/queue
 LOCK=${QUEUE_LOCK:-$OPS/queue.lock}; WAIT=${QUEUE_LOCK_WAIT:-30}
 die() { echo "queue-write: $1" >&2; exit "${2:-1}"; }
-HDR='unit|needs|scope|expected_min|card|branch|after|pr|priority'
+HDR='unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area'
 
 validate() {  # $1 file, $2 label -> problems on stdout, rc 1 if any
   awk -v L="$2" '
@@ -44,6 +46,12 @@ validate() {  # $1 file, $2 label -> problems on stdout, rc 1 if any
     /^pr:/ { s = $0; sub(/^pr: */, "", s); sub(/ +$/, "", s)
       if (s !~ /^#?[0-9]+$/ && s !~ /^https:\/\/github\.com\/[^\/ ]+\/[^\/ ]+\/pull\/[0-9]+$/)
         bad("pr: ref \"" s "\" is not <N>, #<N> or a PR URL (line " NR ")") }
+    /^type:/ { s = $0; sub(/^type: */, "", s); sub(/^type:/, "", s); sub(/ +$/, "", s)
+      if (s !~ /^(feature|bug|infra|test|docs)$/) bad("type: \"" s "\" is not one of feature|bug|infra|test|docs (line " NR ")") }
+    /^area:/ { s = $0; sub(/^area: */, "", s); m = split(s, a, /[ ,]+/); k = 0
+      for (i = 1; i <= m; i++) { if (a[i] == "") continue; k++; v = a[i]; sub(/^area:/, "", v)
+        if (v !~ /^(pairing|chat|routines|server|ui|lanes)$/) bad("area: \"" a[i] "\" is not one of pairing|chat|routines|server|ui|lanes (line " NR ")") }
+      if (!k) bad("area: is empty (line " NR ")") }
     END { if (NR == 0) bad("empty brief")
       else { if (!nd) bad("missing needs: line"); if (!ex) bad("missing expected_min: line") }
       for (i = 1; i <= n; i++) print L ": " e[i]; exit n > 0 }' "$1"
