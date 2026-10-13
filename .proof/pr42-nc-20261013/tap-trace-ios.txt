@@ -1,0 +1,14 @@
+PR #42 iOS Release signpost trace (subsystem com.flarehq.polymux.app, category InstantUI)
+Intervals emitted inside the booted simulator by the check-harness process newchatcheck-ios
+(linked against release PolymuxKit) during the capture run; newChat/newChatFeedback start at the
+Create tap instant, exactly as in the app.
+
+begin (local)            interval           duration ms budget ms  within
+22:36:13.984             newChat                  0.055        50  yes
+22:36:13.984             newChatFeedback          0.047        16  yes
+22:36:29.499             newAgent                 0.049        50  yes
+22:36:29.499             newAgentFeedback         0.047        16  yes
+22:36:40.401             newChat                  0.056        50  yes
+22:36:40.401             newChatFeedback          0.053        16  yes
+22:36:55.957             newAgent                 0.040        50  yes
+22:36:55.957             newAgentFeedback         0.038        16  yes
