@@ -57,6 +57,7 @@ struct SearchView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier(UIID.searchResult(hit.message.id))
                     Divider()
                 }
                 }

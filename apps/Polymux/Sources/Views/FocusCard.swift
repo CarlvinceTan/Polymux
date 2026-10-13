@@ -21,6 +21,7 @@ struct FocusCard: View {
                     Text(label(answer))
                 }
                 .foregroundStyle(.secondary)
+                .accessibilityIdentifier(UIID.focusAnswered)
             } else {
                 ForEach(Array((part.options ?? []).enumerated()), id: \.element.id) { index, option in
                     Button { Task { await choose(option.id) } } label: {
@@ -34,13 +35,16 @@ struct FocusCard: View {
                     .buttonStyle(.plain)
                     .disabled(answering)
                     .accessibilityLabel("\(letter(index)). \(option.label)")
+                    .accessibilityIdentifier(UIID.focusOption(option.id))
                 }
                 Button("Skip") { Task { await choose(FocusAnswer.dismissed) } }
                     .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
                     .disabled(answering)
+                    .accessibilityIdentifier(UIID.focusSkip)
             }
             if failed {
                 Text("Couldn’t record that choice.").font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier(UIID.focusError)
             }
         }
         .padding(12)

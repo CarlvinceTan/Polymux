@@ -150,6 +150,7 @@ struct ComposerView: View {
             .buttonStyle(.plain).frame(width: controlSize, height: controlSize)
             .glassEffect(.regular.interactive(), in: Circle())
             .accessibilityLabel("Add attachment")
+            .accessibilityIdentifier(UIID.composerAttach)
             .popover(isPresented: $attachments, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 0) {
                     attachmentButton("Files", icon: "doc") { importing = true }
@@ -198,6 +199,7 @@ struct ComposerView: View {
                         return .handled
                     }
                     .accessibilityLabel("Message")
+                    .accessibilityIdentifier(UIID.composerField)
                     .anchorPreference(key: MentionAnchor.self, value: .bounds) { $0 }
             }
             .padding(.horizontal, 15).padding(.vertical, isExpanded ? 12 : 7)
@@ -232,6 +234,7 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: Circle())
                 .accessibilityLabel(dictation.active ? "Stop dictation" : "Start dictation")
+                .accessibilityIdentifier(UIID.composerDictation)
                 .accessibilityValue(dictation.denied ? "Permission denied" : dictation.active ? "Listening" : "")
                 .disabled(dictation.stopping || sending || isVoiceActive)
                 if hasContent {
@@ -243,6 +246,7 @@ struct ComposerView: View {
                     .buttonStyle(.plain)
                     .glassEffect(.regular.interactive(), in: Circle())
                     .accessibilityLabel("Send message")
+                    .accessibilityIdentifier(UIID.composerSend)
                     .disabled(sending)
                 }
             }

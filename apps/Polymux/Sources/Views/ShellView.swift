@@ -1,6 +1,9 @@
 import SwiftUI
 import PolymuxKit
 import AvatarKit
+#if os(macOS)
+import AppKit
+#endif
 
 struct ShellView: View {
     let session: AppSession
@@ -61,6 +64,7 @@ struct ShellView: View {
             .listStyle(.plain)
             #endif
             .scrollIndicators(.hidden)
+            .accessibilityIdentifier(UIID.chatsList)
             #if os(macOS)
             .navigationTitle("Polymux")
             #else
@@ -68,7 +72,10 @@ struct ShellView: View {
             #endif
             #if os(macOS)
             .searchable(text: $query, placement: .sidebar, prompt: "Search")
-            .background { SearchFocus(sidebar: true).frame(width: 0, height: 0) }
+            .background {
+                SearchFocus(sidebar: true).frame(width: 0, height: 0)
+                SidebarSearchMark().frame(width: 0, height: 0)
+            }
             #else
             .navigationBarTitleDisplayMode(.inline)
             .simultaneousGesture(TapGesture().onEnded { searchFocused = false }, isEnabled: searching)
@@ -88,6 +95,7 @@ struct ShellView: View {
                             .glassEffect(.regular.interactive(), in: Circle())
                             Spacer(minLength: 0)
                             Button("New chat", systemImage: "plus") { adding = true }
+                                .accessibilityIdentifier(UIID.sidebarNewChat)
                                 .labelStyle(.iconOnly).buttonStyle(.plain)
                                 .frame(width: 64, height: 64)
                                 .glassEffect(.regular.interactive(), in: Circle())
@@ -125,11 +133,13 @@ struct ShellView: View {
                     ToolbarSpacer(.flexible, placement: .primaryAction)
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button("New chat", systemImage: "plus") { adding = true }
+                            .accessibilityIdentifier(UIID.sidebarNewChat)
                         filterMenu
                     }
                     ToolbarSpacer(.fixed, placement: .primaryAction)
                     ToolbarItem(placement: .primaryAction) {
                         Button("Settings", systemImage: "gearshape") { showSettings = true }
+                            .accessibilityIdentifier(UIID.sidebarSettings)
                     }
                 }
                 #else
@@ -141,6 +151,7 @@ struct ShellView: View {
                                 .textFieldStyle(.plain).focused($searchFocused)
                                 .focusEffectDisabled()
                                 .submitLabel(.search)
+                                .accessibilityIdentifier(UIID.sidebarSearch)
                         }
                         .padding(.horizontal, 14).padding(.vertical, 12)
                         .frame(width: max(160, columnWidth - 88))
@@ -157,6 +168,7 @@ struct ShellView: View {
                 } else {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Settings", systemImage: "gearshape") { showSettings = true }
+                            .accessibilityIdentifier(UIID.sidebarSettings)
                             .labelStyle(.iconOnly).buttonStyle(.plain)
                             .frame(width: 44, height: 44)
                             .glassEffect(.regular.interactive(), in: Circle())
@@ -251,6 +263,7 @@ struct ShellView: View {
         }
         .alert("Delete agent?", isPresented: $confirmDelete, presenting: deleteTarget) { contact in
             Button("Delete", role: .destructive) { Task { await delete(contact.agent) } }
+                .accessibilityIdentifier(UIID.alertDeleteConfirm)
             Button("Cancel", role: .cancel) {}
         } message: { contact in
             Text("This will permanently remove \(contact.agent.name) and their conversation.")
@@ -273,6 +286,11 @@ struct ShellView: View {
                 try? await Task.sleep(for: .seconds(3))
             }
         }
+        #if DEBUG
+        .background(alignment: .topLeading) {
+            AppStatus(connected: session.sidebar.isConnected)
+        }
+        #endif
     }
 
     private func participants(_ thread: PolymuxKit.Thread) -> [Agent] {
@@ -348,6 +366,7 @@ struct ShellView: View {
                 #endif
         }
         .menuIndicator(.hidden)
+        .accessibilityIdentifier(UIID.sidebarFilter)
     }
 
     private func chatLink(_ thread: PolymuxKit.Thread) -> some View {
@@ -355,7 +374,7 @@ struct ShellView: View {
             if thread.isGroup {
                 GroupRow(thread: thread, members: participants(thread), activity: session.sidebar.activity, connected: session.sidebar.isConnected)
             } else if let agent = participants(thread).first {
-                AgentRow(agent: agent, thread: thread,
+                AgentRow(agent: agent, thread: thread, rowID: thread.id,
                          duplicate: duplicateAgentNames.contains(agent.name),
                          activity: session.sidebar.activity, connected: session.sidebar.isConnected)
             }
@@ -378,6 +397,7 @@ struct ShellView: View {
             if !thread.isGroup, let agent = participants(thread).first {
                 Button("Customise avatar") { editing = AvatarContact(agent: agent) }
                 Button("Delete") { requestDelete(agent) }
+                    .accessibilityIdentifier(UIID.rowDelete(thread.id))
             }
         }
         #else
@@ -392,11 +412,14 @@ struct ShellView: View {
                 Button("Customise avatar", systemImage: "face.smiling") { editing = AvatarContact(agent: agent) }
                 Divider()
                 Button("Delete", systemImage: "trash", role: .destructive) { requestDelete(agent) }
+                    .accessibilityIdentifier(UIID.rowDelete(thread.id))
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if !thread.isGroup, let agent = participants(thread).first {
-                Button("Delete", systemImage: "trash", role: .destructive) { requestDelete(agent) }.tint(.gray)
+                Button("Delete", systemImage: "trash", role: .destructive) { requestDelete(agent) }
+                    .accessibilityIdentifier(UIID.rowDelete(thread.id))
+                    .tint(.gray)
             }
             Button("Edit", systemImage: "pencil") { edit(thread) }.tint(.gray.opacity(0.7))
         }
@@ -429,6 +452,7 @@ struct ShellView: View {
 struct AgentRow: View {
     let agent: Agent
     let thread: PolymuxKit.Thread?
+    var rowID: String? = nil
     let duplicate: Bool
     var gap: CGFloat? = nil
     var activity: ActivityStore?
@@ -445,8 +469,9 @@ struct AgentRow: View {
                 .frame(width: 52, height: 52)
                 .frame(width: 34)
                 #endif
+                .accessibilityID(rowID.map(UIID.rowAvatars))
                 .accessibilityHidden(true)
-            RowDetails(name: agent.name, preview: preview, thread: thread, active: agent.active)
+            RowDetails(name: agent.name, preview: preview, thread: thread, active: agent.active, rowID: rowID)
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
@@ -495,11 +520,16 @@ struct GroupRow: View {
     var body: some View {
         HStack(spacing: gap) {
             #if os(macOS)
-            AvatarStack(members: members, conversationID: thread.id, runs: thread.runs, activity: activity, connected: connected).frame(width: 34)
+            AvatarStack(members: members, conversationID: thread.id, runs: thread.runs, activity: activity, connected: connected)
+                .frame(width: 34)
+                .accessibilityIdentifier(UIID.rowAvatars(thread.id))
+                .accessibilityHidden(true)
             #else
             AvatarStack(members: members, size: 60, conversationID: thread.id, runs: thread.runs, activity: activity, connected: connected)
+                .accessibilityIdentifier(UIID.rowAvatars(thread.id))
+                .accessibilityHidden(true)
             #endif
-            RowDetails(name: thread.title, preview: preview, thread: thread, active: members.contains { $0.active })
+            RowDetails(name: thread.title, preview: preview, thread: thread, active: members.contains { $0.active }, rowID: thread.id)
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
@@ -526,6 +556,7 @@ private struct RowDetails: View {
     let preview: String
     let thread: PolymuxKit.Thread?
     let active: Bool
+    var rowID: String? = nil
 
     private var foreground: Color {
         #if os(macOS)
@@ -579,6 +610,7 @@ private struct RowDetails: View {
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .foregroundStyle(Color("OnAccent")).background(Color("AccentColor"), in: Capsule())
                             .fixedSize()
+                            .accessibilityID(rowID.map(UIID.rowUnread))
                             .accessibilityHidden(true)
                     }
                 }
@@ -603,6 +635,7 @@ private struct SidebarChatLink<Content: View>: View {
 
     var body: some View {
         NavigationLink(value: threadID) { content() }
+            .accessibilityIdentifier(UIID.sidebarRow(threadID))
             .navigationLinkIndicatorVisibility(.hidden)
             .listRowBackground(
                 ZStack {
@@ -630,3 +663,85 @@ private enum AgentOrder: String, CaseIterable, Identifiable {
     case recent = "Most recent", name = "Name"
     var id: String { rawValue }
 }
+
+private extension View {
+    @ViewBuilder func accessibilityID(_ id: String?) -> some View {
+        if let id { accessibilityIdentifier(id) } else { self }
+    }
+}
+
+#if os(macOS)
+/// Tags the sidebar search field. SwiftUI's `.searchable` does not expose an identifier.
+private struct SidebarSearchMark: NSViewRepresentable {
+    func makeNSView(context: Context) -> SearchMark { SearchMark() }
+    func updateNSView(_ view: SearchMark, context: Context) { view.schedule() }
+    static func dismantleNSView(_ view: SearchMark, coordinator: ()) { view.detach() }
+}
+
+private final class SearchMark: NSView {
+    private var scheduled = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        detach()
+        guard let window else { return }
+        NotificationCenter.default.addObserver(self, selector: #selector(updated),
+                                               name: NSWindow.didUpdateNotification, object: window)
+        schedule()
+    }
+
+    func detach() { NotificationCenter.default.removeObserver(self) }
+    @objc private func updated() { schedule() }
+
+    func schedule() {
+        guard !scheduled else { return }
+        scheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            self.mark()
+        }
+    }
+
+    private func mark() {
+        var ancestor = superview
+        while let current = ancestor {
+            guard let split = current as? NSSplitView,
+                  let controller = split.delegate as? NSSplitViewController,
+                  let item = controller.splitViewItems.first,
+                  isDescendant(of: item.viewController.view) else {
+                ancestor = current.superview
+                continue
+            }
+            let roots = [item.viewController.view] + item.topAlignedAccessoryViewControllers.map(\.view)
+            for field in roots.flatMap({ fields(in: $0) }) where field is NSSearchField && field.accessibilityIdentifier() != UIID.sidebarSearch {
+                field.setAccessibilityIdentifier(UIID.sidebarSearch)
+            }
+            return
+        }
+    }
+
+    private func fields(in view: NSView) -> [NSTextField] {
+        let nested = view.subviews.flatMap { fields(in: $0) }
+        guard let field = view as? NSTextField, !field.isHidden, field.isEditable else { return nested }
+        return nested + [field]
+    }
+}
+#endif
+
+#if DEBUG
+/// Hidden probe. `cache` is warm only after the sidebar store connects.
+private struct AppStatus: View {
+    let connected: Bool
+
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .accessibilityElement()
+            .accessibilityIdentifier(UIID.appStatus)
+            .accessibilityLabel("App status")
+            .accessibilityValue(UIID.statusValue(connected: connected))
+            .allowsHitTesting(false)
+    }
+}
+#endif

@@ -94,6 +94,7 @@ struct AppRoot: View {
                     Text(error ?? "Opening your conversations…")
                 } actions: {
                     Button("Connection settings") { showSettings = true }
+                        .accessibilityIdentifier(UIID.settingsOpen)
                 }
             }
         }
@@ -183,8 +184,10 @@ struct ConnectionView: View {
                 Section("Notifications") {
                     Toggle("Allow notifications", isOn: Binding(get: { Notifications.shared.enabled },
                         set: { enabled in Task { await Notifications.shared.allow(enabled) } }))
+                        .accessibilityIdentifier(UIID.notificationsToggle)
                     if let issue = Notifications.shared.issue {
                         Text(issue).font(.footnote).foregroundStyle(.secondary)
+                            .accessibilityIdentifier(UIID.toggleError(UIID.notificationsToggle))
                     }
                 }
                 .panelRow()

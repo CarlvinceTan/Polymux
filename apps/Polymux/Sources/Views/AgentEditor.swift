@@ -57,6 +57,7 @@ struct AgentEditor: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Edit avatar")
+                        .accessibilityIdentifier(UIID.profileAvatar)
                         .onHover { avatarHovered = $0 }
                         Spacer()
                     }
@@ -70,11 +71,13 @@ struct AgentEditor: View {
                             .autocorrectionDisabled()
                             .labelsHidden()
                             .multilineTextAlignment(.leading)
+                            .accessibilityIdentifier(UIID.profileName)
                     }
                     LabeledContent("Role") {
                         TextField("Role", text: $role)
                             .labelsHidden()
                             .multilineTextAlignment(.leading)
+                            .accessibilityIdentifier(UIID.profileRole)
                     }
                 }
                 .textFieldStyle(.roundedBorder)
@@ -115,6 +118,7 @@ struct AgentEditor: View {
                 else { Text("Save") }
             }
             .disabled(!loaded || loading || saving || cleanName.isEmpty)
+            .accessibilityIdentifier(UIID.profileSave)
         }
         .panel(isPresented: $showAvatar) {
             AvatarEditor(agentID: agent.id, name: cleanName.isEmpty ? agent.name : cleanName,
@@ -132,6 +136,7 @@ struct AgentEditor: View {
                 get: { reviews?.enabled ?? false },
                 set: { enabled in Task { await setReviews(enabled) } }))
                 .disabled(reviews == nil || scheduleBusy)
+                .accessibilityIdentifier(UIID.reviewsToggle)
             ForEach(routines, id: \.id) { routine in
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -146,7 +151,9 @@ struct AgentEditor: View {
                         .foregroundStyle(.secondary)
                         .disabled(scheduleBusy)
                         .accessibilityLabel("Cancel \(routine.prompt)")
+                        .accessibilityIdentifier(UIID.routineCancel(routine.id))
                 }
+                .accessibilityIdentifier(UIID.routine(routine.id))
             }
             if routines.isEmpty && reviews == nil {
                 Text("Nothing scheduled yet.").foregroundStyle(.secondary)

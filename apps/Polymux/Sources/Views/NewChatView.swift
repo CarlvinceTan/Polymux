@@ -56,6 +56,7 @@ struct NewChatView: View {
             }
             .disabled(recipients.isEmpty || working || !validTitle)
             .keyboardShortcut(.defaultAction)
+            .accessibilityIdentifier(UIID.newChatCreate)
         }
         .interactiveDismissDisabled(working)
         .panelDismiss(enabled: !working, onClose: close)
@@ -90,6 +91,7 @@ struct NewChatView: View {
                                                    onSubmit: { chooseFirst() }, onDelete: { removeLast() })
                                         .frame(minWidth: 80, minHeight: 28)
                                         .accessibilityLabel("To")
+                                        .accessibilityIdentifier(UIID.newChatTo)
                                         .disabled(working)
                                         .id("recipientInput")
                                 }
@@ -118,6 +120,7 @@ struct NewChatView: View {
                     .contentShape(Circle())
                     .glassEffect(.regular.interactive(!working), in: Circle())
                     .accessibilityLabel("Create new agent")
+                    .accessibilityIdentifier(UIID.newChatAgent)
                     .disabled(working || recipients.count >= 16)
                 }
             }

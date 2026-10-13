@@ -121,6 +121,7 @@ struct ChatPane: View {
                         .padding(.top, 8)
                         .offset(y: -toolbarInset)
                         .accessibilityLabel(thread.isGroup ? "Edit chat" : "Edit \(agent.name)’s profile")
+                        .accessibilityIdentifier(UIID.chatHeaderEdit)
                         .help(thread.isGroup ? "Edit chat" : "Edit agent profile")
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
                 }
@@ -205,6 +206,7 @@ struct ChatPane: View {
                 .focusEffectDisabled()
                 .submitLabel(.search)
                 .accessibilityLabel("Search this conversation")
+                .accessibilityIdentifier(UIID.chatSearchField)
                 .onKeyPress(.escape) { closeSearch(); return .handled }
                 #if os(macOS)
                 .background {
@@ -359,6 +361,7 @@ struct ChatPane: View {
             }
             .coordinateSpace(name: scrollSpace)
             .scrollIndicators(.hidden)
+            .accessibilityIdentifier(UIID.chatTranscript)
             .scrollEdgeEffectHidden()
             .contentMargins(.top, topInset, for: .scrollContent)
             .contentMargins(.bottom, composerHeight, for: .scrollContent)
@@ -542,6 +545,7 @@ struct MessageBubble: View {
             VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 6) {
                 if showAuthor {
                     Text(agentName).font(.caption.weight(.medium)).foregroundStyle(.secondary).padding(.horizontal, 12)
+                        .accessibilityIdentifier(UIID.senderName(message.id))
                 }
                 VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 12) {
                     ForEach(displayParts, id: \.offset) { index, part in
@@ -575,19 +579,23 @@ struct MessageBubble: View {
                 if message.role == "user", ["pending", "queued", "sending", "failed", "error"].contains(message.status) {
                     if sending && ["pending", "queued", "sending"].contains(message.status) {
                         Text("Sending…").font(.caption2).foregroundStyle(.secondary)
+                            .accessibilityIdentifier(UIID.messageStatus(message.id))
                     } else {
                         Button("Unsent", systemImage: "arrow.clockwise") { Task { await retry() } }
                             .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
                             .accessibilityLabel("Unsent. Resend message")
+                            .accessibilityIdentifier(UIID.messageStatus(message.id))
                             .disabled(sending)
                     }
                 } else if message.status == "error" {
                     Text("Couldn’t complete this reply").font(.caption2).foregroundStyle(.secondary)
+                        .accessibilityIdentifier(UIID.messageStatus(message.id))
                 }
             }
             .frame(maxWidth: BubbleStyle.width, alignment: message.role == "user" ? .trailing : .leading)
             if message.role != "user" { Spacer(minLength: 0) }
         }
+        .accessibilityIdentifier(UIID.chatMessage(message.id))
     }
 
     private var bubble: Color {
@@ -664,6 +672,7 @@ private struct ThinkingDots: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Thinking")
+        .accessibilityIdentifier(UIID.chatThinking)
         .onAppear { visible = true }
         .onDisappear { visible = false }
     }

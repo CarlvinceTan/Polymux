@@ -38,6 +38,7 @@ struct DraftPreview: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Preview \(file.url.lastPathComponent)")
+        .accessibilityIdentifier(UIID.draftName(file.url.lastPathComponent))
         .accessibilityHint(file.kind.localizedDescription ?? "Attachment")
         .overlay(alignment: .topTrailing) {
             removeButton
