@@ -32,6 +32,13 @@ type Worktrees struct {
 
 func NewWorktrees(dir string) *Worktrees { return &Worktrees{dir: dir} }
 
+func (d Definition) workingDir(fallback string) string {
+	if d.Worktree != "" {
+		return d.Worktree
+	}
+	return fallback
+}
+
 // Path is the checkout a conversation uses under this manager's directory.
 func (w *Worktrees) Path(thread string) string { return filepath.Join(w.dir, thread) }
 

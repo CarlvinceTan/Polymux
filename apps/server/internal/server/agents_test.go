@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -372,4 +374,32 @@ func TestWorkspaceChatFailureExplained(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func TestWorkspaceRequestLatency(t *testing.T) {
+	repo := workspaceRepo(t)
+	upload := filepath.Join(t.TempDir(), "upload-pack")
+	if err := os.WriteFile(upload, []byte("#!/bin/sh\nsleep 1\nexec git-upload-pack \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "config", "remote.origin.uploadpack", upload)
+	api, _ := startTest(t, &testFactory{})
+	patchWorkspace(t, api, "assistant", repo)
+	var durations []time.Duration
+	for i := 0; i < 20; i++ {
+		body := fmt.Sprintf(`{"id":"latency-%d","text":"hello","attachmentIDs":[]}`, i)
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/threads/assistant/messages", strings.NewReader(body))
+		start := time.Now()
+		api.ServeHTTP(recorder, request)
+		durations = append(durations, time.Since(start))
+		if recorder.Code != http.StatusAccepted {
+			t.Fatalf("send status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	if p95 := durations[18]; p95 >= 50*time.Millisecond {
+		t.Fatalf("message POST p95=%s, want below 50ms with slow fetch", p95)
+	}
+	awaitReply(t, api, "assistant", "latency-0")
 }

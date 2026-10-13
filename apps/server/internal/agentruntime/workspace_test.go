@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"errors"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -107,6 +108,47 @@ func TestWorkspaceAbsentKeepsAgentDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "worktrees")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("agent without a workspace prepared a worktree")
+	}
+}
+
+func TestWorkspaceLiveDirectory(t *testing.T) {
+	for _, name := range []string{"workspace", "absent"} {
+		t.Run(name, func(t *testing.T) {
+			runtime := openDurable(t, &httptest.Server{URL: "http://localhost"})
+			d := Definition{Agent: contract.Agent{ID: "coding", Name: "Coding"}}
+			want := filepath.Join(runtime.dir, "coding")
+			if name == "workspace" {
+				d.Worktree = t.TempDir()
+				want = d.Worktree
+			}
+			session, err := runtime.Open(t.Context(), d, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = session.Close() })
+			state, err := session.(*durableSession).conversation.Agent(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Cwd == nil || *state.Cwd != want {
+				t.Fatalf("live working directory = %v, want %q", state.Cwd, want)
+			}
+		})
+	}
+}
+
+func TestWorkspaceFirstReply(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Definition{Agent: contract.Agent{ID: "coding", Name: "Coding"}, Workspace: filepath.Join(home, "code", "Polymux"), Scope: "chat", Intro: true}
+	prompt, err := buildPrompt(d, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "Working in ~/code/Polymux on branch polymux/chat") {
+		t.Fatal("first reply does not identify the repository and branch")
 	}
 }
 
