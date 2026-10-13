@@ -243,7 +243,28 @@ free_branch() {
 IDLE_S=${LANE_IDLE_S:-$(( ${LANE_IDLE_MIN:-12} * 60 ))}; RS=${LANE_RETRY_SLEEP:-1}   # RS: retry backoff multiplier (tests: 0)
 # The agent runs in its own process group (set -m: background job gets pgid = its pid). stop_agent TERMs the
 # whole group, waits up to LANE_KILL_WAIT (10) s, then KILLs it, and confirms nothing in the group survives.
-stop_agent() { local k; kill -TERM -- -"$AP" 2>/dev/null
+# opencode lanes: "opencode run" attaches to the shared "opencode serve --service", so killing our process group
+# leaves the SESSION running on the server (it keeps calling the model and tools). oc_capture records this
+# attempt's session id (newest session whose directory is our worktree, created since the attempt began) in the
+# log and $UL/oc_session; oc_end exports it next to the log, then ends it with "opencode session delete" (the
+# CLI has no abort; delete stops it on the server). The serve itself is never restarted. LANE_OC_CMD: test hook.
+OCS=""; ocli() { perl -e 'alarm shift; exec @ARGV' "${LANE_OC_TIMEOUT:-20}" "${LANE_OC_CMD:-$(cfg lane "$L" cmd)}" "$@"; }
+oc_capture() { [ -z "$OCS" ] && [ "$(cfg lane "$L" agent 2>/dev/null)" = opencode ] && [ -n "${WT:-}" ] || return 0
+  OCS=$( (cd "$WT" && ocli session list --format json -n 20) 2>/dev/null | python3 -c '
+import json,os,sys
+wt,since=sys.argv[1],int(sys.argv[2])*1000-5000; ds={wt,os.path.realpath(wt)}
+try: ss=json.load(sys.stdin)
+except Exception: sys.exit(0)
+ss=[x for x in ss if isinstance(x,dict) and x.get("directory") in ds and int(x.get("created",0))>=since]
+ss.sort(key=lambda x:-int(x.get("created",0)))
+print(ss[0]["id"] if ss else "")' "$WT" "${T0:-0}")
+  [ -n "$OCS" ] && { echo "opencode session: $OCS" >> "$LOG"; echo "$OCS" > "$UL/oc_session" 2>/dev/null; }; return 0; }
+oc_end() { oc_capture; [ -n "$OCS" ] || return 0
+  ocli session export "$OCS" > "$LOG.oc-$OCS.json" 2>/dev/null
+  if ocli session delete "$OCS" >> "$LOG" 2>&1; then echo "opencode session $OCS ended on the shared serve (transcript: $LOG.oc-$OCS.json)" >> "$LOG"
+  else echo "warn: could not end opencode session $OCS on the shared serve" >> "$LOG"; fi
+  rm -f "$UL/oc_session"; OCS=""; }
+stop_agent() { local k; oc_end; kill -TERM -- -"$AP" 2>/dev/null
   for k in $(seq 1 $(( ${LANE_KILL_WAIT:-10} * 10 ))); do pgrep -g "$AP" >/dev/null 2>&1 || return 0; sleep 0.1; done
   kill -KILL -- -"$AP" 2>/dev/null; sleep 0.2
   if pgrep -g "$AP" >/dev/null 2>&1; then echo "warn: agent group $AP still has processes after KILL: $(pgrep -g "$AP" | tr '\n' ' ')" >> "$LOG"; return 1; fi
@@ -272,8 +293,9 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   fi
   [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash "$SD/wt-setup.sh") >> "$LOG" 2>&1
   START=$(git -C "$WT" rev-parse HEAD)   # branch head at unit start: size, trailer and no-commit checks measure only this run's work
-  set -m; run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; set +m; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
+  OCS=""; set -m; run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; set +m; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
   while kill -0 $AP 2>/dev/null; do sleep "${LANE_POLL:-30}"   # liveness = new commit/push/change, not log mtime
+    oc_capture
     S=$(git -C "$WT" rev-parse HEAD; git -C "$WT" ls-remote origin "$B" 2>/dev/null; git -C "$WT" status --porcelain | shasum)
     [ "$S" != "$SIG" ] && { SIG=$S; LAST=$(date +%s); started; }
     if [ $(( $(date +%s) - LAST )) -gt $((EXP * 60)) ]; then ev STUCK "$L" "no commit/push/change for ${EXP}m; requeue"
