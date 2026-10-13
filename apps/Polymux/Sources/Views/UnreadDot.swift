@@ -1,4 +1,5 @@
 import SwiftUI
+import PolymuxKit
 
 extension Color {
     static var unreadAccent: Color { Color("UnreadAccent") }
@@ -27,14 +28,7 @@ struct PinnedChatName: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
-        .accessibilityValue(unread ? "Unread" : "")
-    }
-}
-
-enum UnreadAccess {
-    static func value(count: Int64, activity: String = "") -> String {
-        guard count > 0 else { return activity }
-        return activity.isEmpty ? "Unread" : "Unread, \(activity)"
+        .accessibilityValue(UnreadAccess.value(count: unread ? 1 : 0))
     }
 }
 
