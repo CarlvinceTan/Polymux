@@ -60,7 +60,7 @@ Rules: work only in this worktree. Keep the change small and scoped.${SCOPE:+ On
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
-needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it under ~300 changed lines. If you cannot make verify.sh pass, say why and stop."; }
+needs a test change (or a 'No-test-reason: ...' line in the commit). Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $BASE...HEAD' (plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for ${LANE_IDLE_MIN:-12} minutes is stopped. If you cannot make verify.sh pass, say why and stop."; }
 run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer name.
   local a cmd P; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd); P=$(prompt "$1")
   export GIT_COMMITTER_NAME="$(git -C "$2" config user.name || echo agent) ($1/$a)"
@@ -155,9 +155,13 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   lock_take "$BL" || { ev failed "$L" "branch $B has another writer (pid $(lock_holder "$BL"))"; continue; }; BLS="$BLS $BL"
   ev running "$L" "$WT"
   if [ ! -d "$WT" ]; then  # reuse an existing local branch, else track origin/<B> (continuing a PR), else create from BASE
-    if git -C "$REPO" show-ref -q "refs/heads/$B"; then git -C "$REPO" worktree add -q "$WT" "$B"
-    elif git -C "$REPO" show-ref -q "refs/remotes/origin/$B"; then git -C "$REPO" worktree add -q -b "$B" "$WT" "origin/$B"
-    else git -C "$REPO" worktree add -q -b "$B" "$WT" "$BASE"; fi >> "$LOG" 2>&1 || { ev failed "$L" "worktree add failed"; continue; }
+    WOK=""; for wtry in 1 2 3; do   # transient failures (index.lock, stale admin dir): prune and retry; the agent never ran
+      if git -C "$REPO" show-ref -q "refs/heads/$B"; then git -C "$REPO" worktree add -q "$WT" "$B"
+      elif git -C "$REPO" show-ref -q "refs/remotes/origin/$B"; then git -C "$REPO" worktree add -q -b "$B" "$WT" "origin/$B"
+      else git -C "$REPO" worktree add -q -b "$B" "$WT" "$BASE"; fi >> "$LOG" 2>&1 && { WOK=1; break; }
+      grep -q "is already used by worktree" "$LOG" && break   # branch checked out elsewhere: retrying won't help
+      echo "worktree add failed (try $wtry); pruning and retrying" >> "$LOG"; git -C "$REPO" worktree prune; rm -rf "$WT"; sleep $((wtry * 5)); done
+    [ -n "$WOK" ] || { ev failed "$L" "worktree add failed"; continue; }
   fi
   if git -C "$REPO" show-ref -q "refs/remotes/origin/$B" && [ "$(git -C "$WT" rev-parse HEAD)" != "$(git -C "$REPO" rev-parse "origin/$B")" ]; then
     if git -C "$WT" merge-base --is-ancestor HEAD "origin/$B"; then   # local branch behind origin: fast-forward, never reset
@@ -167,13 +171,18 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   fi
   [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash "$SD/wt-setup.sh") >> "$LOG" 2>&1
   START=$(git -C "$WT" rev-parse HEAD)   # branch head at unit start: size, trailer and no-commit checks measure only this run's work
-  run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; LAST=$(date +%s); SIG=""
+  run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
   while kill -0 $AP 2>/dev/null; do sleep "${LANE_POLL:-30}"   # liveness = new commit/push/change, not log mtime
     S=$(git -C "$WT" rev-parse HEAD; git -C "$WT" ls-remote origin "$B" 2>/dev/null; git -C "$WT" status --porcelain | shasum)
     [ "$S" != "$SIG" ] && { SIG=$S; LAST=$(date +%s); started; }
     if [ $(( $(date +%s) - LAST )) -gt $((EXP * 60)) ]; then ev STUCK "$L" "no commit/push/change for ${EXP}m; requeue"
       pkill -P $AP 2>/dev/null; kill $AP 2>/dev/null; break; fi
+    # Fast-fail: no commit and no file change at all since start for LANE_IDLE_MIN (12) min -> stop now, not at EXP.
+    if [ "$(git -C "$WT" rev-parse HEAD)" = "$START" ] && [ -z "$(git -C "$WT" status --porcelain)" ] && \
+       [ $(( $(date +%s) - T0 )) -gt $(( ${LANE_IDLE_MIN:-12} * 60 )) ]; then IDLE=1
+      echo "fast-fail: no commit or file change after ${LANE_IDLE_MIN:-12}m" >> "$LOG"; pkill -P $AP 2>/dev/null; kill $AP 2>/dev/null; break; fi
   done; wait $AP; rc=$?; started
+  [ -n "$IDLE" ] && { ev failed "$L" "no commit (fast-fail: idle ${LANE_IDLE_MIN:-12}m)"; continue; }
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
   [ -n "$(git -C "$WT" log --oneline "$START"..HEAD)" ] || { echo "agent made no commit" >> "$LOG"; ev failed "$L" "no commit"; continue; }
   NT=$(git -C "$WT" log --format='%H%x09%(trailers:key=Lane,valueonly,separator=%x2C)' "$START"..HEAD | awk -F'\t' '$2==""' | wc -l | tr -d ' ')
@@ -207,8 +216,11 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
     [ -n "$DRAFT" ] && { (cd "$WT" && gh pr ready --undo "$URL" -R "$SLUG_REPO") >> "$LOG" 2>&1 ||
       echo "warn: could not mark existing PR $URL as draft (build-only)" | tee -a "$LOG"; }
   else
-    URL=$(cd "$WT" && gh pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG")
-    [ -n "$URL" ] || { ev failed "$L" "gh pr create failed"; continue; }
+    URL=""; for ptry in 1 2 3; do   # pushed already: retry the API call only, never the agent
+      URL=$(cd "$WT" && gh pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
+      sleep $((ptry * 10)); URL=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG"); [ -n "$URL" ] && break
+      echo "gh pr create failed (try $ptry); retrying" >> "$LOG"; done
+    [ -n "$URL" ] || { ev failed "$L" "gh pr create failed (3 tries; $B is pushed)"; continue; }
   fi
   basename "$WT" > "$OPS/cards/$SLUG.wt"; BU pr "$SLUG" "$URL"   # .wt: exact worktree name for cleanup
   BU verify "$SLUG" "$LV" "$WT/.build/proof" "$(echo "$BODY" | grep -oE "https://github.com/$SLUG_REPO/raw/proof-media/[^/) ]+" | head -1)"
