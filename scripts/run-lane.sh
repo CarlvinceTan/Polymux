@@ -240,7 +240,7 @@ free_branch() {
     elif [ -z "$(git -C "$p" status --porcelain 2>/dev/null)" ]; then
       [ -d "$p/.build/proof" ] && mkdir -p "$OPS/proof-archive" && cp -R "$p/.build/proof" "$OPS/proof-archive/$(basename "$p")-$(date +%Y%m%d%H%M%S)" 2>/dev/null   # keep evidence (ignored files go with the tree)
       git -C "$REPO" worktree remove "$p" >> "$LOG" 2>&1 && echo "removed stale worktree $p (held $b)" >> "$LOG"
-    elif git -C "$p" checkout -q --detach >> "$LOG" 2>&1; then   # dirty: detach (changes kept) frees $b for this attempt
+    elif git -C "$p" switch -q --detach >> "$LOG" 2>&1; then   # dirty: detach (changes kept) frees $b for this attempt
       echo "detached stale dirty worktree $p (held $b; changes kept)" >> "$LOG"
     else echo "could not detach dirty worktree $p (held $b); leaving it" >> "$LOG"; fi
   fi

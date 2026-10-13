@@ -41,9 +41,7 @@ lock_clear() {
   if [ "$(lock_holder "$1")" = "$$" ] || lock_take "$1"; then lock_drop "$1"; fi
   return 0
 }
-# unit_free WT CARD LOCKS LOG: free the branch, never discard changes, never touch a live verifier.
-# A dirty tree is detached exactly like a clean one: --detach keeps the working tree, so the branch is
-# free for a retry on another lane while every change stays on disk.
+# unit_free WT CARD LOCKS LOG: detach with changes kept unless a verifier is live.
 unit_free() {
   local wt=$1 card=$2 locks=$3 log=$4 status count d p pre=""
   status=$(git -C "$wt" status --porcelain -uall 2>/dev/null) || return 1
@@ -55,7 +53,7 @@ unit_free() {
   if [ -n "$p" ] && [ "$p" != "$$" ] && kill -0 "$p" 2>/dev/null; then
     echo "unit-free: $card wt=$wt ${pre}live verifier pid=$p; kept" >> "$log"; return 0
   fi
-  git -C "$wt" checkout -q --detach >> "$log" 2>&1 || return 1
+  git -C "$wt" switch -q --detach >> "$log" 2>&1 || return 1
   rm -f "$wt/.build/verify-active" "$locks/active/polymux-$(basename "$wt")"
   if [ "$(cat "$OPS/cards/$card.wt" 2>/dev/null)" = "$(basename "$wt")" ]; then rm -f "$OPS/cards/$card.wt"; fi
   lock_clear "$wt/.build/verify.lock"

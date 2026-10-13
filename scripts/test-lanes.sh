@@ -559,7 +559,7 @@ printf '# Wd pinned\nneeds: none\nexpected_min: 5\nagent: codex\n' > "$T/wdp.tas
 OA=$(LANE_NO_CHAIN=1 $RL --check laneA "$T/wdp.task" 2>&1); RA=$?; OB=$(LANE_NO_CHAIN=1 $RL --check laneB "$T/wdp.task" 2>&1); RB=$?
 check "agent: header pins the retry: --check refuses the opencode lane (5), the codex lane is not refused for agent" '[ $RA = 5 ] && echo "$OA" | grep -q "wants agent .codex." && ! echo "$OB" | grep -q "wants agent"'
 rm -f "$QD"/*.task
-# 32 unit exit frees clean trees, while dirty trees and live locks survive.
+# 32 unit exit detaches trees with changes kept and preserves live locks.
 # A freed tree is detached; test 8's cleanup.sh --apply deletes a clean detached tree whose HEAD is on a
 # remote, so a tree that is gone counts as freed too. The unit log is the proof that the exit path ran.
 for name in happy-path always-fails oc-fastfail oc-killed wd-disabled; do
@@ -585,15 +585,19 @@ rm -rf "$HOME/ops/lanes/locks/slot2"
 # 33 cross-lane retry: a dirty unit exits on the opencode lane (laneA); the queued retry runs on the codex
 # lane (laneB), checks the branch out there, and laneA's worktree keeps every change, detached.
 rm -f "$LANES_HOME"/queue/*.task
-OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo wip > wip.txt; exit 3' $RL laneA "$(task 'Retry dirty' rd1)" --branch test/retrydirty 2>&1); RC=$?
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo staged > README; git add README; echo unstaged >> README; echo wip > wip.txt; exit 3' $RL laneA "$(task 'Retry dirty' rd1)" --branch test/retrydirty 2>&1); RC=$?
 RQ=$(ls "$LANES_HOME"/queue/*-retry-dirty-retry.task 2>/dev/null | head -1)
 check "dirty unit exits on laneA: tree detached, change kept, branch freed, retry queued" '[ $RC = 1 ] && [ -n "$RQ" ] && [ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD && grep -q "unit-free: retry-dirty wt=.*dirty=1; detached (changes kept)" "$LANES_HOME"/logs/*retry-dirty-laneA.log && grep -qx "branch: test/retrydirty" "$RQ"'
-# A killed old attempt leaves the same dirty tree still holding the branch: the retry must free it on its own.
+OLD_HEAD=$(git -C "$LANES_WT/laneA-retry-dirty" rev-parse HEAD)
+OLD_DIFF=$(git -C "$LANES_WT/laneA-retry-dirty" diff HEAD)
+OLD_INDEX=$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)
+# Simulate a killed attempt still holding the branch; the retry must free it.
 git -C "$LANES_WT/laneA-retry-dirty" checkout -q test/retrydirty
-OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneB "$RQ" 2>&1); RC=$?
+RETRY_STUB='test "$(git symbolic-ref --short HEAD)" = test/retrydirty && test "$(cat README)" = base && test ! -e wip.txt && '"$STUB_OK"
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$RETRY_STUB" $RL laneB "$RQ" 2>&1); RC=$?
 WTL=$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep "/laneB-retry-dirty" | head -1)
 check "retry on laneB detaches laneA's dirty tree, checks the branch out and commits there" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "detached stale dirty worktree $LANES_WT/laneA-retry-dirty (held test/retrydirty; changes kept)" "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log && [ -n "$WTL" ] && [ "$(git -C "$WTL" rev-parse HEAD)" = "$(git rev-parse test/retrydirty)" ]'
-check "laneA's worktree still holds its change, detached" '[ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD'
+check "laneA keeps its HEAD, staged, unstaged and untracked changes, detached" '[ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" rev-parse HEAD)" = "$OLD_HEAD" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff HEAD)" = "$OLD_DIFF" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)" = "$OLD_INDEX" ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD'
 rm -f "$LANES_HOME"/queue/*.task
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
