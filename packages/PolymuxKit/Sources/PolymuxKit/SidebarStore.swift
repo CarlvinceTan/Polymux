@@ -7,6 +7,7 @@ public final class SidebarStore {
     public private(set) var aliases: [String: String] = [:]
     @ObservationIgnored private var stagedThreads: [String: Thread] = [:]
     @ObservationIgnored private var stagedAgents: [String: Agent] = [:]
+    @ObservationIgnored private var resolvers: [String: [CheckedContinuation<String?, Never>]] = [:]
     @ObservationIgnored private var agentChats: Set<String> = []
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
 
@@ -14,12 +15,31 @@ public final class SidebarStore {
         threads.first { $0.id == id || $0.id == aliases[id ?? ""] }
     }
 
+    /// Waits for a local id to reconcile with its server id. Waiters are continuations resumed by
+    /// `replaceStaged` and `dropStaged`, so nothing polls and a resolved id returns at once.
     public func resolved(_ id: String) async -> String? {
-        while id.hasPrefix("local-"), aliases[id] == nil {
-            guard stagedThreads[id] != nil, !Task.isCancelled else { return nil }
-            try? await Task.sleep(for: .milliseconds(10))
+        guard id.hasPrefix("local-") else { return id }
+        if let alias = aliases[id] { return alias }
+        guard stagedThreads[id] != nil else { return nil }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if let alias = aliases[id] {
+                    continuation.resume(returning: alias)
+                } else if stagedThreads[id] == nil || Task.isCancelled {
+                    continuation.resume(returning: nil)
+                } else {
+                    resolvers[id, default: []].append(continuation)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.resumeResolvers(id, with: nil) }
         }
-        return aliases[id] ?? id
+    }
+
+    private func resumeResolvers(_ id: String, with value: String?) {
+        for continuation in resolvers.removeValue(forKey: id) ?? [] {
+            continuation.resume(returning: value)
+        }
     }
 
     func reveal(_ thread: Thread) {
@@ -57,6 +77,7 @@ public final class SidebarStore {
         revision &+= 1
         acceptedThreads[id] = nil
         threads.removeAll { $0.id == id }
+        resumeResolvers(id, with: nil)
         notice = message
         noticeTask?.cancel()
         noticeTask = Task {
@@ -76,6 +97,7 @@ public final class SidebarStore {
             stagedThreads[id] = nil
             acceptedThreads[id] = nil
             threads.removeAll { $0.id == id }
+            resumeResolvers(id, with: nil)
         }
         notice = message
         noticeTask?.cancel()
@@ -89,6 +111,7 @@ public final class SidebarStore {
 
     func replaceStaged(_ thread: Thread, local id: String) async {
         aliases[id] = thread.id
+        resumeResolvers(id, with: thread.id)
         revision &+= 1
         stagedThreads[id] = nil
         let dropLocal = id != thread.id
@@ -111,6 +134,7 @@ public final class SidebarStore {
             stagedThreads[id] = nil
             acceptedThreads[id] = nil
             threads.removeAll { $0.id == id }
+            resumeResolvers(id, with: agent.id)
         }
         acceptedAgents[agent.id] = agent
         merge(agent, into: &agents)

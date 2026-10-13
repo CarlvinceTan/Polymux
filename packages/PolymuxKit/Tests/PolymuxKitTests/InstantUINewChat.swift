@@ -182,6 +182,41 @@ struct InstantUINewChat {
         #expect(try await rig.sidebar.cacheActor.call { try $0.pending(threadID: local).isEmpty })
     }
 
+    @Test func resolvedWakesWithServerIDWithoutPolling() async throws {
+        let rig = try await Rig(failCreates: false)
+        defer { rig.close() }
+        let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: nil,
+                                       sidebar: rig.sidebar, client: rig.client)
+        let local = try #require(launch.thread?.id)
+        let waiting = Task { await rig.sidebar.resolved(local) }
+        #expect(await launch.finish() == nil)
+        #expect(await waiting.value == "server-group")
+        #expect(rig.sidebar.aliases[local] == "server-group")
+    }
+
+    @Test func resolvedWakesWithNilWhenCreateFails() async throws {
+        let rig = try await Rig()
+        defer { rig.close() }
+        let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: nil,
+                                       sidebar: rig.sidebar, client: rig.client)
+        let local = try #require(launch.thread?.id)
+        let waiting = Task { await rig.sidebar.resolved(local) }
+        #expect(await launch.finish() != nil)
+        #expect(await waiting.value == nil)
+    }
+
+    @Test func cancelledResolverStopsWaiting() async throws {
+        let rig = try await Rig(failCreates: false)
+        defer { rig.close() }
+        let launch = InstantChat.start(agents: [rig.arlo, rig.milo], title: nil,
+                                       sidebar: rig.sidebar, client: rig.client)
+        let local = try #require(launch.thread?.id)
+        let waiting = Task { await rig.sidebar.resolved(local) }
+        waiting.cancel()
+        #expect(await waiting.value == nil)
+        #expect(await launch.finish() == nil)
+    }
+
     @Test func failedCreateKeepsQueuedMessageInMemory() async throws {
         let rig = try await Rig()
         defer { rig.close() }
