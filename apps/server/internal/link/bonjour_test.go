@@ -18,9 +18,11 @@ import (
 )
 
 const (
-	service       = "_polymux._tcp"
-	domain        = "local."
-	queryBudget   = 15 * time.Second
+	service = "_polymux._tcp"
+	domain  = "local."
+	// queryBudget is the original 5 s. Queries are re-sent with RFC 6762 back-off (1 s, 2 s, ...),
+	// only when a window expires, never on an unrelated packet.
+	queryBudget   = 5 * time.Second
 	respondWindow = time.Second
 )
 
@@ -47,6 +49,8 @@ func uniqueInstance(t *testing.T) string {
 // lasts. Unlike the zeroconf resolver, which sends unselected, this chooses the interfaces,
 // and a responder answers questions on demand, so the wait is on socket events rather than
 // on the responder's announcement schedule. It returns nil when the budget runs out.
+// It relies on the responder honouring the QU bit: grandcat/zeroconf's server (used by Advertise)
+// replies by unicast to the querier's port when QU is set; a multicast-only reply is never seen here.
 func queryAdvert(ctx context.Context, instance string) (*advert, error) {
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -70,7 +74,10 @@ func queryAdvert(ctx context.Context, instance string) (*advert, error) {
 	pc := ipv4.NewPacketConn(conn)
 	sent := false
 	var lastErr error
+	buf := make([]byte, 65536)
+	window := respondWindow
 	for time.Now().Before(deadline) {
+		// One query round per window; the window doubles after each round (1 s, 2 s, 4 s ...).
 		for i := range ifaces {
 			if err := pc.SetMulticastInterface(&ifaces[i]); err != nil {
 				lastErr = err
@@ -82,25 +89,27 @@ func queryAdvert(ctx context.Context, instance string) (*advert, error) {
 			}
 			sent = true
 		}
-		wait := time.Now().Add(respondWindow)
+		wait := time.Now().Add(window)
 		if deadline.Before(wait) {
 			wait = deadline
 		}
+		window *= 2
 		conn.SetReadDeadline(wait)
-		buf := make([]byte, 65536)
-		n, _, _, err := pc.ReadFrom(buf)
-		if err != nil {
-			if errors.Is(err, os.ErrDeadlineExceeded) {
-				continue
+		for {
+			n, _, _, err := pc.ReadFrom(buf)
+			if err != nil {
+				if errors.Is(err, os.ErrDeadlineExceeded) {
+					break // window over: next round re-sends
+				}
+				return nil, fmt.Errorf("multicast query read: %w", err)
 			}
-			return nil, fmt.Errorf("multicast query read: %w", err)
-		}
-		var msg dns.Msg
-		if err := msg.Unpack(buf[:n]); err != nil {
-			continue
-		}
-		if answer := readAdvert(&msg, name); answer != nil {
-			return answer, nil
+			var msg dns.Msg
+			if err := msg.Unpack(buf[:n]); err != nil {
+				continue // unrelated or malformed packet: keep reading, don't re-send
+			}
+			if answer := readAdvert(&msg, name); answer != nil {
+				return answer, nil
+			}
 		}
 	}
 	if !sent && lastErr != nil {
@@ -129,6 +138,12 @@ func readAdvert(msg *dns.Msg, name string) *advert {
 	records = append(records, msg.Extra...)
 	answer := &advert{}
 	found := false
+	target := ""
+	for _, rr := range records {
+		if srv, ok := rr.(*dns.SRV); ok && srv.Hdr.Name == name {
+			target = srv.Target
+		}
+	}
 	for _, rr := range records {
 		switch record := rr.(type) {
 		case *dns.SRV:
@@ -141,7 +156,9 @@ func readAdvert(msg *dns.Msg, name string) *advert {
 				answer.txt = record.Txt
 			}
 		case *dns.A:
-			answer.ips = append(answer.ips, record.A)
+			if record.Hdr.Name == target { // only the instance's own host, not other records in the message
+				answer.ips = append(answer.ips, record.A)
+			}
 		}
 	}
 	if !found {
