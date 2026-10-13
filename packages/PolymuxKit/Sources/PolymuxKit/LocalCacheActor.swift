@@ -12,6 +12,7 @@ public actor LocalCacheActor {
     private var instant = false
     private var parkNextEntry = false
     private var parked: CheckedContinuation<Void, Never>?
+    private var deliveries: [String: Task<Void, any Error>] = [:]
 
     public init(_ cache: LocalCache) {
         self.cache = cache
@@ -58,6 +59,23 @@ public actor LocalCacheActor {
     public func call<T: Sendable>(_ body: @Sendable (LocalCache) throws -> T) async throws -> T {
         try await enter()
         return try body(cache)
+    }
+
+    func deliver(client: APIClient, threadID: String, request: SendRequest) async throws {
+        try await enter()
+        if let delivery = deliveries[request.id] {
+            try await delivery.value
+            return
+        }
+        // Both stores can read the outbox before either finishes delivery.
+        guard try cache.pending(threadID: threadID).contains(where: { $0.id == request.id }) else { return }
+        let delivery = Task {
+            try await client.send(threadID: threadID, request: request)
+            try await self.call { try $0.acknowledge(id: request.id) }
+        }
+        deliveries[request.id] = delivery
+        defer { deliveries[request.id] = nil }
+        try await delivery.value
     }
 
     private func block(_ duration: Duration) {
