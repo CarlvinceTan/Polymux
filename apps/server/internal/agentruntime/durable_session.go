@@ -316,6 +316,7 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 			},
 		}},
 		harness.Hook(harness.GenerationTask, &harness.GenerationHooks{
+			BeforeRequest: s.steerRequest,
 			// Abort marks the generation so the scheduler ends it as unanswered. The error
 			// stops finishToolRound from starting a successor request in the same turn.
 			AfterTools: func(ctx context.Context, _ durable.EntryId, _ []durable.EntryId, _ harness.HookApi) error {
@@ -327,6 +328,45 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 			},
 		}),
 	}
+}
+
+type steerKey struct{}
+
+func WithSteers(ctx context.Context, drain func(context.Context, func([]contract.Message) error) error) context.Context {
+	return context.WithValue(ctx, steerKey{}, drain)
+}
+
+func (s *durableSession) steerRequest(ctx context.Context, request harness.GenerationRequest, api harness.HookApi) (*harness.GenerationRequest, error) {
+	restored, ok := s.turnContext(api.ConversationId(), ctx)
+	if !ok {
+		return nil, ErrTurnState
+	}
+	drain, _ := restored.Value(steerKey{}).(func(context.Context, func([]contract.Message) error) error)
+	if drain == nil {
+		return nil, nil
+	}
+	err := drain(restored, func(messages []contract.Message) error {
+		added := []ai.Message{}
+		_, err := s.conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
+			for _, message := range messages {
+				content, err := s.content(message)
+				if err != nil {
+					return nil, err
+				}
+				user := ai.UserMessage{Content: content, Timestamp: time.Now().UnixMilli()}
+				if _, err := durable.TxAppendEntry(tx, durable.UserEntry, api.ConversationId(), durable.TypedEntryDraft[durable.Never]{Model: []ai.Message{user}}); err != nil {
+					return nil, err
+				}
+				added = append(added, user)
+			}
+			return nil, nil
+		})
+		if err == nil {
+			request.Messages = append(request.Messages, added...)
+		}
+		return err
+	})
+	return &request, err
 }
 
 var errApprovalPause = errors.New("waiting for approval")
