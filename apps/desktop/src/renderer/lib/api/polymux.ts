@@ -644,9 +644,8 @@ function createBrowserDemoApi(): PolymuxApi {
       {platform: 'wechat', name: 'WeChat', api: 'none', state: 'unavailable', accounts: [], flows: [], setup: null, managementRoomHint: null, error: weChatMissingPreview ? 'WeChat for Mac is not installed. Install it and sign in.' : 'The WeChat relay on this Mac is running, but it is not connected to Polymux’s own hub, so nothing it carries reaches here.', installUrl: weChatMissingPreview ? 'https://mac.weixin.qq.com/en' : null},
     ],
     email: {
-      // The demo shows the buttons: it stands in for a build with clients
-      // registered, which is what the Hub tab looks like once they are.
-      signInProviders: ['google', 'microsoft'],
+      // This build has no Polymux mail sign-in apps.
+      signInProviders: [],
       accounts: onboardingPreview
         ? []
         : [
@@ -1876,50 +1875,13 @@ function createBrowserDemoApi(): PolymuxApi {
       },
     },
     account: (() => {
-      let status: AccountStatusDto = {signedIn: false, available: true, profile: null, accounts: []};
+      let status: AccountStatusDto = {signedIn: false, available: false, profile: null, accounts: []};
       const listeners = new Set<(status: AccountStatusDto) => void>();
       const publish = (): AccountStatusDto => { listeners.forEach((listener) => listener(structuredClone(status))); return structuredClone(status); };
-      const applyProfile = (next: NonNullable<AccountStatusDto['profile']>): AccountStatusDto => {
-        if (status.signedIn && status.profile && status.profile.userId !== next.userId) {
-          const rest = status.accounts.filter((entry) => entry.userId !== next.userId && entry.userId !== status.profile!.userId);
-          status.accounts = [status.profile, ...rest];
-        }
-        status = {
-          signedIn: true,
-          available: true,
-          profile: next,
-          accounts: status.accounts.filter((entry) => entry.userId !== next.userId),
-        };
-        return publish();
-      };
       return {
         get: async () => structuredClone(status),
-        signInWithPassword: async (email) => applyProfile({
-          userId: `demo:${email.toLowerCase()}`,
-          email,
-          name: email.split('@')[0] ?? 'Demo',
-          avatarUrl: '',
-        }),
-        signUp: async (email) => applyProfile({
-          userId: `demo:${email.toLowerCase()}`,
-          email,
-          name: email.split('@')[0] ?? 'Demo',
-          avatarUrl: '',
-        }),
-        resendConfirmation: async () => ({ok: true}),
-        requestPasswordReset: async () => ({ok: true}),
-        updatePassword: async () => publish(),
-        signInWithOAuth: async (provider) => {
-          void provider;
-          return applyProfile({userId: 'demo-user', email: 'owner@example.com', name: 'Demo', avatarUrl: ''});
-        },
-        switchTo: async (userId) => {
-          const found = status.accounts.find((entry) => entry.userId === userId);
-          if (!found) return structuredClone(status);
-          return applyProfile(found);
-        },
         signOut: async () => {
-          status = {signedIn: false, available: true, profile: null, accounts: status.accounts};
+          status = {signedIn: false, available: false, profile: null, accounts: []};
           return publish();
         },
         subscribe: (listener) => {

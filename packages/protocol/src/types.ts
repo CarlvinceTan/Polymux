@@ -3019,26 +3019,10 @@ export interface TaskCardPatch {
 export interface PolymuxApi {
   devices: {request(value: import("./device-pairing.js").DevicePairingRequest): Promise<import("./device-pairing.js").DevicePairingState>};
   account: {
-    /** Current optional-account state; safe to call when Supabase is not configured. */
+    /** Current account state. This build has no Polymux account to sign in to. */
     get(): Promise<import("./account.js").AccountStatusDto>;
-    signInWithPassword(email: string, password: string): Promise<import("./account.js").AccountSignInResult>;
-    signUp(email: string, password: string): Promise<import("./account.js").AccountSignInResult>;
-    /** Re-sends the signup confirmation email after an unconfirmed sign-in. */
-    resendConfirmation(email: string): Promise<{ok: boolean; error?: string}>;
-    /** Sends a password-reset email; keep the app open so the reset link can return. */
-    requestPasswordReset(email: string): Promise<{ok: boolean; error?: string}>;
-    /** Sets a new password after the reset email's loopback redirect. */
-    updatePassword(password: string): Promise<import("./account.js").AccountSignInResult>;
-    /**
-     * Opens the provider's consent page in the user's browser and waits for
-     * the loopback redirect. Resolves on completion, cancellation, or error
-     * with the resulting state.
-     */
-    signInWithOAuth(provider: import("./account.js").AccountOAuthProvider): Promise<import("./account.js").AccountSignInResult>;
-    /** Restores another saved session on this machine. */
-    switchTo(userId: string): Promise<import("./account.js").AccountSignInResult>;
     signOut(): Promise<import("./account.js").AccountStatusDto>;
-    /** Pushed on every sign-in, sign-out, and profile refresh. */
+    /** Pushed when the local account state changes. */
     subscribe(listener: (status: import("./account.js").AccountStatusDto) => void): () => void;
   };
   phone: {
