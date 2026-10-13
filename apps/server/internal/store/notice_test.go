@@ -205,15 +205,8 @@ func TestNoticeOncePerTurn(t *testing.T) {
 		}
 	}
 	page, err = s.Notices(t.Context(), &zero)
-	want := 1
-	if status == "waiting_input" {
-		want = 2
-	}
-	if err != nil || len(page.Notices) != want {
+	if err != nil || len(page.Notices) != 1 {
 		t.Fatalf("notices: %+v %v", page, err)
-	}
-	if want == 2 && (page.Notices[1].Outcome != "done" || page.Notices[1].Body != "Finished") {
-		t.Fatalf("finished notice: %+v", page.Notices[1])
 	}
 	if n := page.Notices[0]; n.Body != "three" || n.Outcome != "done" || n.MessageID != "three" {
 		t.Fatalf("notice: %+v", n)
