@@ -68,3 +68,22 @@ Full verification started at `2026-10-13 23:30:40` with `VERIFY_TARGETS=full bas
 Those 345 upstream changed lines alone exceed the run's 300-line cap.
 The requested merge is pending clarification of the permitted Size-reason
 exception; no upstream files have been removed or rewritten to fit the cap.
+
+## Fresh Python control
+
+A copy of the installed Python 3.12 executable received a fresh Mach-O UUID and ad-hoc signature (`localnet.attempt7.python`); no source was compiled.
+Command (with PYTHONHOME pointing to the installed Python distribution):
+
+```sh
+.build/localnet/python-fresh -c 'import socket,time; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); print(s.sendto(b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x08_polymux\x04_tcp\x05local\x00\x00\x0c\x00\x01",("224.0.0.251",5353)), flush=True); time.sleep(5)'
+```
+Window: `2026-10-13 23:35:32` through `2026-10-13 23:35:38`; exit 0. Output `.build/localnet/python.out` and `.build/localnet/python.log`:
+
+```text
+37
+Timestamp               Ty Process[PID:TID]
+```
+
+Matching events: **0**; raw store output has **1** header line. This is a failed positive control, not proof of absent LocalNetwork activity.
+
+The fresh Go control is pending clarification: the brief explicitly recommends `go test -c -tags mdns`, but its final rule requires builds/tests only through the canonical `verify.sh`. No direct Go build/test was run.
