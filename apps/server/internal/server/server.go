@@ -48,7 +48,6 @@ type Config struct {
 	BackgroundTimeout time.Duration
 }
 type Server struct {
-	drive      *oneDrive
 	Store      *store.Store
 	memory     *memory.Store
 	settings   *settings.Store
@@ -99,11 +98,11 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(c.DataDir, "attachments"), 0700); err != nil {
 		return nil, err
 	}
-	preferences, err := settings.Open(filepath.Join(c.DataDir, "settings.json"))
-	if err != nil {
-		return nil, err
+	// Refresh tokens from the removed OneDrive connector must not survive startup.
+	if err := os.RemoveAll(filepath.Join(c.DataDir, "connections", "onedrive")); err != nil {
+		return nil, fmt.Errorf("remove onedrive directory: %w", err)
 	}
-	drive, err := openDrive(c.DataDir)
+	preferences, err := settings.Open(filepath.Join(c.DataDir, "settings.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +181,7 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	v := &Server{drive: drive, Store: s, settings: preferences, memory: memory.New(filepath.Join(c.DataDir, "memory")), config: c, ctx: ctx, cancel: cancel, actors: map[string]*actor{}, groups: map[string]*groupActor{}, presence: map[string]int{}, deletes: map[string]*deletion{}, voices: map[string]*voiceWork{}, voiceSeen: map[string]bool{}, mux: http.NewServeMux(), slots: make(chan struct{}, 4)}
+	v := &Server{Store: s, settings: preferences, memory: memory.New(filepath.Join(c.DataDir, "memory")), config: c, ctx: ctx, cancel: cancel, actors: map[string]*actor{}, groups: map[string]*groupActor{}, presence: map[string]int{}, deletes: map[string]*deletion{}, voices: map[string]*voiceWork{}, voiceSeen: map[string]bool{}, mux: http.NewServeMux(), slots: make(chan struct{}, 4)}
 	for _, d := range definitions {
 		actorCtx, stop := context.WithCancel(ctx)
 		a := &actor{id: d.Agent.ID, definition: d, stop: stop, done: make(chan struct{})}
@@ -253,7 +252,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
-	s.driveRoutes()
 	s.mux.HandleFunc("POST /triggers/{id}/events", s.ingestEvent)
 	s.mux.HandleFunc("GET /notifications", s.notices)
 	s.mux.HandleFunc("PUT /notifications/device", s.registerPush)
