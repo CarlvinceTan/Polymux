@@ -113,7 +113,15 @@ func runHost(args []string) error {
 		return err
 	}
 	defer listener.Close()
-	httpServer := &http.Server{Handler: controller, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	_, backendPort, err := net.SplitHostPort(*listen)
+	if err != nil {
+		return err
+	}
+	n, err := strconv.Atoi(backendPort)
+	if err != nil || n > 65533 {
+		return errors.New("backend port must allow a device port")
+	}
+	httpServer := &http.Server{Handler: pairRoutes(controller, *dir, strconv.Itoa(n+2), *tailscale), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	done := make(chan struct{})
 	go func() { defer close(done); controller.Run(ctx) }()
 	served := make(chan error, 1)
