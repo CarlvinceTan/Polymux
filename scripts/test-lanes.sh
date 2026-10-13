@@ -105,13 +105,13 @@ check "scope: *.md matches nested docs/n.md despite TOP.md existing" '! grep -q 
 git checkout -q main
 # 12 verify-only: rerun gets its own proof branch; failed fetch stops
 mkdir -p "$T/bin"; printf '#!/bin/sh\nexit 0\n' > "$T/bin/gh"; chmod +x "$T/bin/gh"
-git push -q origin main:refs/heads/vo/one
+git push -q origin main:refs/heads/vo/one main:refs/heads/proof-media
 VC='mkdir -p .build/proof && date +%s%N > .build/proof/a.png && echo "## ok" > .build/proof/summary.md'
 PATH="$T/bin:$PATH" LANE_VERIFY_CMD="$VC" $RL --verify-only vo/one >/dev/null 2>&1; R1=$?
 PATH="$T/bin:$PATH" LANE_VERIFY_CMD="$VC" $RL --verify-only vo/one >/dev/null 2>&1; R2=$?
 check "verify-only rerun succeeds" '[ $R1 = 0 ] && [ $R2 = 0 ]'
 check "publish_proof records what it uploaded (proof/uploaded)" '[ "$(cat "$LANES_WT/verify-vo-one/.build/proof/uploaded")" = a.png ]'
-check "each run has its own proof branch" '[ "$(git ls-remote origin "refs/heads/proof-media/verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
+check "each run has its own proof branch" '[ "$(git ls-remote origin "refs/heads/proof-media-verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
 PATH="$T/bin:$PATH" LANE_VERIFY_CMD="$VC" $RL --verify-only no/such-branch >/dev/null 2>&1; R3=$?
 check "verify-only stops when fetch fails" '[ $R3 = 1 ] && [ ! -d "$LANES_WT/verify-no-such-branch" ]'
 # 13 four racers: never two winners, and the winner's lock is never deleted
@@ -193,7 +193,7 @@ OUT=$(PATH="$T/bin:$PATH"; mkdir -p "$T/bin"; printf '#!/bin/sh\n[ "$3" = device
 check "cleanup keeps dirty" 'echo "$OUT" | grep -q "keep: $HOME/code/wt/dirty (uncommitted"'
 check "cleanup keeps unpushed" 'echo "$OUT" | grep -q "keep: $HOME/code/wt/unpushed (unpushed"'
 check "cleanup keeps detached HEAD not on a remote" 'echo "$OUT" | grep -q "keep: $HOME/code/wt/localonly (detached HEAD not on any remote"'
-check "cleanup would prune old proof branch only" 'echo "$OUT" | grep -q "would: .*--delete proof-media/old-run" && ! echo "$OUT" | grep -q "delete proof-media/verify-vo-one"'
+check "cleanup would prune old proof branch only" 'echo "$OUT" | grep -q "would: .*--delete proof-media/old-run" && ! echo "$OUT" | grep -q "delete proof-media-verify-vo-one"'
 check "dry run kept the old proof branch" 'git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null'
 check "cleanup would remove merged" 'echo "$OUT" | grep -q "remove: $HOME/code/wt/merged (merged=1"'
 check "cleanup dry run deleted nothing" '[ -d "$HOME/code/wt/merged" ] && echo "$OUT" | grep -q "dry run"'
@@ -206,7 +206,7 @@ printf '#!/bin/sh\necho "$*" >> "%s/simctl.log"\n[ "$3" = devices ] && echo "{\\
 OUT=$(PATH="$SB:$T/bin:$PATH" bash scripts/cleanup.sh --apply 2>&1)
 check "cleanup keeps worktree + sim with a live verify.lock and a sim with a fresh marker; deletes the stale one" 'echo "$OUT" | grep -q "keep: $HOME/code/wt/vlive (in use" && ! grep -q "delete U1" "$T/simctl.log" && ! grep -q "delete U2" "$T/simctl.log" && grep -q "simctl delete U3" "$T/simctl.log" && echo "$OUT" | grep -q "keep: polymux-prv-fresh (verify running"'
 rm -rf "$HOME/code/wt/vlive/.build"; git worktree remove "$HOME/code/wt/vlive"
-check "--apply prunes old proof branch, keeps recent" '! git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null && [ "$(git ls-remote origin "refs/heads/proof-media/verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
+check "--apply prunes old proof branch, keeps recent" '! git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null && [ "$(git ls-remote origin "refs/heads/proof-media-verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
 # 18 continuous dispatch: once, after the unit lock is released, background, non-fatal
 export GLOG="$T/g18"; rm -rf "$LANES_HOME/chain-fails"
 OUT=$(LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain next' t16)" 2>&1); waitfor "$GLOG" dispatch
