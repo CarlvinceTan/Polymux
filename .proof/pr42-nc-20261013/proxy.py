@@ -64,6 +64,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         started = time.monotonic()
         log(f"POST {self.path} {kind} hold={hold:.1f}s")
+        # Drain the body first: an unread body would corrupt the next request on a reused connection.
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
         deadline = started + (hold if kind == "stall" else 0.3)
         while time.monotonic() < deadline:
             time.sleep(0.1)
@@ -71,6 +75,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(500)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
         log(f"POST {self.path} {kind} -> 500 after {time.monotonic() - started:.2f}s")
