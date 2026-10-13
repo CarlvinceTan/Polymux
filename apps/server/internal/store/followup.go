@@ -118,3 +118,75 @@ func childNote(ctx context.Context, tx *sql.Tx, id string) (string, error) {
 	}
 	return run.Error.Message, nil
 }
+
+func (s *Store) DrainSteers(ctx context.Context, run string, persist func([]contract.Message) error) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	work, err := pendingSteers(ctx, tx, run)
+	if err != nil {
+		return err
+	}
+	if len(work) == 0 {
+		return nil
+	}
+	messages := make([]contract.Message, 0, len(work))
+	for _, w := range work {
+		messages = append(messages, w.Message)
+	}
+	if err := persist(messages); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='done' WHERE state='steer' AND json_extract(input,'$.parentRunID')=?`, run); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func pendingSteers(ctx context.Context, tx *sql.Tx, run string) ([]Work, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT input FROM jobs WHERE state='steer' AND json_extract(input,'$.parentRunID')=? ORDER BY rowid`, run)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var work []Work
+	for rows.Next() {
+		var data string
+		var w Work
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(data), &w); err != nil {
+			return nil, err
+		}
+		work = append(work, w)
+	}
+	return work, rows.Err()
+}
+
+func releaseSteers(ctx context.Context, tx *sql.Tx, parent string) error {
+	work, err := pendingSteers(ctx, tx, parent)
+	if err != nil {
+		return err
+	}
+	for _, w := range work {
+		w.ParentRunID = nil
+		data, err := json.Marshal(w)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='queued',input=? WHERE id=?`, string(data), w.Message.ID); err != nil {
+			return err
+		}
+		for _, target := range w.Targets {
+			run := NewRun(w.Message.ID, w.Message.ThreadID, target, "message")
+			run.SourceMessageID = &w.Message.ID
+			if _, err := appendTx(ctx, tx, contract.Event{ConversationID: w.Message.ThreadID, Type: "run.start", AgentID: &target, RunID: &run.ID, Run: &run}, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

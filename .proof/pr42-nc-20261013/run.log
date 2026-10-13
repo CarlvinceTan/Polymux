@@ -1,0 +1,87 @@
+PR #42 UI-evidence run log, 2026-10-13 (cvmini, worktree lane4-df7-fix-pr-42-nc-new-chat-withou)
+
+Setup
+- Fixture server (real server, fixture data):
+  cd apps/server && go run -tags sqlite_fts5,verifyfixture ./cmd/server --verify-fixture \
+    --data "$WT/.build/ncproof/server-data" --no-mdns        -> 127.0.0.1:22507
+- Controllable proxy in front of it (proxy.py, committed here):
+  python3 .build/ncproof/proxy.py 127.0.0.1:22508 127.0.0.1:22507 "$WT/.build/ncproof/control"
+  mode file: pass | stall (hold N s, then 500) | fail (0.3 s, then 500); POST /threads and /agents only.
+- App appearance is driven through the server: PATCH /settings {"appearance":"light"|"dark"}.
+
+macOS (real app window, Release)
+- Build: xcodebuild build -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+    -configuration Release -destination platform=macOS -derivedDataPath .build/DD-macrel ...  -> BUILD SUCCEEDED
+  (python3 scripts/fetch_cua.py staged the bundled runtime first)
+- Launch: defaults write com.flarehq.polymux.app serverAddress http://127.0.0.1:22508; open <Release .app>
+- Driven with cua-driver AX clicks on the real window; captures via get_window_state screenshot_out_file.
+  22:13:01 light idle          New Chat panel, no recipients
+  22:39:30 light optimistic    Create tapped with mode=stall hold=20; row captured 22:39:32; the POST
+                               entered the proxy at 22:39:31 and answered 500 at 22:39:51 -> the row is
+                               visible ~19 s before the server responds
+  22:40:54 light notice        Create tapped with mode=fail; 500 at 22:40:54, capture 22:40:56: row
+                               rolled back, notice in the sidebar inset and in the detail
+  22:13:19 light error         "+" (create agent) tapped with mode=fail: 500 at 22:13:20, panel error
+                               "Couldn't create this agent..." at 22:13:21
+  Same four flows in dark (appearance=dark): optimistic 22:14:16 (stall, 500 at 22:15:02),
+  notice 22:17:56, error 22:18:19.
+- Signpost trace: /usr/bin/log show --last 40m --signpost --style json \
+    --predicate 'subsystem == "com.flarehq.polymux.app" AND process == "Polymux"' > signposts-mac.json
+  tap-trace-mac.txt pairs the begin/end intervals; processImagePath in the raw log is
+  .build/DD-macrel/Build/Products/Release/Polymux.app/Contents/MacOS/Polymux (Release build).
+
+iOS (booted simulator, no Simulator.app on this host)
+- Build: xcodebuild build ... -destination "id=$SIM_UDID" -configuration Release \
+    -derivedDataPath .build/DD-iosrel ... -> BUILD SUCCEEDED
+  The built app was also installed and launched against the proxy for the live list screenshot.
+- The check harness (NewChatCheck.swift, committed here) compiles the real app views and stores
+  with -D DICTATION_CHECK against a release PolymuxKit and runs inside the simulator:
+  xcrun --sdk iphonesimulator swiftc -O -swift-version 6 -parse-as-library -D DICTATION_CHECK \
+    -target arm64-apple-ios27.0-simulator <app sources minus PolymuxApp.swift> NewChatCheck.swift \
+    PolymuxKit.o AvatarKit.o PolymuxControl.o -o .build/ios-nccheck/newchatcheck-ios
+  xcrun simctl spawn $SIM_UDID .build/ios-nccheck/newchatcheck-ios "$PWD/.proof/pr42-nc-20261013" "$PWD"
+  run-ios-check.sh reproduces the build+run.
+- Flows and captures (mtime of each PNG):
+  22:36:13 ios-light-idle         New Chat panel idle
+  22:36:14 ios-light-optimistic   POST /threads entered the proxy 22:36:14, answered 500 at 22:36:28;
+                                  the harness asserted the local row was present and unresolved at capture
+  22:36:29 ios-light-notice       after the 500, before the 8 s notice expiry
+  22:36:31 ios-light-error        failed agent create (proxy 500 at 22:36:29-31), panel shows the error
+  22:36:40 ios-dark-idle / 22:36:41 ios-dark-optimistic (500 at 22:36:55) /
+  22:36:55 ios-dark-notice / 22:36:57 ios-dark-error
+- Signpost trace: xcrun simctl spawn $SIM_UDID log show --last 9m --signpost --style json \
+    --predicate 'subsystem == "com.flarehq.polymux.app"' (the simulator keeps its own log store on
+  this OS). tap-trace-ios.txt pairs the intervals of the run at 22:36; the process is
+  newchatcheck-ios, processImagePath .build/ios-nccheck/newchatcheck-ios (release PolymuxKit).
+
+Proxy ordering evidence (proxy.log excerpt)
+  22:36:14 POST /threads stall hold=14.0s        <- iOS light optimistic capture at 22:36:14
+  22:36:28 POST /threads stall -> 500 after 14.04s
+  22:39:31 POST /threads stall hold=20.0s        <- macOS light optimistic capture at 22:39:32
+  22:39:51 POST /threads stall -> 500 after 20.02s
+  22:40:54 POST /threads fail -> 500 after 0.32s <- macOS light notice capture at 22:40:56
+
+Known limits (also in summary.md)
+- The iOS sidebar scene renders ShellView's rows and notice inset without NavigationSplitView,
+  because a split view asserts when rendered outside an app bundle in this harness.
+- iOS has no Simulator UI on this host and this checkout has no XCUITest target, so the iOS states
+  come from the real views and stores driven in the harness rather than from taps.
+
+Review round
+- verify.sh PASS at 177758c (run 20261013-225352-177758c); the table, build-log excerpts and this
+  evidence summary were posted on PR #42 (issue comment 6148410187) and the PR body was rewritten
+  for the current diff (release-note block unchanged).
+
+Attempt 6 (lane4, 14 Oct 02:32 SGT)
+- verify.sh PASS at cd679ca (run 20261014-023243-cd679ca); level UI-verified. The table and evidence
+  path were posted on PR #42 (issue comment 6152525133); branch pushed fast-forward d9ac506..cd679ca.
+- cd679ca serializes InstantSendTests and InstantUINewChat under the shared InstantTiming parent.
+- Attempt 5 was killed by the lane watchdog on an unrelated TransportTests timing flake
+  (catchupFetchesEveryPageBeforeLiveDelivery, cursor expectation); it did not recur in this run.
+
+Attempt 1d (lane4, 14 Oct 03:34 SGT)
+- PR #42 body confirmed against pr42-body-7e30aff.md with gh pr view 42 (open, head 7e30aff, ready
+  for review): the live body is identical apart from the trailing blank line GitHub appends. No body
+  rewrite needed.
+- verify.sh PASS at 67987d7 (run 20261014-033811-67987d7, full targets): level UI-verified, packages
+  35 passed, 0 failed; the packages PolymuxKitTests target-failure note from attempt 1c did not recur.

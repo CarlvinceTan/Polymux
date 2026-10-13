@@ -59,7 +59,7 @@ final class AppSession {
     let avatars: AvatarStore
 
     init(address: String) async throws {
-        guard let url = ServerAddress.parse(UserDefaults.standard.string(forKey: "PolymuxServer") ?? address) else {
+        guard let url = ServerAddress.resolve(address, defaults: .standard) else {
             throw URLError(.badURL)
         }
         #if DEBUG
