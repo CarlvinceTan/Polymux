@@ -42,7 +42,7 @@ if [ "$EVT" = card ]; then
 PAGE=$(cat "$OPS/cards/$UNIT" 2>/dev/null); PDIR=""; PBASE=""
 # archived <unit>: its task was archived ($OPS/queue/archive/*.task with 'unit: <u>' or named *-<u>.task)
 archived() { local f; for f in "$OPS"/queue/archive/*.task; do [ -f "$f" ] || continue
-  case ${f##*/} in *-"$1".task) return 0;; esac; grep -qx "unit: *$1" "$f" && return 0; done; return 1; }
+  case ${f##*/} in *-"$1".task) return 0;; esac; grep -qx "unit: *$(printf '%s' "$1" | sed 's/[][\\.*^$]/\\&/g')" "$f" && return 0; done; return 1; }   # unit names are literal (dots escaped)
 forget() { awk -F'\t' -v u="$1" '$1!=u' "$CLED" > "$CLED.tmp" && mv "$CLED.tmp" "$CLED"; rm -f "$OPS/cards/$1"; }  # caller holds the card lock
 if [ "$EVT" = drop ]; then
   [ -n "$PAGE" ] || { log "skip: unit has no card"; exit 0; }

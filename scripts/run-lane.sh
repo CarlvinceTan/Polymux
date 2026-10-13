@@ -96,6 +96,10 @@ lock_take "$UL" || { echo "unit '$SLUG' already has a writer (pid $(lock_holder 
 # move to $OPS/queue-hold/ for Cody and the lane is still refilled with the next eligible card.
 # Exception: an infra error (verify.sh exit 10, missing toolchain) does not chain, since every next card
 # would hit the same missing tool; the task goes to queue-hold/ (not failed) and NEEDS_CODY names the tool.
+# Global breaker: per-task streaks can't see a systemic fault (expired login, fetch failure, full disk)
+# that fails every card fast. Each fast failure appends "<epoch> <task>" to $OPS/fast-fails.tsv; when
+# LANE_BREAKER_N (3) distinct tasks failed fast within LANE_BREAKER_WIN_S (900 s), we write $OPS/PAUSE
+# (honoured by lane-guard --preflight/--dispatch), add a NEEDS_CODY line, and stop chaining. Cody clears PAUSE.
 # The call runs under the lanelib lock $OPS/dispatch-chain.lock (one chained dispatch at a time; we wait
 # up to ~10 s for it so a failover refill isn't lost). lane-guard takes its own $OPS/dispatch.lock.
 UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE; CF="$OPS/chain-fails"
@@ -111,17 +115,31 @@ fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z'
   for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
   if [ "$rc" = 0 ]; then rm -f "$f"; lock_drop "$OPS/chain-state.lock"; return 0; fi
   n=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo $n > "$f"; lock_drop "$OPS/chain-state.lock"
-  { [ $(( $(date +%s) - UNIT_T0 )) -lt "${LANE_CHAIN_MIN_S:-120}" ] || [ $n -ge 2 ]; } && hold_retries; return 0; }
+  FAST=""; [ $(( $(date +%s) - UNIT_T0 )) -lt "${LANE_CHAIN_MIN_S:-120}" ] && FAST=1
+  { [ -n "$FAST" ] || [ $n -ge 2 ]; } && hold_retries
+  [ -n "$FAST" ] && breaker "${f##*/}"; return 0; }
+breaker() {  # $1 task key of a fast failure; trips PAUSE on N distinct fast-failing tasks within the window
+  local now d FF="$OPS/fast-fails.tsv"; now=$(date +%s)
+  for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
+  printf '%s\t%s\n' "$now" "$1" >> "$FF"
+  awk -F'\t' -v c=$(( now - ${LANE_BREAKER_WIN_S:-900} )) '$1>=c' "$FF" > "$FF.tmp" && mv "$FF.tmp" "$FF"
+  d=$(cut -f2 "$FF" | sort -u | grep -c .); lock_drop "$OPS/chain-state.lock"
+  [ "$d" -ge "${LANE_BREAKER_N:-3}" ] || return 0
+  [ -f "$OPS/PAUSE" ] || { echo "run-lane $(date '+%F %T'): breaker: $d distinct tasks failed fast within ${LANE_BREAKER_WIN_S:-900}s ($(cut -f2 "$FF" | sort -u | tr '\n' ' '))" > "$OPS/PAUSE"
+    echo "$(date '+%F %T') $SLUG: BREAKER: $d distinct tasks failed fast within ${LANE_BREAKER_WIN_S:-900}s (systemic fault? login, fetch, disk); chaining paused via $OPS/PAUSE; last log $LOG" >> "$OPS/NEEDS_CODY"
+    echo "$(date '+%F %T') $SLUG: breaker tripped ($d distinct fast failures) -> PAUSE" >> "$OPS/logs/dispatch-chain.log"; }; }
 free_lane() {  # $1 lane now free; non-blocking
   { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
   local fl=""; { "$LANE_GUARD" --help 2>&1 </dev/null || true; } | grep -q -- '--free-lane' && fl="--free-lane $1"
-  nohup bash -c '. "$1"; for k in $(seq 1 100); do lock_take "$2" && break; [ $k = 100 ] && exit 0; sleep 0.1; done
-    trap "lock_drop \"$2\"" EXIT; shift 2; "$@"' _ \
-    "$SD/lanelib.sh" "$OPS/dispatch-chain.lock" "$LANE_GUARD" --dispatch $fl >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null &
+  nohup bash -c '. "$1"; for k in $(seq 1 100); do lock_take "$2" && break; [ $k = 100 ] && { echo "$(date "+%F %T") $4: refill of lane $3 skipped: $2 busy for ~10 s (pid $(lock_holder "$2"))"; exit 0; }; sleep 0.1; done
+    trap "lock_drop \"$2\"" EXIT; shift 4; "$@"' _ \
+    "$SD/lanelib.sh" "$OPS/dispatch-chain.lock" "$1" "$SLUG" "$LANE_GUARD" --dispatch $fl >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null &
   echo "$(date '+%F %T') $SLUG: lane $1 free -> dispatch${fl:+ $fl}" >> "$OPS/logs/dispatch-chain.log"; return 0; }
 next_dispatch() { [ -n "$SIGNALED" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (signal)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
   [ "$1" = 10 ] && { echo "$(date '+%F %T') $SLUG rc=10: not chaining (infra: missing toolchain; every card would hit it)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
-  fail_guard "$1"; free_lane "$FREED"; }
+  fail_guard "$1"
+  [ -f "$OPS/PAUSE" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (PAUSE set)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
+  free_lane "$FREED"; }
 trap 'rc=$?; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && kill $AP 2>/dev/null; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && kill $AP 2>/dev/null; exit 130' INT

@@ -10,7 +10,8 @@
 set -uo pipefail
 DAYS=7; APPLY=0; PROOF_DAYS=14
 while [ $# -gt 0 ]; do case $1 in --days) DAYS=$2; shift 2;; --proof-days) PROOF_DAYS=$2; shift 2;; --apply) APPLY=1; shift;; *) shift;; esac; done
-REPO=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel); MAIN=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')
+REPO=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel); MAIN=$(git -C "$REPO" worktree list --porcelain | sed -n '1s/^worktree //p')
+. "$REPO/scripts/lanelib.sh"   # _mtime: portable mtime (GNU stat -c first; BSD stat -f %m on macOS)
 OPS=${LANES_HOME:-$HOME/ops/lanes}; LOCKS=$(python3 "$REPO/scripts/lanes.py" get lock_dir)
 do_() { if [ $APPLY = 1 ]; then echo "+ $*"; "$@"; else echo "would: $*"; fi; }
 keep() { echo "keep: $1 ($2)"; }
@@ -23,11 +24,12 @@ board_merged() {  # --apply only: card whose .wt is exactly this worktree, PR (r
 CW=${CURSOR_WT:-$HOME/.cursor/worktrees}
 last_activity() {  # newest of: last commit, index write, newest tracked-or-untracked file (not .build)
   local c i f; c=$(git -C "$1" log -1 --format=%ct 2>/dev/null || echo 0)
-  i=$(stat -f %m "$(git -C "$1" rev-parse --git-dir)/index" 2>/dev/null || echo 0)
-  f=$(find "$1" -maxdepth 5 \( -name .build -o -name .git -o -name node_modules \) -prune -o -type f -exec stat -f %m {} + 2>/dev/null | sort -n | tail -1)
+  i=$(_mtime "$(git -C "$1" rev-parse --git-dir)/index")
+  f=$(find "$1" -maxdepth 5 \( -name .build -o -name .git -o -name node_modules \) -prune -o -type f -print0 2>/dev/null | \
+    while IFS= read -r -d '' x; do _mtime "$x"; done | sort -n | tail -1)
   printf '%s\n' "$c" "$i" "${f:-0}" | sort -n | tail -1; }
 wt_exists() { [ -d "$HOME/code/wt/$1" ] && return 0; for d in "$CW"/*/"$1"; do [ -d "$d" ] && return 0; done; return 1; }
-fresh() { [ -e "$1" ] && [ $(( $(date +%s) - $(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0) )) -lt $(( ${VERIFY_FRESH_MIN:-120} * 60 )) ]; }
+fresh() { [ -e "$1" ] && [ $(( $(date +%s) - $(_mtime "$1") )) -lt $(( ${VERIFY_FRESH_MIN:-120} * 60 )) ]; }
 verify_active() {  # $1 worktree path or "" ; $2 sim name
   local p; if [ -n "$1" ]; then p=$(cat "$1/.build/verify.lock/pid" 2>/dev/null)
     [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 0; fresh "$1/.build/verify-active" && return 0; fi
@@ -40,7 +42,8 @@ in_use() {  # $1 worktree path
   pgrep -f "$1" >/dev/null
 }
 git -C "$REPO" fetch -q origin --prune
-git -C "$REPO" worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r W; do
+wts() { git -C "$REPO" worktree list --porcelain | sed -n 's/^worktree //p'; }   # one path per line; paths may contain spaces
+wts | while IFS= read -r W; do
   [ "$W" = "$MAIN" ] && continue
   case $W in */ops/goal-loop*|*/ops/pr-verify*) continue;; esac
   case $W in "$HOME"/code/wt/*|"$HOME"/.cursor/worktrees/*) ;; *) keep "$W" "not a lane worktree"; continue;; esac
@@ -70,8 +73,8 @@ for r,ds in json.load(sys.stdin)['devices'].items():
   [ "$N" = "$TPL" ] && continue; WT=${N#polymux-}
   wt_exists "$WT" && continue   # live worktree under ~/code/wt or ~/.cursor/worktrees/*
   [ "$S" = Booted ] && { keep "$N" "booted"; continue; }
-  VA=""; for d in $(git -C "$REPO" worktree list --porcelain | awk '/^worktree /{print $2}') "$HOME"/ops/pr-verify/*; do
-    [ "$(basename "$d")" = "$WT" ] && verify_active "$d" "$N" && VA=1; done
+  VA=""; while IFS= read -r d; do [ -n "$d" ] || continue
+    [ "$(basename "$d")" = "$WT" ] && verify_active "$d" "$N" && VA=1; done < <(wts; for d in "$HOME"/ops/pr-verify/*; do printf '%s\n' "$d"; done)
   { [ -n "$VA" ] || verify_active "" "$N"; } && { keep "$N" "verify running or marker < ${VERIFY_FRESH_MIN:-120}m"; continue; }
   do_ xcrun simctl delete "$U"
 done

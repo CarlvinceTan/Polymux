@@ -25,6 +25,7 @@ echo base > README; git add -A; git commit -qm base; git remote add origin "$T/o
 export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" LANE_SKIP_SETUP=1 LANE_TARGET=testmac
 export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
+export LANE_BREAKER_N=99   # global breaker off except in its own test (19e); many cases fail fast on purpose
 task() { printf 'needs: none\nexpected_min: 5\n%s\n' "$1" > "$T/$2.task"; echo "$T/$2.task"; }
 STUB_OK='echo $RANDOM >> f.txt && git add f.txt && git commit -qm "stub change" -m "Lane: $LANE/$AGENT"'
 RL="bash scripts/run-lane.sh"
@@ -214,6 +215,21 @@ LANE_CHAIN_MIN_S=0 LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$T/
 for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
 check "2nd failure of the same task: its retries held, lane still refilled (no global streak)" '[ "$(ndisp "$GLOG")" = 2 ] && [ -f "$LANES_HOME/queue-hold/r3.task" ] && [ "$(cat "$LANES_HOME/chain-fails/chain-fail-one")" = 2 ]'
 rm -f "$LANES_HOME"/queue/*.task
+# 19e global breaker: fast failures of 3 distinct tasks within the window -> PAUSE + NEEDS_CODY, no chain;
+# repeats of one task and entries older than the window don't count
+export GLOG="$T/g19e"; rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY"; printf '1000\told-task\n' > "$LANES_HOME/fast-fails.tsv"
+bfail() { LANE_BREAKER_N=3 LANE_GUARD="$FG" LANE_FORCE_FAIL=laneA $RL laneA "$(task "$1" "$2")" >/dev/null 2>&1; sleep 0.3
+  for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done; rm -f "$LANES_HOME"/queue/*.task; }
+bfail 'Brk one' tb1; bfail 'Brk one' tb1b; bfail 'Brk two' tb2
+check "breaker: 2 distinct fast-failing tasks (one repeated, one stale entry) -> no PAUSE, still chaining" '[ ! -f "$LANES_HOME/PAUSE" ] && [ "$(ndisp "$GLOG")" = 3 ] && ! grep -q old-task "$LANES_HOME/fast-fails.tsv"'
+bfail 'Brk three' tb3
+check "breaker: 3rd distinct fast failure -> PAUSE + NEEDS_CODY BREAKER, no dispatch" '[ -f "$LANES_HOME/PAUSE" ] && grep -q "BREAKER: 3 distinct tasks failed fast" "$LANES_HOME/NEEDS_CODY" && [ "$(ndisp "$GLOG")" = 3 ] && grep -q "brk-three rc=1: not chaining (PAUSE set)" "$CL"'
+rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY" "$LANES_HOME/fast-fails.tsv"
+# 19f refill skipped after the ~10 s dispatch-chain lock wait is logged, not silent
+export GLOG="$T/g19f"; mkdir -p "$LANES_HOME/dispatch-chain.lock"; echo $$ > "$LANES_HOME/dispatch-chain.lock/pid"
+LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain busy' t19f)" >/dev/null 2>&1
+for k in $(seq 1 150); do grep -q "chain-busy: refill of lane laneA skipped" "$CL" && break; sleep 0.1; done; rm -rf "$LANES_HOME/dispatch-chain.lock"
+check "chain lock busy ~10 s: refill skipped and logged, no dispatch" 'grep -q "chain-busy: refill of lane laneA skipped: .*dispatch-chain.lock busy" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
 # 9 lanes.py per-host override
 printf '[l]\nkey = "neutral"\nkey@hostx = "special"\n' > "$T/o.toml"
 check "lanes.py host override" '[ "$(LANES_TOML=$T/o.toml LANES_HOST=hostx python3 scripts/lanes.py lane l key)" = special ] && [ "$(LANES_TOML=$T/o.toml LANES_HOST=y python3 scripts/lanes.py lane l key)" = neutral ]'
