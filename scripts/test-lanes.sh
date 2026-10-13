@@ -108,12 +108,52 @@ check "publish_proof records what it uploaded (proof/uploaded)" '[ "$(cat "$LANE
 check "each run has its own proof branch" '[ "$(git ls-remote origin "refs/heads/proof-media/verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
 PATH="$T/bin:$PATH" LANE_VERIFY_CMD="$VC" $RL --verify-only no/such-branch >/dev/null 2>&1; R3=$?
 check "verify-only stops when fetch fails" '[ $R3 = 1 ] && [ ! -d "$LANES_WT/verify-no-such-branch" ]'
-# 13 four racers: never two winners, and the winner's lock is never deleted
-BAD=0; for i in $(seq 1 15); do D="$T/r4.lock"; rm -rf "$D" "$T"/r4.lock.stale.*; mkdir "$D"; echo 999999 > "$D/pid"
-  for k in 1 2 3 4; do bash -c '. "$1"; lock_take "$2" 2>/dev/null && echo "win $$"' _ scripts/lanelib.sh "$D" > "$T/v$k" & done; wait
-  W=$(cat "$T"/v? | awk '/win/{print $2}'); N=$(echo "$W" | grep -c .)
-  if [ "$N" -gt 1 ]; then BAD=$((BAD+1)); elif [ "$N" = 1 ]; then
-    [ "$(cat "$D/pid" "$T"/r4.lock.stale.*/pid 2>/dev/null | grep -cx "$W")" -ge 1 ] || BAD=$((BAD+1)); fi; done
+# 13 keep every racer alive until all attempts finish and the winner's lock is checked.
+reclaim_loop() (
+  local root=$1 i k pids w n bad=0 completed deadline
+  mkdir "$root"
+  mkfifo "$root/events" "$root/start" "$root/release"
+  exec 3<>"$root/events" 4<>"$root/start" 5<>"$root/release"
+  for i in $(seq 1 50); do
+    local d="$root/lock"
+    rm -rf "$d"; mkdir "$d"; echo 999999 > "$d/pid"
+    pids=""
+    for k in 1 2 3 4; do
+      bash -c '
+        . "$1"
+        echo ready >&3
+        read -r token <&4
+        lock_take "$2" 2>/dev/null && echo "win $$"
+        echo done >&3
+        read -r token <&5
+      ' _ scripts/lanelib.sh "$d" > "$root/w$k" &
+      pids="$pids $!"
+    done
+    completed=0; deadline=$((SECONDS+60))
+    while [ "$completed" -lt 4 ] && [ "$SECONDS" -lt "$deadline" ]; do
+      if read -r -t 1 token <&3; then completed=$((completed+1)); fi
+    done
+    [ "$completed" = 4 ] || { kill $pids 2>/dev/null; wait $pids; exit 1; }
+    printf 'go\ngo\ngo\ngo\n' >&4
+    completed=0; deadline=$((SECONDS+60))
+    while [ "$completed" -lt 4 ] && [ "$SECONDS" -lt "$deadline" ]; do
+      if read -r -t 1 token <&3; then completed=$((completed+1)); fi
+    done
+    [ "$completed" = 4 ] || { kill $pids 2>/dev/null; wait $pids; exit 1; }
+    w=$(awk '/^win /{print $2}' "$root"/w?)
+    n=$(printf '%s\n' "$w" | grep -c .)
+    if [ "$n" -gt 1 ]; then bad=$((bad+1)); elif [ "$n" = 1 ]; then
+      [ "$(cat "$d/pid" 2>/dev/null)" = "$w" ] || bad=$((bad+1))
+    fi
+    printf 'exit\nexit\nexit\nexit\n' >&5
+    wait $pids
+  done
+  echo "reclaim loop $(basename "$root"): $((50-bad))/50 passed"
+  [ "$bad" = 0 ]
+)
+BAD=0; RECLAIM_PIDS=""
+for k in 1 2 3 4; do reclaim_loop "$T/r4-$k" & RECLAIM_PIDS="$RECLAIM_PIDS $!"; done
+for RP in $RECLAIM_PIDS; do wait "$RP" || BAD=$((BAD+1)); done
 check "4 racing reclaimers: <=1 winner, winner lock kept" '[ $BAD = 0 ]'
 # 14 test-lanes comes from the checkout under test when it has one
 mkdir -p "$T/pr/scripts"; touch "$T/pr/scripts/test-lanes.sh"
