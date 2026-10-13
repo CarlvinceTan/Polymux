@@ -2,105 +2,6 @@ import CSQLite
 import Dispatch
 import Foundation
 
-/// Records whether SQLite ran on the main queue. Chat work binds `strict` on the
-/// worker so a main-actor call hits dispatchPrecondition.
-enum CacheAudit {
-    @TaskLocal static var strict = false
-    private static let gate = NSLock()
-    nonisolated(unsafe) private static let mainKey: DispatchSpecificKey<UInt8> = {
-        let key = DispatchSpecificKey<UInt8>()
-        DispatchQueue.main.setSpecific(key: key, value: 1)
-        return key
-    }()
-    nonisolated(unsafe) private static var mainHits = 0
-    nonisolated(unsafe) private static var offHits = 0
-    nonisolated(unsafe) private static var strictHits = 0
-
-    static var onMain: Bool {
-        DispatchQueue.getSpecific(key: mainKey) != nil
-    }
-
-    static func strict<T>(_ body: () throws -> T) rethrows -> T {
-        try $strict.withValue(true, operation: body)
-    }
-
-    /// `sync` onto a background queue stays on the main queue under Linux libdispatch.
-    /// An async hop is the one that actually leaves it, which is what the precondition checks.
-    static func hop<T: Sendable>(_ body: @escaping @Sendable () throws -> T) throws -> T {
-        if !onMain { return try body() }
-        let slot = Slot<T>()
-        let done = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async {
-            slot.result = Result { try body() }
-            done.signal()
-        }
-        done.wait()
-        return try slot.result!.get()
-    }
-
-    static var mainCount: Int {
-        gate.lock()
-        defer { gate.unlock() }
-        return mainHits
-    }
-
-    static var offCount: Int {
-        gate.lock()
-        defer { gate.unlock() }
-        return offHits
-    }
-
-    static var strictCount: Int {
-        gate.lock()
-        defer { gate.unlock() }
-        return strictHits
-    }
-
-    static func enter() {
-        let main = onMain
-        if strict {
-            if main {
-                dispatchPrecondition(condition: .notOnQueue(.main))
-                preconditionFailure("LocalCache called on the main actor")
-            }
-            gate.lock()
-            strictHits += 1
-            gate.unlock()
-        }
-        gate.lock()
-        if main { mainHits += 1 } else { offHits += 1 }
-        gate.unlock()
-    }
-}
-
-private final class Slot<T>: @unchecked Sendable {
-    var result: Result<T, Error>?
-}
-
-private final class CallCounts: @unchecked Sendable {
-    private let lock = NSLock()
-    private var mainHits = 0
-    private var offHits = 0
-
-    var main: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return mainHits
-    }
-
-    var off: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return offHits
-    }
-
-    func record(_ onMain: Bool) {
-        lock.lock()
-        if onMain { mainHits += 1 } else { offHits += 1 }
-        lock.unlock()
-    }
-}
-
 private final class Connection: @unchecked Sendable {
     let db: OpaquePointer
 
@@ -474,19 +375,11 @@ public final class LocalCache: @unchecked Sendable {
     }
 
     private func encode<T: Encodable>(_ value: T) throws -> String {
-        try perform { String(decoding: try encoder.encode(value), as: UTF8.self) }
+        String(decoding: try encoder.encode(value), as: UTF8.self)
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ value: String) throws -> T {
-        try perform { try decoder.decode(type, from: Data(value.utf8)) }
-    }
-
-    private func perform<T>(_ body: () throws -> T) throws -> T {
-        CacheAudit.enter()
-        calls.record(CacheAudit.onMain)
-        lock.lock()
-        defer { lock.unlock() }
-        return try body()
+        try decoder.decode(type, from: Data(value.utf8))
     }
 
     private func transaction(_ body: () throws -> Void) throws {
