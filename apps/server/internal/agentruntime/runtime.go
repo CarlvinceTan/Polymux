@@ -117,7 +117,7 @@ func (r *Runtime) checkout(ctx context.Context, d Definition) (string, error) {
 	if d.Workspace == "" || d.Intro {
 		return filepath.Join(r.dir, d.Agent.ID), nil
 	}
-	return r.worktrees.Ensure(ctx, d.Workspace, WorkspaceThread(d))
+	return r.worktrees.Ensure(ctx, d.Workspace, d.Agent.ID, WorkspaceThread(d))
 }
 
 // requestHeaders adds the per-conversation session value without mutating the shared map.

@@ -49,6 +49,18 @@ func gitRepo(t *testing.T, push bool) string {
 	return repo
 }
 
+// seedFile commits a named file to the repository and its origin, so a worktree
+// created from origin/main contains it.
+func seedFile(t *testing.T, repo, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(name+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", name)
+	runGit(t, repo, "commit", "-m", "Add "+name)
+	runGit(t, repo, "push", "origin", "main")
+}
+
 func testRuntime(t *testing.T, dir string) *Runtime {
 	t.Helper()
 	testenv.PiG(t)
@@ -155,14 +167,14 @@ func TestWorkspaceFirstReply(t *testing.T) {
 func TestWorkspaceRemovedOnDelete(t *testing.T) {
 	repo := gitRepo(t, true)
 	worktrees := NewWorktrees(t.TempDir())
-	path, err := worktrees.Ensure(t.Context(), repo, "chat")
+	path, err := worktrees.Ensure(t.Context(), repo, "coding", "chat")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(path, "unfinished.txt"), []byte("work\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := worktrees.Remove(t.Context(), repo, "chat"); err == nil {
+	if err := worktrees.Remove(t.Context(), repo, "coding", "chat"); err == nil {
 		t.Fatal("a checkout with uncommitted work was removed")
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -171,7 +183,7 @@ func TestWorkspaceRemovedOnDelete(t *testing.T) {
 	if err := os.Remove(filepath.Join(path, "unfinished.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if err := worktrees.Remove(t.Context(), repo, "chat"); err != nil {
+	if err := worktrees.Remove(t.Context(), repo, "coding", "chat"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -181,7 +193,7 @@ func TestWorkspaceRemovedOnDelete(t *testing.T) {
 		t.Fatalf("the repository still lists the deleted checkout: %s", list)
 	}
 	// Deleting a checkout keeps its branch, so the conversation can start again.
-	if again, err := worktrees.Ensure(t.Context(), repo, "chat"); err != nil || again != path {
+	if again, err := worktrees.Ensure(t.Context(), repo, "coding", "chat"); err != nil || again != path {
 		t.Fatalf("the conversation could not start again: %q %v", again, err)
 	}
 }
@@ -189,12 +201,75 @@ func TestWorkspaceRemovedOnDelete(t *testing.T) {
 func TestWorkspaceAddFailureExplained(t *testing.T) {
 	repo := gitRepo(t, false) // origin has no main yet, so no worktree can be added
 	worktrees := NewWorktrees(t.TempDir())
-	_, err := worktrees.Ensure(t.Context(), repo, "chat")
+	_, err := worktrees.Ensure(t.Context(), repo, "coding", "chat")
 	var repoErr *RepoError
 	if !errors.As(err, &repoErr) {
 		t.Fatalf("a failed worktree add was not explained: %v", err)
 	}
 	if !strings.HasPrefix(err.Error(), "Can't open repo:") || !strings.Contains(err.Error(), "origin/main") {
 		t.Fatalf("the failure does not name the repository problem: %q", err)
+	}
+}
+
+func TestWorkspaceTwoAgentsOneGroup(t *testing.T) {
+	first, second := gitRepo(t, true), gitRepo(t, true)
+	seedFile(t, first, "first.txt")
+	seedFile(t, second, "second.txt")
+	runtime := testRuntime(t, t.TempDir())
+	definition := func(agent, repo string) Definition {
+		return Definition{Agent: contract.Agent{ID: agent, Name: agent, Model: "local/test"}, Prompt: "Work.", Scope: "group1", Workspace: repo}
+	}
+	firstPath, err := runtime.checkout(t.Context(), definition("coding", first))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPath, err := runtime.checkout(t.Context(), definition("writer", second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPath == secondPath {
+		t.Fatalf("two agents in one group share a checkout: %q", firstPath)
+	}
+	for _, want := range []struct{ path, file string }{{firstPath, "first.txt"}, {secondPath, "second.txt"}} {
+		if _, err := os.Stat(filepath.Join(want.path, want.file)); err != nil {
+			t.Fatalf("checkout %q lacks its repo's file %s: %v", want.path, want.file, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(secondPath, "first.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("an agent sees another repo's file in its checkout")
+	}
+}
+
+func TestWorkspaceRejectsOtherRepoCheckout(t *testing.T) {
+	first, second := gitRepo(t, true), gitRepo(t, true)
+	worktrees := NewWorktrees(t.TempDir())
+	path := worktrees.Path("coding", "chat")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// The conversation's directory already holds another repo's checkout.
+	runGit(t, second, "worktree", "add", path, "-b", "polymux/chat", "origin/main")
+	_, err := worktrees.Ensure(t.Context(), first, "coding", "chat")
+	var repoErr *RepoError
+	if !errors.As(err, &repoErr) || !strings.HasPrefix(err.Error(), "Can't open repo:") {
+		t.Fatalf("another repository's checkout was reused: %v", err)
+	}
+}
+
+func TestWorkspaceRejectsLeftoverDirectory(t *testing.T) {
+	repo := gitRepo(t, true)
+	worktrees := NewWorktrees(t.TempDir())
+	path := worktrees.Path("coding", "chat")
+	if err := os.MkdirAll(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// A failed worktree add leaves a directory that is not a checkout.
+	if err := os.WriteFile(filepath.Join(path, "partial"), []byte("half\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := worktrees.Ensure(t.Context(), repo, "coding", "chat")
+	var repoErr *RepoError
+	if !errors.As(err, &repoErr) || !strings.HasPrefix(err.Error(), "Can't open repo:") {
+		t.Fatalf("a leftover directory was reused: %v", err)
 	}
 }

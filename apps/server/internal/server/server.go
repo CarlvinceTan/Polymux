@@ -1117,7 +1117,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			if err == nil && !isolated && !d.Intro && d.Workspace != "" {
 				// Prepare the conversation's checkout before a session opens; a
 				// failure ends the turn with its own explanation.
-				d.Worktree, err = s.worktrees.Ensure(runCtx, d.Workspace, agentruntime.WorkspaceThread(d))
+				d.Worktree, err = s.worktrees.Ensure(runCtx, d.Workspace, d.Agent.ID, agentruntime.WorkspaceThread(d))
 			}
 			if err == nil {
 				// Durable runs tools on its own task line, so restore this turn's state for

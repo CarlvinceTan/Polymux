@@ -39,8 +39,12 @@ func (d Definition) workingDir(fallback string) string {
 	return fallback
 }
 
-// Path is the checkout a conversation uses under this manager's directory.
-func (w *Worktrees) Path(thread string) string { return filepath.Join(w.dir, thread) }
+// Path is the checkout a conversation uses under this manager's directory. The
+// name carries the agent as well as the thread, so agents working in one group
+// thread never share a checkout.
+func (w *Worktrees) Path(agent, thread string) string {
+	return filepath.Join(w.dir, agent+"--"+thread)
+}
 
 // WorkspaceThread names the conversation a definition's checkout belongs to:
 // the group thread when it has one, otherwise the agent's direct chat.
@@ -53,17 +57,18 @@ func WorkspaceThread(d Definition) string {
 
 // Ensure returns the conversation's checkout of repo. The first call fetches
 // origin and adds a worktree on the conversation's branch from origin/main;
-// later calls reuse the checkout that is already there.
-func (w *Worktrees) Ensure(ctx context.Context, repo, thread string) (string, error) {
-	if err := checkThread(thread); err != nil {
+// later calls reuse the checkout that is already there. An existing directory
+// is reused only when it is a worktree of repo.
+func (w *Worktrees) Ensure(ctx context.Context, repo, agent, thread string) (string, error) {
+	if err := checkPair(agent, thread); err != nil {
 		return "", err
 	}
-	path := w.Path(thread)
+	path := w.Path(agent, thread)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if info, err := os.Stat(path); err == nil {
 		if info.IsDir() {
-			return path, nil
+			return reuse(ctx, repo, path)
 		}
 		return "", &RepoError{Err: fmt.Errorf("%s is not a directory", path)}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -91,11 +96,11 @@ func (w *Worktrees) Ensure(ctx context.Context, repo, thread string) (string, er
 
 // Remove deletes the conversation's checkout. A checkout with uncommitted work
 // is left in place and the returned error says why; nothing is ever forced.
-func (w *Worktrees) Remove(ctx context.Context, repo, thread string) error {
-	if err := checkThread(thread); err != nil {
+func (w *Worktrees) Remove(ctx context.Context, repo, agent, thread string) error {
+	if err := checkPair(agent, thread); err != nil {
 		return err
 	}
-	path := w.Path(thread)
+	path := w.Path(agent, thread)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
@@ -107,9 +112,48 @@ func (w *Worktrees) Remove(ctx context.Context, repo, thread string) error {
 // branchName is the branch a conversation's own worktree is created on.
 func branchName(thread string) string { return "polymux/" + thread }
 
-func checkThread(thread string) error {
-	if thread == "" || strings.ContainsAny(thread, "/\\.") {
-		return &RepoError{Err: fmt.Errorf("invalid conversation name %q", thread)}
+// reuse returns an existing checkout only when it is a worktree of repo. A
+// directory left by another repository, or by a failed add, is never reused.
+func reuse(ctx context.Context, repo, path string) (string, error) {
+	checkout, err := commonDir(ctx, path)
+	if err != nil {
+		return "", &RepoError{Err: fmt.Errorf("%s is not a worktree of %s", path, repo)}
+	}
+	expected, err := commonDir(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	if checkout != expected {
+		return "", &RepoError{Err: fmt.Errorf("%s is a worktree of another repository", path)}
+	}
+	return path, nil
+}
+
+// commonDir is the resolved git common directory of dir, which names the
+// repository a checkout belongs to. It fails for a directory that is not a
+// worktree.
+func commonDir(ctx context.Context, dir string) (string, error) {
+	out, err := gitOutput(ctx, dir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	common := out
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(dir, common)
+	}
+	if resolved, err := filepath.EvalSymlinks(common); err == nil {
+		common = resolved
+	}
+	return filepath.Clean(common), nil
+}
+
+// checkPair rejects an agent or thread name that could leave the worktrees
+// directory.
+func checkPair(agent, thread string) error {
+	for _, name := range []string{agent, thread} {
+		if name == "" || strings.ContainsAny(name, "/\\.") {
+			return &RepoError{Err: fmt.Errorf("invalid conversation name %q", name)}
+		}
 	}
 	return nil
 }
@@ -117,21 +161,27 @@ func checkThread(thread string) error {
 // git runs one git command in repo. A failure carries git's own message so the
 // turn can explain what is wrong with the workspace.
 func git(ctx context.Context, repo string, args ...string) error {
+	_, err := gitOutput(ctx, repo, args...)
+	return err
+}
+
+// gitOutput runs one git command in repo and returns its trimmed output.
+func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	if err := command.Run(); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return &RepoError{Err: fmt.Errorf("git %s: %w", strings.Join(args, " "), ctxErr)}
+			return "", &RepoError{Err: fmt.Errorf("git %s: %w", strings.Join(args, " "), ctxErr)}
 		}
 		message := strings.TrimSpace(output.String())
 		if message == "" {
 			message = err.Error()
 		}
-		return &RepoError{Err: fmt.Errorf("git %s: %s", strings.Join(args, " "), message)}
+		return "", &RepoError{Err: fmt.Errorf("git %s: %s", strings.Join(args, " "), message)}
 	}
-	return nil
+	return strings.TrimSpace(output.String()), nil
 }
 
 // branchExists probes the repository without creating anything.

@@ -202,7 +202,7 @@ func (s *Server) removeAgent(ctx context.Context, id string, a *actor, groups ..
 			threads = append(threads, group.id)
 		}
 		for _, thread := range threads {
-			if err := s.worktrees.Remove(ctx, workspace, thread); err != nil {
+			if err := s.worktrees.Remove(ctx, workspace, id, thread); err != nil {
 				s.config.Log.Warn("remove conversation worktree", "thread", thread, "error", err)
 			}
 		}

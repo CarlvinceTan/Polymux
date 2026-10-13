@@ -317,7 +317,7 @@ func TestWorkspaceChatGetsCheckout(t *testing.T) {
 		t.Fatalf("send status %d", response.StatusCode)
 	}
 	awaitReply(t, api, "assistant", "first")
-	checkout := filepath.Join(api.config.DataDir, "worktrees", "assistant")
+	checkout := filepath.Join(api.config.DataDir, "worktrees", "assistant--assistant")
 	if branch := git(t, checkout, "rev-parse", "--abbrev-ref", "HEAD"); branch != "polymux/assistant" {
 		t.Fatalf("chat checkout is on branch %q", branch)
 	}
