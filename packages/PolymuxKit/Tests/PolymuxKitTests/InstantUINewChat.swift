@@ -5,6 +5,7 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
+extension InstantTiming {
 @Suite("InstantUINewChat") @MainActor
 struct InstantUINewChat {
     @Test func directChatMeetsBudgetWithoutWaiting() async throws {
@@ -257,6 +258,8 @@ struct InstantUINewChat {
         #expect(await rig.probe.sentPaths.isEmpty)
         #expect(try await rig.sidebar.cacheActor.call { try $0.messages(threadID: local).isEmpty })
     }
+
+}
 
 }
 
