@@ -87,3 +87,52 @@ Timestamp               Ty Process[PID:TID]
 Matching events: **0**; raw store output has **1** header line. This is a failed positive control, not proof of absent LocalNetwork activity.
 
 The fresh Go control is pending clarification: the brief explicitly recommends `go test -c -tags mdns`, but its final rule requires builds/tests only through the canonical `verify.sh`. No direct Go build/test was run.
+
+## Full verification result
+
+Command: `VERIFY_TARGETS=full bash /Users/carlvincetan/code/proj/Polymux/scripts/verify.sh` (foreground).
+
+Output: `.build/localnet/verify-before.out`; exit **0**.
+Store window: `2026-10-13 23:30:40` through `2026-10-13 23:37:05`.
+
+```sh
+/usr/bin/log show --start "$(cat .build/localnet/verify-before.start)" --end "$(cat .build/localnet/verify-before.end)" --predicate 'composedMessage CONTAINS "LocalNetwork" AND process != "log"' --style compact > .build/localnet/verify-before.log 2>&1
+wc -l .build/localnet/verify-before.log
+```
+
+Raw output: **1 line**, the header below; matching event count: **0**.
+
+```text
+Timestamp               Ty Process[PID:TID]
+```
+
+No events to attribute to a process. Controls also ran during this window; this is not an isolated post-positive-control verification. Without a successful positive control, zero matching events do not establish the requested LocalNetwork proof.
+
+Verification started at `9869726`; evidence-only commits were made during the run to satisfy the lane heartbeat. The summary identifies `0903bbe`, the HEAD at summary generation; no source/test changes occurred during verification.
+
+## verify.sh: PASS
+commit `0903bbe` on cvmini, 2026-10-13 23:36:39 +08, worktree lane3-localnet-1-fix-pr-192-at-91c35b4
+targets: full
+level: **unit-test-verified**, ready (chats.list + 12 sidebar rows + waits): unavailable
+
+| step | result | tests | time |
+|---|---|---|---|
+| test-integrity | PASS | - | 0s |
+| affected-tests | PASS | - | 1s |
+| lane-tests | PASS | - | 186s |
+| merge-queue-tests | PASS | - | 7s |
+| go-vet | PASS | - | 1s |
+| go-test | PASS | - | 57s |
+| fixture-off | PASS | - | 2s |
+| packages | PASS | 184 passed, 0 failed | 22s |
+| macos-build | PASS | - | 24s |
+| ios-build | PASS | - | 35s |
+
+media: none (readiness test attachments only)
+evidence: /Users/carlvincetan/verify-evidence/lane3-localnet-1-fix-pr-192-at-91c35b4/20261013-233639-0903bbe
+
+## Remaining work
+
+- Obtain a real current positive-control event. Clarification requested for the listed direct Go build/test control versus the final verify.sh-only rule.
+- Merge fetched `origin/main` and verify the merged head. Clarification requested for the size exception because upstream alone adds 345 changed lines.
+- No push, PR creation, PR comment, or source behavior change was made.
