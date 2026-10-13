@@ -78,3 +78,8 @@ Attempt 6 (lane4, 14 Oct 02:32 SGT)
 - cd679ca serializes InstantSendTests and InstantUINewChat under the shared InstantTiming parent.
 - Attempt 5 was killed by the lane watchdog on an unrelated TransportTests timing flake
   (catchupFetchesEveryPageBeforeLiveDelivery, cursor expectation); it did not recur in this run.
+
+Attempt 1d (lane4, 14 Oct 03:34 SGT)
+- PR #42 body confirmed against pr42-body-7e30aff.md with gh pr view 42 (open, head 7e30aff, ready
+  for review): the live body is identical apart from the trailing blank line GitHub appends. No body
+  rewrite needed.
