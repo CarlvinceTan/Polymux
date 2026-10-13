@@ -7,6 +7,17 @@ SD=$(cd "$(dirname "$0")" && pwd)   # scripts may live in another checkout (clou
 ROOT=$(git rev-parse --show-toplevel); cd "$ROOT"
 [ -f .build/env ] || bash "$SD/wt-setup.sh" >/dev/null
 . .build/env
+# One verify per worktree at a time. An agent may start verify.sh in the background and exit,
+# then run-lane.sh starts its own; both use $DD and xcodebuild fails "build.db is locked".
+WL="$ROOT/.build/verify.lock"; WT0=$SECONDS
+until mkdir "$WL" 2>/dev/null; do
+  op=$(cat "$WL/pid" 2>/dev/null); [ -z "$op" ] && { sleep 2; op=$(cat "$WL/pid" 2>/dev/null); }
+  if [ -n "$op" ] && kill -0 "$op" 2>/dev/null; then
+    [ $((SECONDS-WT0)) -gt 2700 ] && { echo "verify: another verify (pid $op) still running here after 45m"; exit 1; }
+    echo "verify: waiting for verify pid $op in this worktree"; sleep 10
+  else rm -rf "$WL"; fi
+done
+echo $$ > "$WL/pid"
 P=.build/proof; L=.build/logs; R=.build/results
 VD="$ROOT/.build/verify-data"; rm -rf "$P" "$R" "$VD"; mkdir -p "$P" "$L" "$R" "$VD"
 export POLYMUX_DATA_DIR="$VD" POLYMUX_SEED=1   # own app data + seeded sessions per worktree
@@ -15,7 +26,7 @@ LOCKS=$(python3 "$SD/lanes.py" get lock_dir); MAX=${VERIFY_MAX_BUILDS:-$(python3
 mkdir -p "$LOCKS"; SLOT=""; VPID=""
 cleanup() { [ -n "$VPID" ] && kill -INT "$VPID" 2>/dev/null
   pkill -f "derivedDataPath $DD" 2>/dev/null; xcrun simctl shutdown "$SIM_UDID" >/dev/null 2>&1
-  [ -n "$SLOT" ] && rm -rf "$SLOT"; }
+  [ -n "$SLOT" ] && rm -rf "$SLOT"; rm -rf "$WL"; }
 trap cleanup EXIT INT TERM
 acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
   local t0=$SECONDS
