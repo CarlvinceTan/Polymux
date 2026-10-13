@@ -117,3 +117,15 @@ in_use() {  # $1 worktree path. Needs LOCKS (lanes.toml lock_dir) and OPS; same 
 cwd_in_use() { local out rc r; command -v lsof >/dev/null 2>&1 || return 2
   out=$(lsof -d cwd -Fn 2>/dev/null); rc=$?; [ $rc != 0 ] && [ -z "$out" ] && return 2
   r=$(cd "$1" 2>/dev/null && pwd -P); printf '%s\n' "$out" | out_has "^n($1|${r:-$1})(/|\$)" && return 0; return 1; }
+# wt_pids PATH: pids whose cwd is PATH or below (lsof -d cwd), one per line; never this shell or its parent.
+wt_pids() { local r; r=$(cd "$1" 2>/dev/null && pwd -P); command -v lsof >/dev/null 2>&1 || return 2
+  lsof -d cwd -Fpn 2>/dev/null | awk -v a="$1" -v b="${r:-$1}" -v me="$$" -v pp="$PPID" '
+    /^p/ { pid = substr($0, 2) } /^n/ { n = substr($0, 2)
+      if (pid != me && pid != pp && (n == a || n == b || index(n, a "/") == 1 || index(n, b "/") == 1)) print pid }' | sort -u; }
+# reap_wt PATH [LOG]: TERM every process whose cwd is in the worktree (agent leftovers outside its process group, e.g.
+# MCP servers or verify.sh started by a shared "opencode serve"), wait LANE_KILL_WAIT (10) s, then KILL survivors.
+reap_wt() { local p k left; p=$(wt_pids "$1") || return 0; [ -n "$p" ] || return 0
+  echo "reap: TERM leftover pids with cwd in $1: $(echo $p)" >> "${2:-/dev/null}"; kill -TERM $p 2>/dev/null
+  for k in $(seq 1 $(( ${LANE_KILL_WAIT:-10} * 10 ))); do left=""; for x in $p; do kill -0 "$x" 2>/dev/null && left="$left $x"; done
+    [ -z "$left" ] && return 0; sleep 0.1; done
+  kill -KILL $left 2>/dev/null; echo "reap: KILL after ${LANE_KILL_WAIT:-10}s:$left" >> "${2:-/dev/null}"; }

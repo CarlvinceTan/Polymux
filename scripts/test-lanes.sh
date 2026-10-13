@@ -53,6 +53,12 @@ printf '# Parked dup (attempt 2)\nneeds: none\nexpected_min: 5\n' > "$LANES_HOME
 printf '# Parked dup\nneeds: none\nexpected_min: 5\n' > "$LANES_HOME/deferred/0011--parked-dup.task"
 OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Parked dup' t2f)" 2>&1); RC=$?
 check "deferred retry already written by lane-guard: no second retry (deferred/ or queue/)" '[ $RC = 1 ] && echo "$OUT" | grep -q "DEFERRED after: laneA" && [ "$(ls "$LANES_HOME"/deferred/ | grep -c parked-dup)" = 2 ] && ! ls "$LANES_HOME"/queue/*parked-dup* >/dev/null 2>&1 && grep -q "already re-queued (.*deferred/10131300-parked-dup.task)" "$LANES_HOME/events.tsv"'
+# 2f session teardown: a child that left the agent's process group (like an MCP server under a shared opencode serve) but runs in the worktree is stopped when the attempt ends
+rm -f "$T/orphan.pid"
+OUT=$(LANE_DRY=1 LANE_KILL_WAIT=2 LANE_STUB_CMD='( set -m; sleep 300 & echo $! > "$HOME/../orphan.pid" ); '"$STUB_OK" $RL laneA "$(task 'Orphan reap' t2f)" 2>&1); RC=$?
+OP=$(cat "$T/orphan.pid" 2>/dev/null); sleep 0.5
+check "attempt end reaps a worktree process outside the agent group" '[ $RC = 0 ] && [ -n "$OP" ] && ! kill -0 "$OP" 2>/dev/null && grep -q "reap: TERM leftover pids" "$LANES_HOME"/logs/*orphan-reap-laneA.log'
+[ -n "$OP" ] && kill "$OP" 2>/dev/null
 # 2g SIGPIPE: a match early in a long output must still count under pipefail (was rc 141 -> "no Size-reason")
 ( . scripts/lanelib.sh; set -o pipefail
   { echo "Size-reason: big refactor"; seq 1 400000; } | out_has '^Size-reason: *[^ ]' || exit 1
