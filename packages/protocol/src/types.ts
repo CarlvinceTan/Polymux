@@ -3018,13 +3018,6 @@ export interface TaskCardPatch {
 
 export interface PolymuxApi {
   devices: {request(value: import("./device-pairing.js").DevicePairingRequest): Promise<import("./device-pairing.js").DevicePairingState>};
-  account: {
-    /** Current account state. This build has no Polymux account to sign in to. */
-    get(): Promise<import("./account.js").AccountStatusDto>;
-    signOut(): Promise<import("./account.js").AccountStatusDto>;
-    /** Pushed when the local account state changes. */
-    subscribe(listener: (status: import("./account.js").AccountStatusDto) => void): () => void;
-  };
   phone: {
     status(): Promise<PhoneStatusDto>;
     connect(): Promise<PhoneStatusDto>;

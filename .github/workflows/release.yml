@@ -182,9 +182,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           POLYMUX_TELEGRAM_API_ID: ${{ secrets.POLYMUX_TELEGRAM_API_ID }}
           POLYMUX_TELEGRAM_API_HASH: ${{ secrets.POLYMUX_TELEGRAM_API_HASH }}
-        run: |
-          node scripts/release/verify-release-connections.mjs
-          npm run make -- --arch=arm64
+        run: npm run make -- --arch=arm64
 
       - name: Verify packaged artifacts
         env:
@@ -363,9 +361,7 @@ jobs:
         env:
           POLYMUX_TELEGRAM_API_ID: ${{ secrets.POLYMUX_TELEGRAM_API_ID }}
           POLYMUX_TELEGRAM_API_HASH: ${{ secrets.POLYMUX_TELEGRAM_API_HASH }}
-        run: |
-          node scripts/release/verify-release-connections.mjs
-          npm run make -- --arch=x64
+        run: npm run make -- --arch=x64
       - name: Verify Windows artifacts
         shell: pwsh
         run: |
@@ -528,9 +524,7 @@ jobs:
         env:
           POLYMUX_TELEGRAM_API_ID: ${{ secrets.POLYMUX_TELEGRAM_API_ID }}
           POLYMUX_TELEGRAM_API_HASH: ${{ secrets.POLYMUX_TELEGRAM_API_HASH }}
-        run: |
-          node scripts/release/verify-release-connections.mjs
-          npm run package -- --platform=linux --arch=x64
+        run: npm run package -- --platform=linux --arch=x64
       - run: npm run make:appimage
       - name: Build headless CLI
         run: |

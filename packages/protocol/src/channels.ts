@@ -1,9 +1,5 @@
 export const channels = {
   devicePairing: "polymux:devices:pairing",
-  accountGet: "polymux:account:get",
-  accountSignOut: "polymux:account:sign-out",
-  /** Pushed by the main process when the local account state changes. */
-  accountChanged: "polymux:account:changed",
   phoneStatus: "polymux:phone:status",
   phoneConnect: "polymux:phone:connect",
   phonePairAndroid: "polymux:phone:pair-android",

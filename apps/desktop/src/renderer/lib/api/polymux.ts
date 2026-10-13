@@ -1,6 +1,5 @@
 import {conversationCopyTitle} from '../../../shared/conversation-copy';
 import type {
-  AccountStatusDto,
   ArtifactDto,
   AgentRuntimeDto,
   AgentSettingsDto,
@@ -1874,22 +1873,6 @@ function createBrowserDemoApi(): PolymuxApi {
         return structuredClone(demoDevicePairing);
       },
     },
-    account: (() => {
-      let status: AccountStatusDto = {signedIn: false, available: false, profile: null, accounts: []};
-      const listeners = new Set<(status: AccountStatusDto) => void>();
-      const publish = (): AccountStatusDto => { listeners.forEach((listener) => listener(structuredClone(status))); return structuredClone(status); };
-      return {
-        get: async () => structuredClone(status),
-        signOut: async () => {
-          status = {signedIn: false, available: false, profile: null, accounts: []};
-          return publish();
-        },
-        subscribe: (listener) => {
-          listeners.add(listener);
-          return () => { listeners.delete(listener); };
-        },
-      };
-    })(),
     team: {
       list: async () => structuredClone(demoBots),
       groups: async () => structuredClone(demoTeamGroups),
