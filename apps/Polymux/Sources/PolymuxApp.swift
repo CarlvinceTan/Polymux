@@ -145,10 +145,19 @@ struct AppRoot: View {
         }
         .panelHost()
         .environment(session?.avatars)
-        .appAppearance(session?.settings.value?.appearance ?? "system")
+        .appAppearance(appearance)
         #if os(macOS)
         .background { InputFocus().frame(width: 0, height: 0).accessibilityHidden(true) }
         #endif
+    }
+
+    private var appearance: String {
+        #if DEBUG
+        if CommandLine.arguments.contains("--verify-approval") {
+            return CommandLine.arguments.contains("--approval-dark") ? "dark" : "light"
+        }
+        #endif
+        return session?.settings.value?.appearance ?? "system"
     }
 
     private var content: some View {

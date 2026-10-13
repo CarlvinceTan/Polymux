@@ -30,6 +30,7 @@ final class ReadinessTests: XCTestCase {
             capture(app, theme: theme, state: "launch")
             let option = app.buttons["A. Plan my day"]
             XCTAssertTrue(option.waitForExistence(timeout: 10))
+            XCTAssertEqual(app.buttons["Fail answer"].value as? String, theme)
             capture(app, theme: theme, state: "unanswered")
             press(option)
             XCTAssertTrue(app.staticTexts["Plan my day"].waitForExistence(timeout: 2))
