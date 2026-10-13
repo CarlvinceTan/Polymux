@@ -5,15 +5,18 @@
 # it, so with any number of racing reclaimers at most one wins and no live lock is ever moved or
 # deleted. If anything changed, the reclaimer gives up (returns 1). A gate older than 60 s is a
 # dead reclaimer and is cleared (the next attempt can then proceed).
-_pid_of() { local p; p=$(cat "$1/pid" 2>/dev/null); [ -z "$p" ] && [ -d "$1" ] && { sleep 1; p=$(cat "$1/pid" 2>/dev/null); }; echo "$p"; }
-_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# A lock with no pid file is being created; it counts as stale only after LOCK_GRACE seconds (10).
+_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }   # GNU first: GNU 'stat -f %m' prints '?'
+_age() { echo $(( $(date +%s) - $(_mtime "$1") )); }
 lock_take() {
   local d=$1 op cur g="$1.reclaim" rc=1
   mkdir -p "$(dirname "$d")"
   if mkdir "$d" 2>/dev/null; then echo $$ > "$d/pid"; return 0; fi
-  op=$(_pid_of "$d"); [ -n "$op" ] && kill -0 "$op" 2>/dev/null && return 1
+  op=$(cat "$d/pid" 2>/dev/null)
+  if [ -z "$op" ]; then [ "$(_age "$d")" -lt "${LOCK_GRACE:-10}" ] && return 1
+  elif kill -0 "$op" 2>/dev/null; then return 1; fi
   if ! mkdir "$g" 2>/dev/null; then
-    [ $(( $(date +%s) - $(_mtime "$g") )) -gt 60 ] && rm -rf "$g"; return 1; fi
+    [ "$(_age "$g")" -gt 60 ] && rm -rf "$g"; return 1; fi
   cur=$(cat "$d/pid" 2>/dev/null)
   if [ -d "$d" ] && [ "$cur" = "$op" ] && ! { [ -n "$cur" ] && kill -0 "$cur" 2>/dev/null; }; then
     rm -rf "$d" && mkdir "$d" 2>/dev/null && echo $$ > "$d/pid" && rc=0; fi
