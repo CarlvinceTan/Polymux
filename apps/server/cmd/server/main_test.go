@@ -259,7 +259,7 @@ func TestDeviceDefault(t *testing.T) {
 	}{
 		{name: "all interfaces", port: n, want: "0.0.0.0:8789"},
 		{name: "tailnet IP", tailscale: true, tailnet: "100.64.0.7", port: n, want: "100.64.0.7:8789"},
-		{name: "ephemeral", port: 0, want: "0.0.0.0:0"},
+		{name: "verify", port: 0, want: "127.0.0.1:0"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := deviceDefault(tt.tailscale, tt.tailnet, tt.port)
@@ -271,8 +271,11 @@ func TestDeviceDefault(t *testing.T) {
 				t.Fatal(err)
 			}
 			ip := net.ParseIP(host)
-			if ip == nil || ip.IsLoopback() {
-				t.Fatalf("device listener %q is loopback", got)
+			if ip == nil || ip.IsLoopback() != (tt.port == 0) {
+				t.Fatalf("device listener %q has unexpected loopback status", got)
+			}
+			if got := shouldAdvertise(ip, false); got != (tt.port != 0) {
+				t.Fatalf("Bonjour advertisement = %v, want %v", got, tt.port != 0)
 			}
 		})
 	}

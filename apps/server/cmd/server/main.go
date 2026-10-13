@@ -314,7 +314,7 @@ func deviceDefault(tailscale bool, tailnet string, port int) string {
 		host = tailnet
 	}
 	if port == 0 {
-		return net.JoinHostPort(host, "0")
+		return net.JoinHostPort("127.0.0.1", "0")
 	}
 	return net.JoinHostPort(host, strconv.Itoa(port+2))
 }
