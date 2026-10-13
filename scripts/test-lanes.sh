@@ -112,6 +112,14 @@ check "cleanup would remove merged" 'echo "$OUT" | grep -q "remove: $HOME/code/w
 check "cleanup dry run deleted nothing" '[ -d "$HOME/code/wt/merged" ] && echo "$OUT" | grep -q "dry run"'
 PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1
 check "--apply prunes old proof branch, keeps recent" '! git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null && [ "$(git ls-remote origin "refs/heads/proof-media/verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
+# 16 continuous dispatch: unit end fires lane-guard --dispatch once, in the background, non-fatal
+FG="$T/fake-guard"; printf '#!/bin/sh\necho "$*" >> "%s/guard.log"\n[ "$1" = --dispatch ] && exit 7\nexit 0\n' "$T" > "$FG"; chmod +x "$FG"
+OUT=$(LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain next' t16)" 2>&1); RC=$?; sleep 1
+check "unit end dispatches next exactly once" '[ "$(grep -c -- "^--dispatch" "$T/guard.log")" = 1 ]'
+check "failing dispatch is non-fatal" '[ $RC = 0 ]'
+check "dispatch runs after unit lock dropped" '[ ! -d "$LANES_HOME/units/chain-next.lock" ]'
+OUT=$(LANE_NO_CHAIN=1 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain off' t17)" 2>&1); sleep 1
+check "LANE_NO_CHAIN disables dispatch" '[ "$(grep -c -- "^--dispatch" "$T/guard.log")" = 1 ]'
 # 9 lanes.py per-host override
 printf '[l]\nkey = "neutral"\nkey@hostx = "special"\n' > "$T/o.toml"
 check "lanes.py host override" '[ "$(LANES_TOML=$T/o.toml LANES_HOST=hostx python3 scripts/lanes.py lane l key)" = special ] && [ "$(LANES_TOML=$T/o.toml LANES_HOST=y python3 scripts/lanes.py lane l key)" = neutral ]'

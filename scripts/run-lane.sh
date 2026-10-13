@@ -79,7 +79,12 @@ G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight r
 # One writer per unit and per branch.
 UL="$OPS/units/$SLUG.lock"; BLS=""
 lock_take "$UL" || { echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
-trap 'lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done' EXIT
+# Continuous dispatch: when this unit ends (after verify + the task-end hook, locks dropped), ask
+# lane-guard once to start the next queued card so a freed lane never idles until the 10-min launchd tick.
+# Background, non-fatal, never changes our exit code. LANE_NO_CHAIN=1 disables it.
+next_dispatch() { { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
+  nohup "$LANE_GUARD" --dispatch >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null & return 0; }
+trap 'rc=$?; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch; exit $rc' EXIT
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""; N=0
 for L in $(cfg order "$LANE"); do
