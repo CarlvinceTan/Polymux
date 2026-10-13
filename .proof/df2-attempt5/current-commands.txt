@@ -1,0 +1,76 @@
+$ git rev-parse HEAD origin/main
+cd1422dc2bff4d84ff7e9f804f196fd4795621fb
+8b204d055113c0668291c5423cf725e3dd020da3
+exit=0
+
+$ git merge-base --is-ancestor origin/main HEAD
+(no output)
+exit=0
+
+$ git diff --stat 3488d27aad7644db39765c30d8dcafee6a3eca5c..HEAD
+ apps/Polymux/Polymux.xcodeproj/project.pbxproj     |  66 +++++++
+ .../xcshareddata/xcschemes/Polymux.xcscheme        |  15 ++
+ apps/Polymux/PolymuxUITests/ReadinessTests.swift   |  82 ++++++++
+ apps/Polymux/Sources/PolymuxApp.swift              |  15 +-
+ apps/Polymux/Sources/VerifyFixture.swift           |  53 +++++
+ apps/Polymux/Sources/Views/ShellView.swift         |   8 +
+ apps/server/internal/agentruntime/runtime.go       |   2 +-
+ apps/server/internal/agentruntime/workspace.go     |   6 +-
+ .../server/internal/agentruntime/workspace_test.go |  61 +++++-
+ apps/server/internal/server/agents_test.go         |   2 +-
+ apps/server/internal/server/diffcard.go            | 157 +++++++++++++++
+ apps/server/internal/server/diffcard_test.go       | 128 ++++++++++++
+ apps/server/internal/server/server.go              |   3 +
+ scripts/affected.py                                |  98 +++++++++
+ scripts/board-update.sh                            | 201 +++++++++----------
+ scripts/cleanup.sh                                 |   5 +
+ scripts/lanelib.sh                                 |  63 ++++++
+ scripts/merge-queue.sh                             |  27 ++-
+ scripts/queue-write.sh                             |  12 +-
+ scripts/review-verdict.sh                          |   2 +-
+ scripts/run-lane.sh                                | 174 ++++++++++++----
+ scripts/test-affected.sh                           |  58 ++++++
+ scripts/test-board.sh                              | 218 +++++++++++----------
+ scripts/test-lanes.sh                              | 109 ++++++++++-
+ scripts/test-merge-queue.sh                        |  19 +-
+ scripts/verify-targets.sh                          |  12 ++
+ scripts/verify.sh                                  |  52 ++++-
+ 27 files changed, 1360 insertions(+), 288 deletions(-)
+exit=0
+
+$ git diff --stat
+(no output)
+exit=0
+
+$ rg -n 'configuration|Release|macos-test|ios-ready' /Users/carlvincetan/code/proj/Polymux/scripts/verify.sh
+118:# Readiness proof is ios-ready (-only-testing on the simulator); skip launching macos-test in that case.
+121:    echo "verify: skipping macos-test (cvmini macOS XCUITest runner hangs; ios-ready covers readiness)"
+123:    step macos-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+132:if [ -f "$UT" ]; then step ios-ready xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+134:  grep -q '^| ios-ready | PASS' <(printf '%s\n' "${ROWS[@]}") && READY=yes || READY=no
+exit=0
+
+$ rg -n 'DEBUG|case|default' apps/Polymux/Sources/VerifyFixture.swift
+1:#if DEBUG
+12:        Agent(id: "t-" + $0.lowercased(), name: $0, active: true)
+18:        case "t-long": members = ["t-chief", "t-aria"]
+19:        case "t-stream", "grp-empty": members = ["t-nova", "t-fern"]
+20:        case "grp-trip": members = ["t-chief", "t-aria", "t-milo"]
+21:        case "t-media": members = ["t-aria", "t-milo"]
+22:        case "t-activity": members = ["t-chief", "t-milo"]
+23:        default: members = [id]
+39:            case "agents": data = try JSONEncoder().encode(Self.agents)
+40:            case "threads": data = try JSONEncoder().encode(Self.threads)
+41:            case "settings": data = try JSONEncoder().encode(Settings(appearance: "system", sidebarWidth: 360))
+42:            default: data = Data("{}".utf8)
+exit=0
+
+$ rg -n 'screenshot|activity|colorScheme' apps/Polymux/PolymuxUITests/ReadinessTests.swift
+2:// verify.sh grants UI-verified only when this passes; its screenshots are the proof media.
+7://  - no activity indicators / "Loading" labels for 2 polls, app running in the foreground.
+13:                            "grp-trip", "t-media", "t-activity", "t-fern", "grp-empty"]
+64:            let busy = app.activityIndicators.count > 0 ||
+68:        let shot = XCTAttachment(screenshot: app.screenshot())
+75:        let sidebar = XCTAttachment(screenshot: app.screenshot())
+exit=0
+
