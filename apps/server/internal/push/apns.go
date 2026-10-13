@@ -23,7 +23,11 @@ import (
 	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
-type Config struct{ Path, KeyID, TeamID, Topic string }
+type Config struct {
+	Path, KeyID, TeamID, Topic string
+	// Endpoint replaces the Apple host. Empty in production; tests point it at httptest.
+	Endpoint string
+}
 type Sender struct {
 	config Config
 	key    *ecdsa.PrivateKey
@@ -99,6 +103,9 @@ func (s *Sender) Send(ctx context.Context, push store.Push) string {
 	endpoint := "https://api.push.apple.com"
 	if push.Device.Environment == "sandbox" {
 		endpoint = "https://api.sandbox.push.apple.com"
+	}
+	if s.config.Endpoint != "" {
+		endpoint = strings.TrimRight(s.config.Endpoint, "/")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/3/device/"+push.Device.Token, bytes.NewReader(data))
 	if err != nil {
