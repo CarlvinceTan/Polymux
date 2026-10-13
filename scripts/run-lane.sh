@@ -52,6 +52,9 @@ TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "card:" (Notion card
 fi
 # Lane gate FIRST: a disabled (lane1 = main Cursor account), expired or unknown lane never runs; no claim, worktree or vault read.
 cfg usable "$LANE" || { echo "refusing: lane '$LANE' is disabled, expired or unknown in agents/lanes.toml"; exit 5; }
+cfg mainkey "$LANE" && { echo "refusing: lane '$LANE' key/account points at the main account"; exit 5; }
+N=$(awk -F"\t" -v l="$LANE" '{st[$2]=$3; ln[$2]=$4} END{n=0; for(i in st) if(st[i]=="running" && ln[i]==l) n++; print n}' "$EV" 2>/dev/null)
+MC=$(cfg maxconc "$LANE"); [ "$MC" = 0 ] || [ "${N:-0}" -lt "$MC" ] || { echo "refusing: lane '$LANE' already has ${N} running (max_concurrent $(cfg maxconc "$LANE"))"; exit 5; }
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
@@ -74,7 +77,7 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
   case $a in
     cursor) local K KT; KT=$(cfg lane "$1" key)
       [ -n "$KT" ] || { echo "refusing: cursor lane $1 has no key" >>"$3"; return 98; }
-      python3 "$SD/lanes.py" forbidden "$KT" && { echo "refusing: lane $1 key is a main-account key" >>"$3"; return 98; }
+      { python3 "$SD/lanes.py" forbidden "$KT" || cfg mainkey "$1"; } && { echo "refusing: lane $1 key is a main-account key" >>"$3"; return 98; }
       K=$(vault get "$KT" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       # Key only in this child's environment: never argv (ps), never exported, keychain untouched.
       (cd "$2" && HOME="${H:-$HOME}" CURSOR_API_KEY="$K" "$cmd" -p --force --trust --workspace "$2" --output-format text "$P") >> "$3" 2>&1;;

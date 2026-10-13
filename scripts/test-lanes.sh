@@ -274,12 +274,47 @@ OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" $RL lane3 "$(task 'Gate exp
 OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" $RL nolane "$(task 'Gate unknown' g3)" 2>&1); R3=$?
 check "expired and unknown lanes refused (exit 5)" '[ $R2 = 5 ] && [ $R3 = 5 ] && [ ! -s "$T/vault.log" ]'
 check "lanes.py primaries/order: disabled + expired excluded, fallback last / only if no primary" '[ "$(LANES_TOML=$T/gate.toml python3 scripts/lanes.py primaries)" = lane2 ] && [ "$(LANES_TOML=$T/gate.toml python3 scripts/lanes.py order lane1)" = "lane2 lane4 lane5" ] && [ "$(LANES_TOML=$T/gate.toml python3 scripts/lanes.py order lane4)" = "lane2 lane4 lane5" ]'
-OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" CURSOR_API_KEY=main-should-not-leak LANE_NO_CHAIN=1 $RL lane5 "$(task 'Gate mainkey' g4)" 2>&1)
-check "cursor lane naming a main-account key refuses before the vault read" '[ ! -s "$T/vault.log" ] && [ ! -e "$T/agent.rec" ] && grep -q "key is a main-account key" "$LANES_HOME"/logs/*gate-mainkey-lane5.log'
+OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" CURSOR_API_KEY=main-should-not-leak LANE_NO_CHAIN=1 $RL lane5 "$(task 'Gate mainkey' g4)" 2>&1); RC=$?
+check "cursor lane naming a main-account key exits 5 up front, before claim and vault read" '[ $RC = 5 ] && echo "$OUT" | grep -q "points at the main account" && [ ! -s "$T/vault.log" ] && [ ! -e "$T/agent.rec" ] && ! grep -q "gate-mainkey" "$LANES_HOME/events.tsv"'
 OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" CURSOR_API_KEY=main-should-not-leak LANE_NO_CHAIN=1 $RL lane2 "$(task 'Gate home' g5)" 2>&1)
 check "lane2 runs with its own HOME and only its own vault key (inherited key stripped)" '[ "$(cat "$T/vault.log")" = "get student key" ] && grep -qx "HOME=$T/lane2home KEY=lanekey-test" "$T/agent.rec" && ! grep -q main-should-not-leak "$T/agent.rec"'
 OUT=$(env LANES_TOML="$T/gate.toml" CURSOR_API_KEY=main-should-not-leak LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo "SH=$HOME K=${CURSOR_API_KEY:-unset}" > "$HOME/../stub.rec"; echo s >> s.txt && git add s.txt && git commit -qm s -m "Lane: $LANE/$AGENT"' $RL lane4 "$(task 'Gate strip' g6)" 2>&1)
 check "non-cursor lane child never inherits CURSOR_API_KEY" 'grep -q "K=unset" "$HOME/../stub.rec"'
+# 23 main-account key guard up front (#72 round 3): exit 5 before claim/worktree/vault, case-insensitive
+cat >> "$T/gate.toml" <<TOML
+[lane6]
+agent = "cursor"
+key = "Cursor API key - ULTRA backup"
+cmd = "$VB/fake-cursor"
+role = "primary"
+[lane7]
+agent = "cursor"
+account = "CarlvinceTan@Gmail.com"
+key = "student key"
+cmd = "$VB/fake-cursor"
+[lane8]
+agent = "opencode"
+cmd = "true"
+max_concurrent = 2
+TOML
+: > "$T/vault.log"; rm -f "$T/agent.rec"
+OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" LANE_NO_CHAIN=1 $RL lane6 "$(task 'Gate ultra' g7)" 2>&1); RC=$?
+check "lane whose key title says Ultra exits 5 up front: no vault read, no claim, no worktree" '[ $RC = 5 ] && echo "$OUT" | grep -q "points at the main account" && [ ! -s "$T/vault.log" ] && [ ! -e "$T/agent.rec" ] && ! grep -q "gate-ultra" "$LANES_HOME/events.tsv" && [ ! -d "$LANES_WT/lane6-gate-ultra" ]'
+OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" LANE_NO_CHAIN=1 $RL lane7 "$(task 'Gate gmail' g8)" 2>&1); RC=$?
+check "lane whose account is carlvincetan@gmail (any case) exits 5 up front" '[ $RC = 5 ] && [ ! -s "$T/vault.log" ] && ! grep -q "gate-gmail" "$LANES_HOME/events.tsv"'
+OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" LANE_NO_CHAIN=1 LANE_KEY_TITLE="my ultra key" $RL lane2 "$(task 'Gate env' g9)" 2>&1); RC=$?
+check "env LANE_KEY_TITLE pointing at Ultra exits 5 up front" '[ $RC = 5 ] && [ ! -s "$T/vault.log" ]'
+check "forbidden guard is case-insensitive and substring (ultra, carlvincetan@gmail, listed titles); others pass" 'LANES_TOML=$T/gate.toml python3 scripts/lanes.py forbidden "cursor api key - lane1 (ULTRA)" && LANES_TOML=$T/gate.toml python3 scripts/lanes.py forbidden "key of CARLVINCETAN@GMAIL.COM" && LANES_TOML=$T/gate.toml python3 scripts/lanes.py forbidden "MAIN KEY v2" && ! LANES_TOML=$T/gate.toml python3 scripts/lanes.py forbidden "student key"'
+# 24 max_concurrent enforced per lane
+printf '2026-10-13 10:00:00\tx1\trunning\tlane8\t/w1\n' >> "$LANES_HOME/events.tsv"
+OUT1=$(env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD=true $RL lane8 "$(task 'Conc one' g10)" 2>&1)
+printf '2026-10-13 10:00:00\tx2\trunning\tlane8\t/w2\n' >> "$LANES_HOME/events.tsv"
+OUT2=$(env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD=true $RL lane8 "$(task 'Conc two' g11)" 2>&1); RC=$?
+printf '2026-10-13 10:00:01\tx1\tpassed\tlane8\t\n2026-10-13 10:00:01\tx2\tpassed\tlane8\t\n' >> "$LANES_HOME/events.tsv"
+check "max_concurrent=2: 2nd run allowed with 1 running, 3rd refused (exit 5)" '! echo "$OUT1" | grep -q "max_concurrent" && [ $RC = 5 ] && echo "$OUT2" | grep -q "already has 2 running (max_concurrent 2)"'
+# 25 committed agents/lanes.toml matches Carlvince's final layout
+CT="$SRC/agents/lanes.toml"
+check "committed lanes.toml: lane3 only primary (max 2), lane4 fallback, lane1+lane2 disabled, no main key" '[ "$(LANES_TOML=$CT python3 scripts/lanes.py primaries)" = lane3 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py order lane4)" = "lane3 lane4" ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py maxconc lane3)" = 2 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane4 role)" = fallback ] && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane1 && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane2 && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane1 key)" ] && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane2 key)" ]'
 rm -f "$LANES_HOME/queue/"*.task
 # 16 board-update.sh (Notion board) cases
 . "$SRC/scripts/test-board.sh"

@@ -15,38 +15,38 @@ mac_hosts = ["cvmini", "cvmac"]   # hosts allowed to run Xcode/Swift units (disp
 cursor_install_url = "https://cursor.com/install"
 cursor_install_sha256 = ""        # empty = refuse automatic install; install manually (README)
 
-# Lane layout (Carlvince, 13 Oct 2026): primaries = lane3 (Codex) + lane2 (UniMelb student Cursor);
-# lane4 (OpenCode) is fallback-only; lane1 (main Cursor Ultra account) must NOT code.
-# run-lane.sh refuses a disabled/expired/unknown lane before any claim, worktree or vault read,
-# strips any inherited CURSOR_API_KEY from every agent child, and refuses the vault titles below.
+# Lane layout (Carlvince, 13 Oct 2026, final): lane3 (Codex) is the ONLY primary; lane4 (OpenCode) is the
+# standing failover (role fallback); lane1 (main Cursor Ultra account) and lane2 are disabled. No second Cursor lane.
+# lane3 max_concurrent = 2: codex exec runs parallel sessions on one ChatGPT login (shared rate limit);
+# builds are still capped by max_builds/locks. run-lane.sh refuses a 3rd concurrent lane3 run (exit 5).
+# run-lane.sh refuses a disabled/expired/unknown lane, or one whose key/account/env points at the main
+# account (case-insensitive: forbidden_keys, "ultra", "carlvincetan@gmail"), with exit 5 before any claim,
+# worktree or vault read, and strips any inherited CURSOR_API_KEY from every agent child.
 # Keychain: a per-lane HOME does NOT isolate the macOS login keychain (securityd is per user), so
 # isolation rests on: the key is passed only via the child's CURSOR_API_KEY (no `cursor-agent login`,
 # no keychain write by run-lane), lane HOME is never the real HOME, and lanes never open a browser
 # or the main account's Grok Bot session/profile (prompt rule + no browser launch in run-lane).
 forbidden_keys = ["Cursor API key (cvmini cursor-agent)", "Cursor API key - lane1 (ultra)"]
 [lane1]
-enabled = false         # main account: never used for coding or failover (13 Oct 2026)
+enabled = false         # main account: never used for coding or failover (13 Oct 2026); no key
 agent = "cursor"
-account = "ultra"
 cmd = "~/.local/bin/cursor-agent"
 
 [lane2]
+enabled = false         # no second Cursor lane (Carlvince 13 Oct, final); UniMelb lane retired
 agent = "cursor"
-account = "second"
-key = "Cursor API key - UniMelb (second account)"   # vault entry title, read at run time
-cmd = "~/.local/bin/cursor-agent-auto"   # Free plan: Auto model only (wraps cursor-agent --model auto)
-home = "~/.lanes/lane2-unimelb"   # isolated HOME/config for the student account; main logins/keychain untouched
-role = "primary"
+cmd = "~/.local/bin/cursor-agent-auto"
 
 [lane3]
 agent = "codex"
 account = "chatgpt"
 cmd = "codex"
-role = "primary"
+role = "primary"        # the only primary
+max_concurrent = 2      # parallel codex sessions; enforced by run-lane.sh
 until = "2026-10-30"    # Codex access ends 30 Oct 2026; lane auto-skipped after
 
 [lane4]
 agent = "opencode"
 account = "default"
 cmd = "opencode"
-role = "fallback"       # dispatched only when no primary lane is usable
+role = "fallback"       # standing failover: dispatched only when lane3 is unusable
