@@ -2,8 +2,8 @@
 # run-lane.sh <lane> "<task>"|<task-file> [--branch B] [--base origin/main]
 # run-lane.sh --verify-only <branch>     (Mac proof for cloud-agent PRs)
 # Worktree -> headless agent -> our own verify.sh -> push + PR with proof.
-# On failure the task fails over once to the next lane in agents/lanes.toml; after 2
-# failures it writes ~/ops/lanes/failures.tsv + NEEDS_CODY. No daemon, no DB.
+# On a first failure the brief is re-queued for lane-guard to place on a free lane; a failed
+# attempt 2+ writes ~/ops/lanes/failures.tsv + NEEDS_CODY. No daemon, no DB.
 # One writer per branch: $OPS/branches/<branch>.lock (plus the unit lock). Lane commits carry
 # a "Lane: <lane>/<agent>" trailer so one writer per branch can be audited from history.
 set -uo pipefail
@@ -85,42 +85,54 @@ G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight r
 # One writer per unit and per branch.
 UL="$OPS/units/$SLUG.lock"; BLS=""
 lock_take "$UL" || { echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
-# Continuous dispatch: when this unit ends (after verify + the task-end hook, locks dropped), ask
-# lane-guard once to start the next queued card so a freed lane never idles until the 10-min launchd tick.
-# Background, non-fatal, never changes our exit code. LANE_NO_CHAIN=1 disables it.
-# No chain when: stopped by SIGINT/SIGTERM (Ctrl-C, launchd stop); a failed unit ran < LANE_CHAIN_MIN_S
-# (default 120 s); or this is the 2nd+ failed unit end in a row ($OPS/chain-fails, reset by a success),
-# so an outage can't drain the queue into NEEDS_CODY. Reset by hand after fixing the outage:
-#   echo 0 > ~/ops/lanes/chain-fails     (or delete it; the next successful unit also resets it)
-# The call runs under the lanelib lock $OPS/dispatch-chain.lock (one chained dispatch at a time; if it
-# is held, one is already running and we skip). lane-guard --dispatch also takes its own
-# $OPS/dispatch.lock, shared with the launchd tick, and exits 0 if that is held. When no slot is free
-# (units/*.lock count >= max_builds) or every lane is busy, lane-guard logs that and exits 0 before
-# touching the queue: a no-op. Our unit/branch locks are dropped first, so this unit isn't counted.
-# The freed lane is passed as --free-lane only if 'lane-guard --help' lists that flag (today it doesn't;
-# the positional 'lane-guard --dispatch <lane>' forces that lane with no busy check, so we don't use it).
-UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE
-chain_ok() { local rc=$1 n k
-  [ -n "$SIGNALED" ] && return 1
+# Continuous dispatch: whenever a lane becomes free, for any reason (success, failure, failover to
+# another lane, blocked, infra error), ask lane-guard at once to refill it, so no lane idles until the
+# 10-min launchd tick (now only a backstop): 'lane-guard --dispatch --free-lane <lane>' when its --help
+# lists --free-lane, else plain '--dispatch'. Background, non-fatal, never changes our exit code;
+# LANE_NO_CHAIN=1 disables it, and SIGINT/SIGTERM (a stop) does not chain.
+# Runaway guards limit retrying the SAME failing task, never refilling the lane: when this task failed
+# fast (< LANE_CHAIN_MIN_S, default 120 s) or failed for the 2nd+ time in a row ($OPS/chain-fails/<slug>,
+# reset by its success), its queued retries (queue/*.task with the same title, any "(attempt N)")
+# move to $OPS/queue-hold/ for Cody and the lane is still refilled with the next eligible card.
+# Exception: an infra error (verify.sh exit 10, missing toolchain) does not chain, since every next card
+# would hit the same missing tool; the task goes to queue-hold/ (not failed) and NEEDS_CODY names the tool.
+# The call runs under the lanelib lock $OPS/dispatch-chain.lock (one chained dispatch at a time; we wait
+# up to ~10 s for it so a failover refill isn't lost). lane-guard takes its own $OPS/dispatch.lock.
+UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE; CF="$OPS/chain-fails"
+[ -f "$CF" ] && rm -f "$CF"; mkdir -p "$CF"   # old global streak file -> per-task dir
+base_title() { echo "$1" | sed -E 's/ \(attempt [0-9]+\)$//'; }
+hold_retries() {  # move queued retries of this task to queue-hold/
+  local f t bt; bt=$(base_title "$TITLE"); mkdir -p "$OPS/queue-hold"
+  for f in "$OPS"/queue/*.task; do [ -f "$f" ] || continue
+    t=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)
+    [ "$(base_title "$t")" = "$bt" ] && mv "$f" "$OPS/queue-hold/" && echo "$(date '+%F %T') $SLUG: held retry $(basename "$f") (runaway guard)" >> "$OPS/logs/dispatch-chain.log"
+  done; }
+fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-40 | sed 's/-$//')"
   for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
-  if [ "$rc" = 0 ]; then echo 0 > "$OPS/chain-fails"; lock_drop "$OPS/chain-state.lock"; return 0; fi
-  n=$(( $(cat "$OPS/chain-fails" 2>/dev/null || echo 0) + 1 )); echo $n > "$OPS/chain-fails"; lock_drop "$OPS/chain-state.lock"
-  [ $(( $(date +%s) - UNIT_T0 )) -ge "${LANE_CHAIN_MIN_S:-120}" ] && [ $n -lt 2 ]; }
-next_dispatch() { { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
-  chain_ok "$1" || { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (signal, short failure or fail streak)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
-  local fl=""; { "$LANE_GUARD" --help 2>&1 </dev/null || true; } | grep -q -- '--free-lane' && fl="--free-lane $FREED"
-  nohup bash -c '. "$1"; lock_take "$2" || exit 0; trap "lock_drop \"$2\"" EXIT; shift 2; "$@"' _ \
+  if [ "$rc" = 0 ]; then rm -f "$f"; lock_drop "$OPS/chain-state.lock"; return 0; fi
+  n=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo $n > "$f"; lock_drop "$OPS/chain-state.lock"
+  { [ $(( $(date +%s) - UNIT_T0 )) -lt "${LANE_CHAIN_MIN_S:-120}" ] || [ $n -ge 2 ]; } && hold_retries; return 0; }
+free_lane() {  # $1 lane now free; non-blocking
+  { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
+  local fl=""; { "$LANE_GUARD" --help 2>&1 </dev/null || true; } | grep -q -- '--free-lane' && fl="--free-lane $1"
+  nohup bash -c '. "$1"; for k in $(seq 1 100); do lock_take "$2" && break; [ $k = 100 ] && exit 0; sleep 0.1; done
+    trap "lock_drop \"$2\"" EXIT; shift 2; "$@"' _ \
     "$SD/lanelib.sh" "$OPS/dispatch-chain.lock" "$LANE_GUARD" --dispatch $fl >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null &
-  return 0; }
+  echo "$(date '+%F %T') $SLUG: lane $1 free -> dispatch${fl:+ $fl}" >> "$OPS/logs/dispatch-chain.log"; return 0; }
+next_dispatch() { [ -n "$SIGNALED" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (signal)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
+  [ "$1" = 10 ] && { echo "$(date '+%F %T') $SLUG rc=10: not chaining (infra: missing toolchain; every card would hit it)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
+  fail_guard "$1"; free_lane "$FREED"; }
 trap 'rc=$?; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && kill $AP 2>/dev/null; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && kill $AP 2>/dev/null; exit 130' INT
 BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
-git -C "$REPO" fetch -q origin; TRIED=""; N=0
-for L in $(cfg order "$LANE"); do
-  N=$((N+1)); [ $N -gt 2 ] && break
-  B=$BRANCH; [ $N -gt 1 ] && B="$BRANCH-$L"; WT="$WTR/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
+git -C "$REPO" fetch -q origin; TRIED=""
+# No in-process failover (it stacked units onto busy lanes): one lane per run. On a first failure the
+# brief goes back to $OPS/queue/ as "<title> (attempt 2)" and we exit; lane-guard --dispatch (chained
+# at exit) starts it on a free lane. A failed attempt 2+ goes to failures.tsv + NEEDS_CODY.
+L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
+  B=$BRANCH; WT="$WTR/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
   TRIED="$TRIED $L"; BL=$(branch_lock_dir "$B")
   lock_take "$BL" || { ev failed "$L" "branch $B has another writer (pid $(lock_holder "$BL"))"; continue; }; BLS="$BLS $BL"
   ev running "$L" "$WT"
@@ -136,8 +148,6 @@ for L in $(cfg order "$LANE"); do
       ev failed "$L" "local $B and origin/$B have diverged; not force-pushing"; continue; fi
   fi
   [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash "$SD/wt-setup.sh") >> "$LOG" 2>&1
-  [ -n "${LANE_PREV:-}" ] && sleep "${LANE_STAGGER:-20}"   # stagger agent launches (keychain race)
-  LANE_PREV=$L; FREED=$L
   START=$(git -C "$WT" rev-parse HEAD)   # branch head at unit start: size, trailer and no-commit checks measure only this run's work
   run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; LAST=$(date +%s); SIG=""
   while kill -0 $AP 2>/dev/null; do sleep "${LANE_POLL:-30}"   # liveness = new commit/push/change, not log mtime
@@ -154,8 +164,14 @@ for L in $(cfg order "$LANE"); do
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
     git -C "$WT" log --format=%B "$START"..HEAD | grep -qE '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
-  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
-  [ -x ~/.local/bin/lane-guard ] && { ~/.local/bin/lane-guard --task-end "$L" "$ID" "$VRC" "$LOG" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
+  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
+  if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
+    MISS=$(sed -n 's/^verify: INFRA missing toolchain: *//p' "$LOG" | tail -1)
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" infra "$L" "missing toolchain: ${MISS:-?} (task: $SLUG)" "$LOG" >> "$OPS/failures.tsv"
+    echo "$(date '+%F %T') $ID: INFRA missing toolchain on $HOST: ${MISS:-?} (lane $L, task '$TITLE' not failed) log $LOG" >> "$OPS/NEEDS_CODY"
+    [ -n "$TASKF" ] && { mkdir -p "$OPS/queue-hold"; cp "$TASKF" "$OPS/queue-hold/$ID-infra.task"; }
+    ev infra "$L" "missing toolchain: ${MISS:-?}"; BU verify "$SLUG" blocked; echo "INFRA: missing toolchain: ${MISS:-?} -> $OPS/NEEDS_CODY"; exit 10; fi
+  [ -x "$LANE_GUARD" ] && { "$LANE_GUARD" --task-end "$L" "$ID" "$VRC" "$LOG" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
   [ $VRC = 0 ] || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
   BODY="Task: $TITLE"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
@@ -181,7 +197,18 @@ for L in $(cfg order "$LANE"); do
   ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV" >> "$OPS/results.tsv"
   echo "$URL ($LV)"; exit 0
 done
+BT=$(base_title "$TITLE"); AT=$(echo "$TITLE" | sed -nE 's/.* \(attempt ([0-9]+)\)$/\1/p'); AT=${AT:-1}
+if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to place on a free lane
+  QD="$OPS/queue"; mkdir -p "$QD"; DUP=""
+  for f in "$QD"/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have re-queued it
+    [ "$(base_title "$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
+  if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)-$SLUG-retry.task"
+    { [ -n "$TASKF" ] && grep -E '^(unit|needs|scope|expected_min|card|after):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
+      echo "$BT (attempt 2)"; echo "$TASK" | tail -n +2; } > "$Q.tmp"
+    ev requeued "$L" "failed on $L; brief back in queue ($Q)"; sleep 1; mv "$Q.tmp" "$Q"   # file newer than our events (lane-guard drop rule)
+  else ev requeued "$L" "failed on $L; already re-queued ($DUP)"; fi
+  echo "REQUEUED after: $L -> $OPS/queue (lane-guard dispatches it to a free lane)"; exit 1; fi
 ERR=$(tail -n 5 "$LOG" | tr '\t\n' '  ')
 printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$TITLE" "${TRIED# }" "$ERR" "$LOG" >> "$OPS/failures.tsv"
 echo "$(date '+%F %T') $ID: $TITLE (lanes:$TRIED) log $LOG" >> "$OPS/NEEDS_CODY"
-BU verify "$SLUG" failed; ev needs_cody "${TRIED# }" "$LOG"; echo "FAILED after:$TRIED -> $OPS/NEEDS_CODY"; exit 1
+BU verify "$SLUG" failed; BU drop "$SLUG" "abandoned: failed on$TRIED"; ev needs_cody "${TRIED# }" "$LOG"; echo "FAILED after:$TRIED -> $OPS/NEEDS_CODY"; exit 1

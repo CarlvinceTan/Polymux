@@ -4,7 +4,9 @@
 # per-worktree DerivedData, unavailable sims, and ~/verify-evidence older than N days.
 # Scans ~/code/wt and ~/.cursor/worktrees; age = last activity (commit, index, newest file).
 # Never touches: the main checkout, dirty or unpushed worktrees, anything holding a build slot
-# or unit lock, a running verify/agent, ~/ops/goal-loop, ~/ops/pr-verify.
+# or unit lock, a running verify/agent (live .build/verify.lock, or a verify marker newer than
+# VERIFY_FRESH_MIN, default 120 min: .build/verify-active or $LOCKS/active/<sim name>), ~/ops/goal-loop,
+# ~/ops/pr-verify. A cloned sim is kept on the same rule even when its worktree is gone or elsewhere.
 set -uo pipefail
 DAYS=7; APPLY=0; PROOF_DAYS=14
 while [ $# -gt 0 ]; do case $1 in --days) DAYS=$2; shift 2;; --proof-days) PROOF_DAYS=$2; shift 2;; --apply) APPLY=1; shift;; *) shift;; esac; done
@@ -25,7 +27,13 @@ last_activity() {  # newest of: last commit, index write, newest tracked-or-untr
   f=$(find "$1" -maxdepth 5 \( -name .build -o -name .git -o -name node_modules \) -prune -o -type f -exec stat -f %m {} + 2>/dev/null | sort -n | tail -1)
   printf '%s\n' "$c" "$i" "${f:-0}" | sort -n | tail -1; }
 wt_exists() { [ -d "$HOME/code/wt/$1" ] && return 0; for d in "$CW"/*/"$1"; do [ -d "$d" ] && return 0; done; return 1; }
+fresh() { [ -e "$1" ] && [ $(( $(date +%s) - $(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0) )) -lt $(( ${VERIFY_FRESH_MIN:-120} * 60 )) ]; }
+verify_active() {  # $1 worktree path or "" ; $2 sim name
+  local p; if [ -n "$1" ]; then p=$(cat "$1/.build/verify.lock/pid" 2>/dev/null)
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 0; fresh "$1/.build/verify-active" && return 0; fi
+  fresh "$LOCKS/active/$2"; }
 in_use() {  # $1 worktree path
+  verify_active "$1" "polymux-$(basename "$1")" && return 0
   grep -qsF "$1" "$LOCKS"/slot*/wt && return 0
   for u in "$OPS"/units/*.lock; do [ -d "$u" ] && kill -0 "$(cat "$u/pid" 2>/dev/null)" 2>/dev/null && \
     [[ "$1" == *"$(basename "$u" .lock)"* ]] && return 0; done
@@ -62,6 +70,9 @@ for r,ds in json.load(sys.stdin)['devices'].items():
   [ "$N" = "$TPL" ] && continue; WT=${N#polymux-}
   wt_exists "$WT" && continue   # live worktree under ~/code/wt or ~/.cursor/worktrees/*
   [ "$S" = Booted ] && { keep "$N" "booted"; continue; }
+  VA=""; for d in $(git -C "$REPO" worktree list --porcelain | awk '/^worktree /{print $2}') "$HOME"/ops/pr-verify/*; do
+    [ "$(basename "$d")" = "$WT" ] && verify_active "$d" "$N" && VA=1; done
+  { [ -n "$VA" ] || verify_active "" "$N"; } && { keep "$N" "verify running or marker < ${VERIFY_FRESH_MIN:-120}m"; continue; }
   do_ xcrun simctl delete "$U"
 done
 # ~/.cursor/worktrees dirs that git no longer knows: report only (Cursor owns them)
