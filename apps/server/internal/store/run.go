@@ -394,15 +394,18 @@ func (s *Store) recoverRuns(ctx context.Context) error {
 		run.Status, run.Activity, run.Summary, run.FinishedAt = "interrupted", "", "Execution interrupted", &now
 		run.Error = &contract.Error{Code: "interrupted", Message: message}
 		if len(run.Tools) == 0 && run.ToolID != nil {
-			run.Tools = []contract.ToolActivity{{ID: *run.ToolID, RunID: run.ID, Name: "tool"}}
+			run.Tools = []contract.ToolActivity{{ID: *run.ToolID, RunID: run.ID, Name: "tool", Status: "running"}}
 		}
-		for _, tool := range run.Tools {
-			tool.Status = "interrupted"
-			if _, err := s.Append(ctx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &tool}, nil); err != nil {
+		for i := range run.Tools {
+			if run.Tools[i].Status != "running" {
+				continue
+			}
+			run.Tools[i].Status = "interrupted"
+			if _, err := s.Append(ctx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &run.Tools[i]}, nil); err != nil {
 				return err
 			}
 		}
-		run.Tools, run.ToolID = []contract.ToolActivity{}, nil
+		run.ToolID = nil
 		if err := s.RunEvent(ctx, "run.done", &run, nil); err != nil {
 			return err
 		}
@@ -867,8 +870,19 @@ func (s *Store) ResumeReady(ctx context.Context, run contract.Run) bool {
 	return resumeReady(ctx, s.DB, run)
 }
 
+// runningTool reports an in-flight call. Finished rows stay on the run, so history alone
+// must not block a resume.
+func runningTool(tools []contract.ToolActivity) bool {
+	for _, tool := range tools {
+		if tool.Status == "running" {
+			return true
+		}
+	}
+	return false
+}
+
 func resumeReady(ctx context.Context, q rowQuery, run contract.Run) bool {
-	if run.Attempt > 1 || len(run.Tools) > 0 || run.ToolID != nil {
+	if run.Attempt > 1 || run.ToolID != nil || runningTool(run.Tools) {
 		return false
 	}
 	db, ok := openDurable(ctx, q)

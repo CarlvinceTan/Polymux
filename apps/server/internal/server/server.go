@@ -1130,8 +1130,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	var pending strings.Builder
 	var lastFlush time.Time
 	tools := map[string]contract.ToolActivity{}
+	// Finished calls stay on the run so chat rows survive replay and relaunch.
+	history := []contract.ToolActivity{}
 	syncTools := func() {
-		run.Tools = []contract.ToolActivity{}
+		run.Tools = slices.Clone(history)
 		run.ToolID = nil
 		ids := []string{}
 		for id := range tools {
@@ -1298,7 +1300,19 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				if delta.Failed {
 					status = "failed"
 				}
+				finished, tracked := tools[delta.ToolID]
 				delete(tools, delta.ToolID)
+				if !tracked {
+					finished = contract.ToolActivity{ID: delta.ToolID, RunID: run.ID, Name: bounded(delta.Tool, 128)}
+				}
+				finished.Status = status
+				if excerpt := bounded(delta.Output, 2048); excerpt != "" {
+					finished.Output = &excerpt
+				}
+				history = append(history, finished)
+				if len(history) > 32 {
+					history = history[len(history)-32:]
+				}
 				syncTools()
 				run.Activity, run.Summary = "generating", "Composing reply"
 				if len(tools) > 0 {
@@ -1310,7 +1324,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				if handing {
 					run.Activity, run.Summary = "handoff", "Handing off to peer"
 				}
-				return s.Store.RunEvent(writeCtx, "tool.done", &run, &contract.ToolActivity{ID: delta.ToolID, RunID: run.ID, Name: bounded(delta.Tool, 128), Status: status})
+				return s.Store.RunEvent(writeCtx, "tool.done", &run, &finished)
 			}
 			if delta.Tool != "" {
 				toolID := delta.ToolID
@@ -1321,6 +1335,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 					return errors.New("tool metadata budget exhausted")
 				}
 				tool := contract.ToolActivity{ID: toolID, RunID: run.ID, Name: bounded(delta.Tool, 128), Status: "running"}
+				if summary := bounded(delta.Summary, 200); summary != "" {
+					tool.Summary = &summary
+				}
 				tools[toolID] = tool
 				syncTools()
 				run.Activity, run.Summary = "tool", "Using "+bounded(delta.Tool, 128)
@@ -1551,8 +1568,12 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		if _, e := s.Store.Append(writeCtx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &tool}, nil); e != nil {
 			err = errors.Join(err, e)
 		}
+		history = append(history, tool)
 	}
 	tools = map[string]contract.ToolActivity{}
+	if len(history) > 32 {
+		history = history[len(history)-32:]
+	}
 	syncTools()
 	final := contract.Event{ConversationID: m.ThreadID, Type: "message.done", MessageID: &m.ID, AgentID: &a.id, RunID: &run.ID, Usage: &result.Usage, Message: &m}
 	if err != nil {

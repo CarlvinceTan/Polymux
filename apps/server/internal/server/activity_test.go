@@ -208,6 +208,8 @@ func TestIntroQueuesUserTask(t *testing.T) {
 	}
 }
 
+// TestToolsAreRedacted also covers the chat rows a relaunch replays: the summary rides
+// tool.start, the excerpt rides tool.done, and both stay on the finished run.
 func TestToolsAreRedacted(t *testing.T) {
 	api, _ := startTest(t, &testFactory{})
 	a := api.actors["assistant"]
@@ -219,15 +221,21 @@ func TestToolsAreRedacted(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := store.NewRun("cycle", "assistant", "assistant", "message").ID
-	awaitRun(t, api.Store, runID, "completed")
+	run := awaitRun(t, api.Store, runID, "completed")
+	if len(run.Tools) != 1 || run.Tools[0].Summary == nil || *run.Tools[0].Summary != "go test ./..." ||
+		run.Tools[0].Output == nil || *run.Tools[0].Output != "ok\tpolymux\t0.2s" || run.Tools[0].Status != "completed" {
+		t.Fatalf("run rows %+v", run.Tools)
+	}
 	events, err := api.Store.Events(t.Context(), "assistant", 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var kinds []string
+	rows := map[string]contract.ToolActivity{}
 	for _, event := range events {
 		if event.Tool != nil {
 			kinds = append(kinds, event.Type)
+			rows[event.Type] = *event.Tool
 			if event.Tool.ID != "call" || event.Tool.RunID != runID {
 				t.Fatal("tool correlation lost")
 			}
@@ -240,12 +248,23 @@ func TestToolsAreRedacted(t *testing.T) {
 	if strings.Join(kinds, ",") != "tool.start,tool.done" {
 		t.Fatalf("events %v", kinds)
 	}
+	if start := rows["tool.start"]; start.Summary == nil || *start.Summary != "go test ./..." || start.Status != "running" {
+		t.Fatalf("tool.start %+v", start)
+	}
+	if done := rows["tool.done"]; done.Output == nil || *done.Output != "ok\tpolymux\t0.2s" || done.Status != "completed" {
+		t.Fatalf("tool.done %+v", done)
+	}
 }
 
 type cycleSession struct{}
 
 func (*cycleSession) Send(_ context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
-	for _, d := range []agentruntime.Delta{{Kind: "generating"}, {Kind: "tool.start", ToolID: "call", Tool: "read", Args: "secret"}, {Kind: "tool.done", ToolID: "call", Tool: "read"}, {Text: "Done"}} {
+	for _, d := range []agentruntime.Delta{
+		{Kind: "generating"},
+		{Kind: "tool.start", ToolID: "call", Tool: "read", Args: "secret", Summary: "go test ./..."},
+		{Kind: "tool.done", ToolID: "call", Tool: "read", Output: "ok\tpolymux\t0.2s"},
+		{Text: "Done"},
+	} {
 		if err := emit(d); err != nil {
 			return agentruntime.Result{}, err
 		}

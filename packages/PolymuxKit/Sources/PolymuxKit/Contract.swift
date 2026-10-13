@@ -704,17 +704,23 @@ public struct ToolActivity: Codable, Hashable, Sendable {
     public var runID: String
     public var name: String
     public var status: String
+    public var summary: String?
+    public var output: String?
 
     public init(
         id: String = "",
         runID: String = "",
         name: String = "",
-        status: String = ""
+        status: String = "",
+        summary: String? = nil,
+        output: String? = nil
     ) {
         self.id = id
         self.runID = runID
         self.name = name
         self.status = status
+        self.summary = summary
+        self.output = output
     }
 }
 

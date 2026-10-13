@@ -297,7 +297,7 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 					}
 					return &harness.BeforeToolResult{Block: &reason}, nil
 				}
-				s.report(Delta{Kind: "tool.start", ToolID: call.ID, Tool: call.Name})
+				s.report(Delta{Kind: "tool.start", ToolID: call.ID, Tool: call.Name, Summary: toolSummary(call.Name, raw)})
 				if len(decision.Args) == 0 {
 					return nil, nil
 				}
@@ -311,7 +311,7 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 				if _, ok := s.turnContext(api.ConversationId(), ctx); !ok {
 					return nil, nil
 				}
-				s.report(Delta{Kind: "tool.done", ToolID: call.ID, Tool: call.Name, Failed: result.IsError != nil && *result.IsError})
+				s.report(Delta{Kind: "tool.done", ToolID: call.ID, Tool: call.Name, Failed: result.IsError != nil && *result.IsError, Output: toolExcerpt(result.Content)})
 				return nil, nil
 			},
 		}},

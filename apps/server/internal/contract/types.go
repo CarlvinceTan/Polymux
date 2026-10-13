@@ -252,10 +252,12 @@ type Run struct {
 }
 
 type ToolActivity struct {
-	ID     string `json:"id"`
-	RunID  string `json:"runID"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID      string  `json:"id"`
+	RunID   string  `json:"runID"`
+	Name    string  `json:"name"`
+	Status  string  `json:"status"`
+	Summary *string `json:"summary,omitempty"`
+	Output  *string `json:"output,omitempty"`
 }
 
 type PeerDelivery struct {
