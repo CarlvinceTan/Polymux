@@ -4,21 +4,25 @@ import Observation
 @MainActor @Observable
 public final class ChatStore {
     public let activity: ActivityStore
+    public let trace = SignpostTrace()
     public private(set) var runs: [Run] = []
     public let threadID: String
     public private(set) var messages: [Message] = []
     public private(set) var isConnected = false
     public var isVisible = true
-    public private(set) var isSending = false
+    /// Per-file progress for sends still uploading, keyed by the local attachment id.
+    public private(set) var uploads: [String: Double] = [:]
+    public var isSending: Bool { flushing || !uploads.isEmpty }
     public private(set) var error: String?
     public private(set) var hasEarlier = true
     @ObservationIgnored public var onUpdate: (@MainActor (Event, ContinuousClock.Instant) -> Void)?
     @ObservationIgnored private let client: APIClient
     @ObservationIgnored private let cacheActor: LocalCacheActor
+    @ObservationIgnored private let uploader: AttachmentUploader
     @ObservationIgnored private weak var sidebar: SidebarStore?
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var loading: Task<Void, Never>?
-    @ObservationIgnored private var isFlushing = false
+    @ObservationIgnored private var flushing = false
     @ObservationIgnored private var voices: [UUID: VoiceReply] = [:]
 
     private struct VoiceReply {
@@ -29,11 +33,13 @@ public final class ChatStore {
         let continuation: AsyncThrowingStream<VoiceFragment, any Error>.Continuation
     }
 
-    public init(client: APIClient, actor: LocalCacheActor, threadID: String, sidebar: SidebarStore? = nil) {
+    public init(client: APIClient, actor: LocalCacheActor, threadID: String, sidebar: SidebarStore? = nil,
+                uploadClient: (any UploadClient)? = nil) {
         self.client = client
         self.cacheActor = actor
         self.threadID = threadID
         self.sidebar = sidebar
+        uploader = AttachmentUploader(client: uploadClient ?? client)
         activity = sidebar?.activity ?? ActivityStore()
         loading = Task { [weak self] in await self?.prepare() }
     }
@@ -68,9 +74,102 @@ public final class ChatStore {
         await send(text: text, attachments: attachments, id: UUID().uuidString, reply: reply, mentions: mentions)
     }
 
+    /// Shows the bubble and returns before anything is awaited; uploads keep running behind it.
+    public func send(text: String, files: [LocalFile], reply: ReplyContext? = nil,
+                     mentions: [String] = [], at tap: ContinuousClock.Instant = ContinuousClock().now) async {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !files.isEmpty else { return }
+        let id = UUID().uuidString
+        let parts = (text.isEmpty ? [] : [Part(kind: "text", text: text)])
+            + files.map { Part(kind: "attachment", attachment: $0.placeholder) }
+        let message = Message(id: id, threadID: threadID, role: "user", parts: parts,
+                              createdAt: WireDate.string(), status: "pending", seq: 0, reply: reply,
+                              mentions: mentions.isEmpty ? nil : mentions)
+        update(message)
+        do {
+            try await cacheActor.call { try $0.merge([message]) }
+        } catch {
+            messages.removeAll { $0.id == id }
+            self.error = error.localizedDescription
+            return
+        }
+        // The bubble and its pending record landed; the span marks that from the tap, with the
+        // uploads still ahead. The ring starts on every file.
+        InstantUI.interval("send.bubble", budget: InstantUI.feedbackBudget, trace: trace, from: tap) {
+            onUpdate?(Event(seq: 0, conversationID: threadID, type: "message.start", message: message,
+                            createdAt: message.createdAt), tap)
+            for file in files { uploads[file.id] = 0 }
+        }
+        startUploads(message.id, files: files, reply: reply, text: text, mentions: message.mentions ?? [])
+    }
+
+    private func startUploads(_ messageID: String, files: [LocalFile], reply: ReplyContext?, text: String, mentions: [String]) {
+        let uploader = self.uploader
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let store = self else { return }
+            do {
+                try await uploader.run(files,
+                    progress: { id, value in
+                        Task { @MainActor in store.setUpload(id, value) }
+                    },
+                    finished: { id, attachment in
+                        await store.attach(messageID: messageID, localID: id, with: attachment)
+                    })
+                await store.commit(messageID: messageID, files: files, reply: reply, text: text, mentions: mentions)
+            } catch {
+                await store.failUploads(messageID: messageID, files: files, error: error)
+            }
+        }
+    }
+
+    private func setUpload(_ localID: String, _ value: Double) {
+        guard uploads[localID] != nil else { return }
+        uploads[localID] = value
+    }
+
+    /// Swaps one local file ref for its server attachment in place, then drops the ring.
+    private func attach(messageID: String, localID: String, with attachment: Attachment) {
+        uploads[localID] = nil
+        guard let index = messages.firstIndex(where: { $0.id == messageID }) else { return }
+        var message = messages[index]
+        for part in message.parts.indices where message.parts[part].attachment?.id == localID {
+            message.parts[part].attachment = attachment
+        }
+        messages[index] = message
+    }
+
+    /// Uploads finished: queue the send with server attachment ids and let `flush` deliver it.
+    private func commit(messageID: String, files: [LocalFile], reply: ReplyContext?, text: String, mentions: [String]) async {
+        guard let message = messages.first(where: { $0.id == messageID }), message.attachments.count == files.count else { return }
+        let attachments = message.attachments
+        let request = SendRequest(id: messageID, text: text, attachmentIDs: attachments.map(\.id),
+                                  replyToID: reply?.messageID, replyPart: reply?.partIndex,
+                                  mentions: mentions.isEmpty ? nil : mentions)
+        do {
+            // The pending row parked local file refs; unlock it so the queue takes the server ids.
+            try await cacheActor.call { try $0.setStatus(id: messageID, status: "error") }
+            _ = try await cacheActor.call { try $0.enqueue(threadID: threadID, request: request, attachments: attachments, reply: reply) }
+            if let stored = try await cacheActor.call({ try $0.messages(threadID: threadID) }).first(where: { $0.id == messageID }) {
+                update(stored)
+            }
+            for file in files { uploads[file.id] = nil }
+            await flush()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    /// SA2 owns unsent state and retry; this only stops the rings and reports why.
+    private func failUploads(messageID: String, files: [LocalFile], error: any Error) async {
+        for file in files { uploads[file.id] = nil }
+        try? await cacheActor.call { try $0.setStatus(id: messageID, status: "failed") }
+        if let index = messages.firstIndex(where: { $0.id == messageID }) {
+            messages[index].status = "failed"
+        }
+        self.error = error.localizedDescription
+    }
+
     public func retry(messageID: String) async {
         await ready()
-        guard !isFlushing, let message = messages.first(where: { $0.id == messageID }), message.role == "user",
+        guard !flushing, let message = messages.first(where: { $0.id == messageID }), message.role == "user",
               ["pending", "failed", "error"].contains(message.status) else { return }
         if (try? await cacheActor.call({ try $0.accepted(id: messageID) })) == true { return }
         try? await cacheActor.call { try $0.setStatus(id: messageID, status: "pending") }
@@ -238,10 +337,9 @@ public final class ChatStore {
     }
 
     private func flush() async {
-        guard !isFlushing else { return }
-        isFlushing = true
-        isSending = true
-        defer { isFlushing = false; isSending = false }
+        guard !flushing else { return }
+        flushing = true
+        defer { flushing = false }
         do {
             while let request = try await cacheActor.call({ try $0.pending(threadID: threadID) }).first {
                 do {

@@ -36,7 +36,7 @@ scope_check() {
 lock_holder() { cat "$1/pid" 2>/dev/null; }
 lock_drop() { [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] && rm -rf "$1"; return 0; }
 # Lane scripts changed between BASE and HEAD in the current repo?
-lane_files_changed() { git diff --name-only "$1"...HEAD | grep -qE '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|queue-write)\.sh|scripts/(lanes|media-check)\.py|agents/lanes\.toml)$'; }
+lane_files_changed() { git diff --name-only "$1"...HEAD | grep -qE '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write)\.sh|scripts/(lanes|media-check|verdict)\.py|agents/lanes\.toml)$'; }
 # test-lanes.sh to run: the checkout under test (a PR's own worktree in --verify-only), else ours.
 lane_tests_path() { if [ -f "$1/scripts/test-lanes.sh" ]; then echo "$1/scripts/test-lanes.sh"; else echo "$2/test-lanes.sh"; fi; }
 branch_lock_dir() { echo "${LANES_HOME:-$HOME/ops/lanes}/branches/$(echo "$1" | tr '/' '%').lock"; }
@@ -45,3 +45,21 @@ repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|ht
 # Carl's lane-guard hook; missing = skip, never fatal unless the caller checks rc.
 LANE_GUARD=${LANE_GUARD:-$HOME/.local/bin/lane-guard}
 guard() { [ -x "$LANE_GUARD" ] || return 0; "$LANE_GUARD" "$@"; }
+# Worktree in-use checks (cleanup.sh, run-lane.sh free_branch): live verify lock or fresh verify marker,
+# a build slot naming it, a live unit lock for it, or any process with the path in its args.
+fresh() { [ -e "$1" ] && [ $(( $(date +%s) - $(_mtime "$1") )) -lt $(( ${VERIFY_FRESH_MIN:-120} * 60 )) ]; }
+verify_active() {  # $1 worktree path or "" ; $2 sim name
+  local p; if [ -n "$1" ]; then p=$(cat "$1/.build/verify.lock/pid" 2>/dev/null)
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 0; fresh "$1/.build/verify-active" && return 0; fi
+  fresh "$LOCKS/active/$2"; }
+in_use() {  # $1 worktree path. Needs LOCKS (lanes.toml lock_dir) and OPS; same rule as cleanup.sh
+  verify_active "$1" "polymux-$(basename "$1")" && return 0
+  grep -qsF "$1" "${LOCKS:-/nonexistent}"/slot*/wt && return 0
+  for u in "${OPS:-$HOME/ops/lanes}"/units/*.lock; do [ -d "$u" ] && [ "$(cat "$u/pid" 2>/dev/null)" != "$$" ] && kill -0 "$(cat "$u/pid" 2>/dev/null)" 2>/dev/null && \
+    [[ "$1" == *"$(basename "$u" .lock)"* ]] && return 0; done
+  pgrep -f "$1" >/dev/null
+}
+# cwd_in_use PATH: 0 = a process has its cwd in PATH, 1 = none, 2 = can't tell (lsof missing/failed): callers fail closed.
+cwd_in_use() { local out rc r; command -v lsof >/dev/null 2>&1 || return 2
+  out=$(lsof -d cwd -Fn 2>/dev/null); rc=$?; [ $rc != 0 ] && [ -z "$out" ] && return 2
+  r=$(cd "$1" 2>/dev/null && pwd -P); printf '%s\n' "$out" | grep -qE "^n($1|${r:-$1})(/|\$)" && return 0; return 1; }
