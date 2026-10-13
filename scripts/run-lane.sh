@@ -92,15 +92,18 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
     # (.build/lanehome, git-ignored) so anything it or its shell reaches via $HOME stays in the
     # worktree. On 14 Oct 00:56 a run with the real HOME prompted TCC for Downloads, Documents,
     # Music and Photos; those dialogs block XCUITest alert handling. Auth stays in the real
-    # CODEX_HOME, gh/git config stay reachable through GH_CONFIG_DIR/GIT_CONFIG_GLOBAL, and .local
-    # is linked so verify.sh still finds the go toolchain at $HOME/.local/go.
+    # CODEX_HOME, gh/git config stay reachable through GH_CONFIG_DIR/GIT_CONFIG_GLOBAL, and the
+    # links keep the shared state $HOME-relative paths point at: .local (go toolchain for verify.sh)
+    # and ops/lanes (build slots, sim-warm markers; OPS).
     # workspace-write re-tested 14 Oct (codex 0.162.1, network on): the agent still cannot commit
     # ("index.lock: Operation not permitted" under the worktree gitdir, with -c
     # sandbox_workspace_write.writable_roots=[git common dir, ~/ops/lanes] or --add-dir), and
     # simctl/CoreSimulator XPC is refused, so verify.sh cannot pass in the sandbox; keep
     # danger-full-access. Re-test before tightening. (--full-auto no longer exists in codex exec.)
     codex) local LH="$2/.build/lanehome" RH=$HOME
-      mkdir -p "$LH"; [ -e "$LH/.local" ] || [ -L "$LH/.local" ] || ln -s "$RH/.local" "$LH/.local"
+      mkdir -p "$LH" "$LH/ops"
+      [ -e "$LH/.local" ] || [ -L "$LH/.local" ] || ln -s "$RH/.local" "$LH/.local"
+      [ -e "$LH/ops/lanes" ] || [ -L "$LH/ops/lanes" ] || ln -s "$OPS" "$LH/ops/lanes"
       (cd "$2" && HOME="$LH" CODEX_HOME="${CODEX_HOME:-$RH/.codex}" \
         GH_CONFIG_DIR="${GH_CONFIG_DIR:-$RH/.config/gh}" GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$RH/.gitconfig}" \
         "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
