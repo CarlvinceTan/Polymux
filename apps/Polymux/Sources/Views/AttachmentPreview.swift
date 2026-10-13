@@ -27,7 +27,7 @@ struct AttachmentPreview: View {
                         fallback
                     }
                 } else if let imageURL {
-                    AsyncImage(url: imageURL) { phase in
+                    LocalImage(url: imageURL) { phase in
                         switch phase {
                         case .success(let image): image.resizable().aspectRatio(contentMode: square == nil ? .fit : .fill)
                         case .empty: placeholder
@@ -140,5 +140,28 @@ private struct UploadRing: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Uploading")
         .accessibilityValue("\(Int((min(1, max(0, progress)) * 100).rounded())) percent")
+    }
+}
+
+struct LocalImage<Content: View>: View {
+    let url: URL?
+    @ViewBuilder let content: (AsyncImagePhase) -> Content
+    @State private var phase = AsyncImagePhase.empty
+
+    var body: some View {
+        content(phase).task(id: url) {
+            phase = .empty
+            guard let url else { return }
+            do {
+                let file = try await MediaCache.shared.file(url: url, name: "preview")
+                #if os(macOS)
+                guard let image = NSImage(contentsOf: file) else { throw URLError(.cannotDecodeContentData) }
+                phase = .success(Image(nsImage: image))
+                #else
+                guard let image = UIImage(contentsOfFile: file.path) else { throw URLError(.cannotDecodeContentData) }
+                phase = .success(Image(uiImage: image))
+                #endif
+            } catch { phase = .failure(error) }
+        }
     }
 }

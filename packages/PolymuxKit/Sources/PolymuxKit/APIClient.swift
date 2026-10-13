@@ -1,12 +1,17 @@
 import Foundation
+#if os(macOS)
+import Darwin
+#endif
 
 public struct APIClient: Sendable {
     public let baseURL: URL
     private let session: URLSession
+    let token: String?
 
-    public init(baseURL: URL, session: URLSession = .shared) {
+    public init(baseURL: URL, session: URLSession = .shared, token: String? = nil) {
         self.baseURL = baseURL
         self.session = session
+        self.token = token ?? Self.localToken(baseURL)
     }
 
     public func resolve(_ path: String) -> URL? {
@@ -335,8 +340,44 @@ public struct APIClient: Sendable {
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("polymux-kit", forHTTPHeaderField: "X-Polymux-Client")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return request
     }
+
+    public static func localToken(_ url: URL) -> String? {
+        #if os(macOS)
+        let host = url.host?.lowercased() ?? ""
+        let local = ProcessInfo.processInfo.hostName.lowercased().components(separatedBy: ".")[0]
+        guard ["localhost", "127.0.0.1", "::1", local, "\(local).local"].contains(host)
+                || (host.hasSuffix(".ts.net") && !Set(Host(name: host).addresses).isDisjoint(with: localAddresses())) else { return nil }
+        let directory = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Polymux/server")
+        return try? String(contentsOf: directory.appendingPathComponent("devices/local-token"), encoding: .utf8)
+        #else
+        return nil
+        #endif
+    }
+
+    #if os(macOS)
+    private static func localAddresses() -> Set<String> {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0 else { return [] }
+        defer { freeifaddrs(interfaces) }
+        var addresses = Set<String>()
+        var next = interfaces
+        while let current = next {
+            next = current.pointee.ifa_next
+            guard let address = current.pointee.ifa_addr else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                addresses.insert(String(cString: host))
+            }
+        }
+        return addresses
+    }
+    #endif
 
     private func validate(_ response: URLResponse, data: Data = Data()) throws {
         guard let http = response as? HTTPURLResponse else { throw ClientError.unavailable }
