@@ -87,7 +87,8 @@ run)
       git -C "$WT" push -q origin "HEAD:$BR" >> "$LOG" 2>&1 || { WHY="push failed"; break; }
       SHA=$(git -C "$WT" rev-parse HEAD)
       approved "$PR" "$SHA" || { WHY="approval no longer valid at ${SHA:0:7}"; break; }
-      ( cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
+      # Merge lane always verifies everything: an inherited VERIFY_TARGETS=affected must never narrow it.
+      ( export VERIFY_TARGETS=full; cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
         if [ -n "${MERGE_VERIFY_CMD:-}" ]; then bash -c "$MERGE_VERIFY_CMD"; else TI_BASE=origin/main bash "$SD/verify.sh"; fi ) >> "$LOG" 2>&1 \
         || { WHY="re-verify failed at ${SHA:0:7}"; break; }
       CHK=$(field check "$TF"); [ -z "$CHK" ] || (cd "$WT" && bash -c "$CHK") >> "$LOG" 2>&1 || { WHY="key behaviour check failed: $CHK"; break; }
