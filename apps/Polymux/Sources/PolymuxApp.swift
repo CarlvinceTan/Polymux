@@ -33,40 +33,20 @@ struct PolymuxApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            WindowRoot()
+            AppRoot()
+                .tint(Color("AccentColor"))
+                #if os(macOS)
+                .frame(minWidth: 780, minHeight: 500)
+                #else
+                .frame(minWidth: 360, minHeight: 500)
+                #endif
         }
         #if os(macOS)
-        .defaultLaunchBehavior(.presented)
         .defaultSize(width: 1060, height: 760)
         .commands {
             CommandGroup(replacing: .sidebar) {}
         }
         #endif
-    }
-}
-
-// Keep conditional content inside a concrete view so macOS creates the initial window.
-private struct WindowRoot: View {
-    var body: some View {
-        #if DEBUG
-        if CommandLine.arguments.contains("--verify-approval") {
-            ApprovalFixture()
-        } else {
-            root
-        }
-        #else
-        root
-        #endif
-    }
-
-    private var root: some View {
-        AppRoot()
-            .tint(Color("AccentColor"))
-            #if os(macOS)
-            .frame(minWidth: 780, minHeight: 500)
-            #else
-            .frame(minWidth: 360, minHeight: 500)
-            #endif
     }
 }
 
@@ -114,24 +94,24 @@ struct AppRoot: View {
 
     var body: some View {
         Group {
-            if let session {
-                ShellView(session: session, showSettings: $showSettings)
-                    .id(address)
+            #if DEBUG
+            if CommandLine.arguments.contains("--verify-approval") {
+                ApprovalFixture()
             } else {
-                ContentUnavailableView {
-                    Label("Connect to Polymux", systemImage: "network")
-                } description: {
-                    Text(error ?? "Opening your conversations…")
-                } actions: {
-                    Button("Connection settings") { showSettings = true }
-                }
+                content
             }
+            #else
+            content
+            #endif
         }
         #if os(macOS)
         .allowsWindowActivationEvents()
         #endif
         .neutralBackground()
         .task(id: address) {
+            #if DEBUG
+            guard !CommandLine.arguments.contains("--verify-approval") else { return }
+            #endif
             do {
                 session = try await AppSession(address: address)
                 error = nil
@@ -163,6 +143,24 @@ struct AppRoot: View {
         .background { InputFocus().frame(width: 0, height: 0).accessibilityHidden(true) }
         #endif
     }
+
+    private var content: some View {
+        Group {
+            if let session {
+                ShellView(session: session, showSettings: $showSettings)
+                    .id(address)
+            } else {
+                ContentUnavailableView {
+                    Label("Connect to Polymux", systemImage: "network")
+                } description: {
+                    Text(error ?? "Opening your conversations…")
+                } actions: {
+                    Button("Connection settings") { showSettings = true }
+                }
+            }
+        }
+    }
+
 }
 
 struct ConnectionView: View {
