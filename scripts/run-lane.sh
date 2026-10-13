@@ -12,6 +12,8 @@ OPS=${LANES_HOME:-$HOME/ops/lanes}; WTR=${LANES_WT:-$HOME/code/wt}; mkdir -p "$O
 SLUG_REPO=$(repo_slug "$REPO"); HOST=$(hostname -s)
 ev() { printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$1" "${2:-}" "${3:-}" >> "$EV"; }
 cfg() { python3 "$SD/lanes.py" "$@"; }
+BU() { bash "$SD/board-update.sh" "$@" >> "${LOG:-$OPS/logs/$ID-board.log}" 2>&1 || true; }   # board; errors -> board_error event + lane log
+started() { [ -n "$STARTED" ] && return; { [ -n "$(git -C "$WT" log --oneline "$BASE"..HEAD 2>/dev/null)" ] || [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; } && { STARTED=1; BU start "$SLUG"; }; }  # first real output
 publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own branch proof-media/<id>
   local wt=$1 id=$2 idx c err ref="proof-media/$2-$(date +%Y%m%d%H%M%S)-$$" n=0; idx=$(mktemp)   # unique per run; never force
   for f in "$wt"/.build/proof/*.png "$wt"/.build/proof/*.mp4; do [ -f "$f" ] && n=$((n+1)); done
@@ -42,10 +44,10 @@ if [ "${1:-}" = "--verify-only" ]; then
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
 fi
 LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60; SCOPE=""
-if [ -f "$TASK" ]; then  # task file: "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
+TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "card:" (Notion card), "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
-  TASK=$(grep -vE '^(unit|needs|scope|expected_min):' "$TASK"); EXP=${EXP:-60}
+  TASK=$(grep -vE '^(unit|needs|scope|expected_min|card):' "$TASK"); EXP=${EXP:-60}
 fi
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
@@ -83,6 +85,7 @@ G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight r
 UL="$OPS/units/$SLUG.lock"; BLS=""
 lock_take "$UL" || { echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
 trap 'lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done' EXIT
+BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""; N=0
 for L in $(cfg order "$LANE"); do
@@ -101,10 +104,10 @@ for L in $(cfg order "$LANE"); do
   run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; LAST=$(date +%s); SIG=""
   while kill -0 $AP 2>/dev/null; do sleep "${LANE_POLL:-30}"   # liveness = new commit/push/change, not log mtime
     S=$(git -C "$WT" rev-parse HEAD; git -C "$WT" ls-remote origin "$B" 2>/dev/null; git -C "$WT" status --porcelain | shasum)
-    [ "$S" != "$SIG" ] && { SIG=$S; LAST=$(date +%s); }
+    [ "$S" != "$SIG" ] && { SIG=$S; LAST=$(date +%s); started; }
     if [ $(( $(date +%s) - LAST )) -gt $((EXP * 60)) ]; then ev STUCK "$L" "no commit/push/change for ${EXP}m; requeue"
       pkill -P $AP 2>/dev/null; kill $AP 2>/dev/null; break; fi
-  done; wait $AP; rc=$?
+  done; wait $AP; rc=$?; started
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
   [ -n "$(git -C "$WT" log --oneline "$BASE"..HEAD)" ] || { echo "agent made no commit" >> "$LOG"; ev failed "$L" "no commit"; continue; }
   NT=$(git -C "$WT" log --format='%H%x09%(trailers:key=Lane,valueonly,separator=%x2C)' "$BASE"..HEAD | awk -F'\t' '$2==""' | wc -l | tr -d ' ')
@@ -124,10 +127,12 @@ for L in $(cfg order "$LANE"); do
   [ "$LV" = build-only ] && { DRAFT=--draft; BODY="**Verification level: build-only, so this is NOT ready for review (draft).**"$'\n\n'"$BODY"; }
   URL=$(cd "$WT" && gh pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG")
   [ -n "$URL" ] || { ev failed "$L" "gh pr create failed"; continue; }
+  basename "$WT" > "$OPS/cards/$SLUG.wt"; BU pr "$SLUG" "$URL"   # .wt: exact worktree name for cleanup
+  BU verify "$SLUG" "$LV" "$WT/.build/proof" "$(echo "$BODY" | grep -oE "https://github.com/$SLUG_REPO/raw/proof-media/[^/) ]+" | head -1)"
   ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV" >> "$OPS/results.tsv"
   echo "$URL ($LV)"; exit 0
 done
 ERR=$(tail -n 5 "$LOG" | tr '\t\n' '  ')
 printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$TITLE" "${TRIED# }" "$ERR" "$LOG" >> "$OPS/failures.tsv"
 echo "$(date '+%F %T') $ID: $TITLE (lanes:$TRIED) log $LOG" >> "$OPS/NEEDS_CODY"
-ev needs_cody "${TRIED# }" "$LOG"; echo "FAILED after:$TRIED -> $OPS/NEEDS_CODY"; exit 1
+BU verify "$SLUG" failed; ev needs_cody "${TRIED# }" "$LOG"; echo "FAILED after:$TRIED -> $OPS/NEEDS_CODY"; exit 1
