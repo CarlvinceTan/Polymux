@@ -12,12 +12,13 @@ struct DraftFile: Identifiable {
 struct ComposerView: View {
     let client: APIClient
     let isVoiceActive: Bool
-    let send: (String, [Attachment], ReplyContext?, [String]) async -> Void
+    let send: (String, [LocalFile], ReplyContext?, [String], ContinuousClock.Instant) async -> Void
     var reply: ReplyContext? = nil
     var agentName = ""
     var clearReply: () -> Void = {}
     var drops: Binding<[URL]> = .constant([])
     var members: [Agent] = []
+    var trace = SignpostTrace()
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -35,8 +36,8 @@ struct ComposerView: View {
     @State private var importing = false
     @State private var pickingPhotos = false
     @State private var camera = false
-    @State private var uploading = false
     @State private var loadingPhotos = false
+    @State private var ignoresDictation = false
     @State private var error: String?
     @State private var unsent = false
     @FocusState private var focused: Bool
@@ -60,7 +61,6 @@ struct ComposerView: View {
                 Text(error).font(.caption2).foregroundStyle(.primary).padding(.leading, controlSize + 12)
             }
         }
-        .disabled(uploading || loadingPhotos)
         .background {
             if dictation.active {
                 Button("Stop dictation") { Task { await stopDictation() } }
@@ -110,8 +110,9 @@ struct ComposerView: View {
                     for item in items {
                         let type = item.supportedContentTypes.first ?? .data
                         if let data = try await item.loadTransferable(type: Data.self) {
-                            let file = FileManager.default.temporaryDirectory
-                                .appending(path: "Photo-\(UUID().uuidString.prefix(8)).\(type.preferredFilenameExtension ?? "bin")")
+                            let suffix = type.preferredFilenameExtension ?? "bin"
+                            let name = "Photo-\(UUID().uuidString.prefix(8)).\(suffix)"
+                            let file = FileManager.default.temporaryDirectory.appending(path: name)
                             try data.write(to: file, options: .atomic)
                             withAnimation { files.append(DraftFile(url: file, kind: type)) }
                         }
@@ -136,6 +137,10 @@ struct ComposerView: View {
             }
             .ignoresSafeArea()
         }
+        #endif
+        #if DICTATION_CHECK
+        .onChange(of: text) { _, value in Self.renderedDraft.text = value }
+        .onChange(of: files.count) { _, count in Self.renderedDraft.files = count }
         #endif
     }
 
@@ -213,38 +218,34 @@ struct ComposerView: View {
                 }
             }
             .zIndex(1)
-            if uploading || loadingPhotos {
-                ProgressView().controlSize(.small).frame(width: controlSize, height: controlSize)
-            } else {
-                Button { toggleDictation() } label: {
-                    Image(systemName: dictation.denied ? "mic.slash.fill" : "mic.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(dictation.active ? (colorScheme == .dark ? Color.black : Color.white) : controlInk)
-                        .frame(width: controlSize, height: controlSize)
-                        .background(dictation.active ? Color.accentColor : .clear, in: Circle())
-                        .overlay {
-                            if dictation.active {
-                                Circle().stroke(controlInk, lineWidth: 2)
-                                    .scaleEffect(reduceMotion ? 1 : 1 + CGFloat(dictation.level) * 0.18)
-                            }
+            Button { toggleDictation() } label: {
+                Image(systemName: dictation.denied ? "mic.slash.fill" : "mic.fill")
+                    .font(.system(size: 15))
+                    .foregroundStyle(dictation.active ? (colorScheme == .dark ? Color.black : Color.white) : controlInk)
+                    .frame(width: controlSize, height: controlSize)
+                    .background(dictation.active ? Color.accentColor : .clear, in: Circle())
+                    .overlay {
+                        if dictation.active {
+                            Circle().stroke(controlInk, lineWidth: 2)
+                                .scaleEffect(reduceMotion ? 1 : 1 + CGFloat(dictation.level) * 0.18)
                         }
+                    }
+            }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: Circle())
+            .accessibilityLabel(dictation.active ? "Stop dictation" : "Start dictation")
+            .accessibilityValue(dictation.denied ? "Permission denied" : dictation.active ? "Listening" : "")
+            .disabled(dictation.stopping || sending || isVoiceActive)
+            if hasContent {
+                Button { submit() } label: {
+                    Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(controlInk)
+                        .frame(width: controlSize, height: controlSize)
                 }
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: Circle())
-                .accessibilityLabel(dictation.active ? "Stop dictation" : "Start dictation")
-                .accessibilityValue(dictation.denied ? "Permission denied" : dictation.active ? "Listening" : "")
-                .disabled(dictation.stopping || sending || isVoiceActive)
-                if hasContent {
-                    Button { submit() } label: {
-                        Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(controlInk)
-                            .frame(width: controlSize, height: controlSize)
-                    }
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular.interactive(), in: Circle())
-                    .accessibilityLabel("Send message")
-                    .disabled(sending)
-                }
+                .accessibilityLabel("Send message")
+                .disabled(sending || loadingPhotos)
             }
         }
     }
@@ -421,8 +422,10 @@ struct ComposerView: View {
         permissionBanner = false
         error = nil
         focused = true
+        ignoresDictation = false
         dictationDraft.stop()
         dictation.start { value in
+            guard !ignoresDictation else { return }
             let range: NSRange
             if case let .selection(bounds) = selection?.indices,
                bounds.lowerBound >= text.startIndex, bounds.upperBound <= text.endIndex {
@@ -458,53 +461,98 @@ struct ComposerView: View {
     private func submit() {
         guard !sending else { return }
         sending = true
-        Task {
-            await stopDictation()
-            sendDraft()
-            sending = false
-        }
+        let tap = ContinuousClock().now
+        if dictation.active { Task { await stopDictation() } }
+        sendDraft(at: tap)
     }
 
-    private func sendDraft() {
-        guard hasContent, !uploading, !loadingPhotos else { return }
+    /// Clears the composer in the same frame, then hands the files to `send` to upload behind the bubble.
+    private func sendDraft(at tap: ContinuousClock.Instant) {
+        guard hasContent, !loadingPhotos else { sending = false; return }
         let draft = text
         let pending = files
         let quote = reply
         guard let targets = MentionToken.targets(mentions, in: draft, members: Set(members.map(\.id))) else {
             error = "A mentioned agent left this chat. Remove or reselect the mention before sending."
+            sending = false
             return
         }
-        uploading = true
         error = nil
         unsent = false
+        let send = self.send
+        InstantUI.interval("composer.cleared", budget: InstantUI.stateBudget, trace: trace, from: tap) {
+            ignoresDictation = true
+            dictationDraft.stop()
+            text = ""
+            selection = nil
+            mentions = []
+            files = []
+            photos = []
+        }
         Task {
-            do {
-                var attachments: [Attachment] = []
-                for file in pending { attachments.append(try await client.upload(file: file.url)) }
-                text = ""
-                selection = nil
-                mentions = []
-                let submitted = Set(pending.map(\.id))
-                withAnimation { files.removeAll { submitted.contains($0.id) } }
-                await send(draft, attachments, quote, targets)
-            } catch { unsent = true }
-            uploading = false
+            await send(draft, pending.map(\.localFile), quote, targets, tap)
+            sending = false
             focused = true
         }
     }
 
     #if DICTATION_CHECK
+    /// What the composer last rendered, so the snapshot harness can prove it cleared for real.
+    /// A harness-made view cannot observe its own State writes, so `onChange` reports them here.
+    nonisolated(unsafe) static var renderedDraft: (text: String, files: Int) = ("", 0)
+
     static func fixture(input: DictationInput, text: String = "", banner: Bool = false,
-                        issue: String? = nil, focus: Bool = false) -> some View {
+                        issue: String? = nil, focus: Bool = false, files: [DraftFile] = [],
+                        trace: SignpostTrace = SignpostTrace()) -> some View {
         var view = ComposerView(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!),
-                                isVoiceActive: false, send: { _, _, _, _ in })
+                                isVoiceActive: false, send: { _, _, _, _, _ in }, trace: trace)
         view._dictation = State(initialValue: input)
         view._text = State(initialValue: text)
         view._permissionBanner = State(initialValue: banner)
         view._error = State(initialValue: issue)
+        view._files = State(initialValue: files)
         return view.onAppear { view.focused = focus }
     }
+
+    /// A composer that submits its draft on appear, so the harness watches the real handoff.
+    static func checkSubmitView(text: String, files: [DraftFile], reply: ReplyContext? = nil,
+                                trace: SignpostTrace,
+                                send: @escaping (String, [LocalFile], ReplyContext?, [String], ContinuousClock.Instant) async -> Void) -> some View {
+        var view = ComposerView(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!),
+                                isVoiceActive: false, send: send, reply: reply, trace: trace)
+        view._text = State(initialValue: text)
+        view._files = State(initialValue: files)
+        return view.onAppear { view.submit() }
+    }
+
+    /// A filled composer the harness can drive with a real click and Return, like a user would.
+    static func checkReadyView(text: String, files: [DraftFile], reply: ReplyContext? = nil,
+                               trace: SignpostTrace,
+                               send: @escaping (String, [LocalFile], ReplyContext?, [String], ContinuousClock.Instant) async -> Void) -> some View {
+        var view = ComposerView(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!),
+                                isVoiceActive: false, send: send, reply: reply, trace: trace)
+        view._text = State(initialValue: text)
+        view._files = State(initialValue: files)
+        return view
+    }
     #endif
+}
+
+extension DraftFile {
+    var localFile: LocalFile {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return LocalFile(id: id.uuidString, url: url, name: url.lastPathComponent,
+                         kind: DraftFile.kindName(kind), mimeType: kind.preferredMIMEType ?? "",
+                         size: Int64(size))
+    }
+
+    static func kindName(_ kind: UTType) -> String {
+        if kind.conforms(to: .image) { return "image" }
+        if kind.conforms(to: .movie) { return "video" }
+        if kind.conforms(to: .audio) { return "audio" }
+        if kind.conforms(to: .html) { return "html" }
+        return ""
+    }
 }
 
 private struct MentionSize: Layout {

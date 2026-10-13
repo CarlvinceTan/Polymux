@@ -1,0 +1,4 @@
+send.bubble budget=0.016 seconds duration=0.003221334 seconds withinBudget=true
+composer.cleared budget=0.05 seconds duration=1.7625e-05 seconds withinBudget=true
+send.bubble budget=0.016 seconds duration=0.000423042 seconds withinBudget=true
+composer.cleared budget=0.05 seconds duration=1.1708e-05 seconds withinBudget=true
