@@ -35,6 +35,35 @@ scope_check() {
 }
 lock_holder() { cat "$1/pid" 2>/dev/null; }
 lock_drop() { [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] && rm -rf "$1"; return 0; }
+# Reclaim through the same gate as lock_take; never delete another live holder.
+lock_clear() {
+  [ -d "$1" ] || return 0
+  if [ "$(lock_holder "$1")" = "$$" ] || lock_take "$1"; then lock_drop "$1"; fi
+  return 0
+}
+# unit_free WT CARD LOCKS LOG: detach with changes kept unless a verifier is live.
+unit_free() {
+  local wt=$1 card=$2 locks=$3 log=$4 status count d p pre=""
+  status=$(git -C "$wt" status --porcelain -uall 2>/dev/null) || return 1
+  if [ -n "$status" ]; then
+    count=$(printf '%s\n' "$status" | wc -l | tr -d ' '); pre="dirty=$count; "
+    printf '%s\t%s\twt_dirty\t%s\t%s dirty=%s\n' "$(date '+%F %T')" "$ID" "$card" "$wt" "$count" >> "$OPS/events.tsv"
+  fi
+  p=$(lock_holder "$wt/.build/verify.lock")
+  if [ -n "$p" ] && [ "$p" != "$$" ] && kill -0 "$p" 2>/dev/null; then
+    echo "unit-free: $card wt=$wt ${pre}live verifier pid=$p; kept" >> "$log"; return 0
+  fi
+  git -C "$wt" switch -q --detach >> "$log" 2>&1 || return 1
+  rm -f "$wt/.build/verify-active" "$locks/active/polymux-$(basename "$wt")"
+  if [ "$(cat "$OPS/cards/$card.wt" 2>/dev/null)" = "$(basename "$wt")" ]; then rm -f "$OPS/cards/$card.wt"; fi
+  lock_clear "$wt/.build/verify.lock"
+  for d in "$locks"/slot*; do
+    [ "$(cat "$d/wt" 2>/dev/null)" = "$wt" ] && lock_clear "$d"
+  done
+  if [ -n "$pre" ]; then echo "unit-free: $card wt=$wt ${pre}detached (changes kept)" >> "$log"
+  else echo "unit-free: $card wt=$wt detached" >> "$log"; fi
+  return 0
+}
 # Lane scripts changed between BASE and HEAD in the current repo?
 # out_has [grep -E opts] PATTERN: does stdin have a matching line? Reads ALL of stdin first, so the writer
 # never gets SIGPIPE. (`cmd | grep -q` under pipefail returns 141 when grep exits early on a long output.)
