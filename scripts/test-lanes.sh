@@ -595,6 +595,7 @@ OLD_INDEX=$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)
 git -C "$LANES_WT/laneA-retry-dirty" checkout -q test/retrydirty
 RETRY_STUB='test "$(git symbolic-ref --short HEAD)" = test/retrydirty && test "$(cat README)" = base && test ! -e wip.txt && '"$STUB_OK"
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$RETRY_STUB" $RL laneB "$RQ" 2>&1); RC=$?
+[ "$RC" = 0 ] || { printf "%s\n" "$OUT"; cat "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log; }
 WTL=$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep "/laneB-retry-dirty" | head -1)
 check "retry on laneB detaches laneA's dirty tree, checks the branch out and commits there" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "detached stale dirty worktree $LANES_WT/laneA-retry-dirty (held test/retrydirty; changes kept)" "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log && [ -n "$WTL" ] && [ "$(git -C "$WTL" rev-parse HEAD)" = "$(git rev-parse test/retrydirty)" ]'
 check "laneA keeps its HEAD, staged, unstaged and untracked changes, detached" '[ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" rev-parse HEAD)" = "$OLD_HEAD" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff HEAD)" = "$OLD_DIFF" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)" = "$OLD_INDEX" ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD'
