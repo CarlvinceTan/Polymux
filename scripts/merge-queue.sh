@@ -55,12 +55,16 @@ approved() {  # $1 pr, $2 head -> sets RS
   RS=$(reviewed_sha "$1") || return 1; merge_only "$RS" "$2" || { echo "approval: head ${2:0:7} is not reviewed ${RS:0:7} plus merge-only commits" >> "$LOG"; return 1; }; }
 # fix_brief PR BRANCH LANE TASKFILE WHY LOG: a fix brief that passes queue-write --check: "# title" first, then
 # needs:/type:/expected_min: (from the task file when it has them), pr:, branch:, lane:, then the brief body and failure tail.
-fix_brief() { local pr=$1 br=$2 ln=$3 tf=$4 why=$5 log=$6 t="" nd="" ty="" ex="" h='^(unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|lane):'
-  if [ -n "$tf" ] && [ -f "$tf" ]; then t=$(grep -m1 -E '^# [^ ]' "$tf")
+fix_brief() { local pr=$1 br=$2 ln=$3 tf=$4 why=$5 log=$6 t="" tl="" nd="" ty="" ex="" h='^(unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|lane):'
+  if [ -n "$tf" ] && [ -f "$tf" ]; then tl=$(grep -m1 -E '^# [^ ]' "$tf"); t=$tl
+    # no "# " title: the first non-header, non-blank line is the title (as run-lane reads it)
+    [ -n "$t" ] || { tl=$(grep -vE "$h" "$tf" | grep -m1 -vE '^[[:space:]]*$'); [ -n "$tl" ] && t="# $tl"; }
     nd=$(sed -n 's/^needs: *//p' "$tf" | head -1); ty=$(sed -n 's/^type: *//p' "$tf" | head -1); ex=$(sed -n 's/^expected_min: *\([0-9][0-9]*\) *$/\1/p' "$tf" | head -1); fi
   echo "${t:-# Fix PR #$pr after post-approval re-verify}"
   echo "needs: ${nd:-none}"; echo "type: ${ty:-bug}"; echo "expected_min: ${ex:-60}"; echo "pr: $pr"; echo "branch: $br"; [ -n "$ln" ] && echo "lane: $ln"
-  if [ -n "$t" ]; then echo; grep -vE "$h" "$tf" | awk -v t="$t" '!d && $0 == t { d = 1; next } { print }'; fi
+  # every other header of the original brief (scope, unit, card/issue, labels, after, area, priority) carried as-is
+  [ -n "$tf" ] && [ -f "$tf" ] && grep -E '^(unit|scope|card|issue|labels|after|area|priority):' "$tf"
+  if [ -n "$tl" ]; then echo; grep -vE "$h" "$tf" | awk -v t="$tl" '!d && $0 == t { d = 1; next } { print }'; fi
   printf '\n## Post-approval re-verify failed (merge lane)\n%s. Merge origin/main into this branch (no rebase or force-push), fix, verify, and push to PR #%s.\n```\n%s\n```\n' "$why" "$pr" "$(tail -n 40 "$log")"; }
 case ${1:-} in
 enqueue)
@@ -124,6 +128,7 @@ run)
       mkdir -p "$OPS/queue"; Q="$OPS/queue/$(date +%m%d%H%M)-fix-pr$PR.task"; fix_brief "$PR" "$BR" "$LN" "$TF" "$WHY" "$LOG" > "$Q.tmp"
       if [ -f "$SD/queue-write.sh" ] && ! bash "$SD/queue-write.sh" --check "$Q.tmp" >> "$LOG" 2>&1; then   # never queue a brief the lanes would reject
         mkdir -p "$OPS/queue-hold"; mv "$Q.tmp" "$OPS/queue-hold/$(basename "$Q")"; echo "fix brief failed queue-write --check; held in queue-hold/" >> "$LOG"
+        echo "$(date '+%F %T') merge-lane: fix brief for PR #$PR failed queue-write --check; held in $OPS/queue-hold/$(basename "$Q") (log $LOG)" >> "$OPS/NEEDS_CODY"
       else mv "$Q.tmp" "$Q"; fi; mv "$E" "$MQ/failed/"
     fi
   done;;
