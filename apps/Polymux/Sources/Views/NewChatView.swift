@@ -51,7 +51,7 @@ struct NewChatView: View {
             Button { start() } label: {
                 Text("Create")
             }
-            .disabled(recipients.isEmpty || opened || !validTitle)
+            .disabled(recipients.isEmpty || opened || !validTitle || recipients.contains { $0.id.hasPrefix("local-") })
             .keyboardShortcut(.defaultAction)
         }
         .panelDismiss(onClose: close)
@@ -181,7 +181,7 @@ struct NewChatView: View {
     }
 
     private func start() {
-        guard !opened, !recipients.isEmpty, validTitle else { return }
+        guard !opened, !recipients.isEmpty, validTitle, !recipients.contains(where: { $0.id.hasPrefix("local-") }) else { return }
         let launch = InstantChat.start(agents: recipients, title: cleanTitle.isEmpty ? nil : cleanTitle,
                                        sidebar: session.sidebar, client: session.client, begin: {
             opened = true
@@ -190,7 +190,6 @@ struct NewChatView: View {
             focused = false
             select(thread)
         }
-        let shown = launch.thread?.id
         Task { @MainActor in
             let failure = await launch.finish()
             if let failure {
@@ -198,9 +197,7 @@ struct NewChatView: View {
                 error = failure
                 return
             }
-            guard let thread = launch.thread, thread.id != shown else { return }
-            focused = false
-            select(thread)
+
         }
     }
 

@@ -305,7 +305,7 @@ private actor SettingsProbe {
 
 @Suite @MainActor
 struct TransportTests {
-    @Test func avatarsAreConnectionScopedAndNeverBackfillServerDefaults() throws {
+    @Test func avatarsAreConnectionScopedAndNeverBackfillServerDefaults() async throws {
         let host = ProbeProtocol.routes.add { _ in (200, Data("[]".utf8)) }
         defer { ProbeProtocol.routes.remove(host) }
         let firstURL = cacheURL()
@@ -314,8 +314,8 @@ struct TransportTests {
             try? FileManager.default.removeItem(at: firstURL.deletingLastPathComponent())
             try? FileManager.default.removeItem(at: secondURL.deletingLastPathComponent())
         }
-        let first = AvatarStore(sidebar: SidebarStore(client: client(host: host), cache: try LocalCache(url: firstURL)))
-        let second = AvatarStore(sidebar: SidebarStore(client: client(host: host), cache: try LocalCache(url: secondURL)))
+        let first = AvatarStore(sidebar: SidebarStore(client: client(host: host), cache: try await CacheWork.open(firstURL)))
+        let second = AvatarStore(sidebar: SidebarStore(client: client(host: host), cache: try await CacheWork.open(secondURL)))
         var options = AvatarOptions()
         options.animates = false
         first.sync(agents: [Agent(id: "assistant", avatar: options.design)])
@@ -351,8 +351,8 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        try cache.save(agents: [original], threads: [])
+        let cache = try await CacheWork.open(url)
+        try await cache.offMain { try $0.save(agents: [original], threads: []) }
         let api = client(host: host)
         let sidebar = SidebarStore(client: api, cache: cache)
         let avatars = AvatarStore(sidebar: sidebar)
@@ -366,7 +366,7 @@ struct TransportTests {
         #expect(sidebar.agents == [accepted])
         #expect(avatars.options(for: original.id).followCursor == false)
         #expect(avatars.dirtyIDs.isEmpty)
-        #expect(try cache.agents() == [accepted])
+        #expect(try await cache.offMain { try $0.agents() } == [accepted])
     }
 
     @Test func settingsPatchesCoalesceWithoutOverwritingOtherFields() async throws {
@@ -550,10 +550,11 @@ struct TransportTests {
         #expect(saved == updated)
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let sidebar = SidebarStore(client: api, cache: try LocalCache(url: url))
-        sidebar.accept(saved.agent)
+        let sidebar = SidebarStore(client: api, cache: try await CacheWork.open(url))
+        await sidebar.accept(saved.agent)
         #expect(sidebar.agents == [renamed])
-        #expect(try LocalCache(url: url).agents() == [renamed])
+        let opened = try await CacheWork.open(url)
+        #expect(try await opened.offMain { try $0.agents() } == [renamed])
     }
 
     @Test func routineClientTargetsOwnerAndPreservesSchedule() async throws {
@@ -668,16 +669,16 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let cache = try await CacheWork.open(url)
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         #expect(!chat.isConnected)
         #expect(try await interrupted(chat.voiceReply(text: "Keep this spoken message")))
         let unsent = try #require(chat.messages.first)
         #expect(unsent.text == "Keep this spoken message")
         #expect(unsent.status == (failure == 400 ? "error" : "failed"))
-        let reopened = try LocalCache(url: url)
-        #expect(try reopened.messages(threadID: "one") == [unsent])
-        let resumed = ChatStore(client: client(host: host), cache: reopened, threadID: "one")
+        let reopened = try await CacheWork.open(url)
+        #expect(try await reopened.offMain { try $0.messages(threadID: "one") } == [unsent])
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(reopened), threadID: "one")
         await probe.reconnect()
         await resumed.retry(messageID: unsent.id)
         let requests = await probe.requests
@@ -685,7 +686,7 @@ struct TransportTests {
         #expect(requests[0] == requests[1])
         #expect(resumed.messages.count == 1)
         #expect(resumed.messages.first?.status == "done")
-        #expect(try reopened.pending(threadID: "one").isEmpty)
+        #expect(try await reopened.offMain { try $0.pending(threadID: "one") }.isEmpty)
     }
 
     @Test func voiceReplyInterruptionKeepsAcceptedMessage() async throws {
@@ -694,15 +695,15 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let cache = try await CacheWork.open(url)
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         defer { chat.stop() }
         await chat.start()
         #expect(try await interrupted(chat.voiceReply(text: "One spoken turn")))
         let user = try #require(chat.messages.first { $0.role == "user" })
         #expect(user.status == "done")
         #expect(user.seq == 1)
-        #expect(try cache.pending(threadID: "one").isEmpty)
+        #expect(try await cache.offMain { try $0.pending(threadID: "one") }.isEmpty)
         #expect(chat.messages.first { $0.role == "assistant" }?.text == "Partial reply")
         #expect(await probe.requests.count == 1)
     }
@@ -713,8 +714,8 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let cache = try await CacheWork.open(url)
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         let first = chat.voiceReply(text: "First queued voice")
         let second = chat.voiceReply(text: "Second queued voice")
         async let firstFailed = interrupted(first)
@@ -723,7 +724,7 @@ struct TransportTests {
         #expect(try await secondFailed)
         #expect(chat.messages.count == 2)
         #expect(chat.messages.allSatisfy { $0.status == "failed" })
-        #expect(try cache.pending(threadID: "one").count == 2)
+        #expect(try await cache.offMain { try $0.pending(threadID: "one") }.count == 2)
     }
 
     @Test(arguments: [0, 408, 429, 500, 503, 400])
@@ -733,14 +734,15 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let cache = try await CacheWork.open(url)
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         await chat.send(text: "Keep this unsent message")
         let unsent = try #require(chat.messages.first)
         #expect(unsent.status == (failure == 400 ? "error" : "failed"))
-        #expect(try cache.pending(threadID: "one").count == (failure == 400 ? 0 : 1))
-        let reopened = try LocalCache(url: url)
-        let resumed = ChatStore(client: client(host: host), cache: reopened, threadID: "one")
+        #expect(try await cache.offMain { try $0.pending(threadID: "one") }.count == (failure == 400 ? 0 : 1))
+        let reopened = try await CacheWork.open(url)
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(reopened), threadID: "one")
+        await resumed.ready()
         #expect(resumed.messages.first?.status == unsent.status)
         await probe.reconnect()
         await resumed.retry(messageID: unsent.id)
@@ -749,7 +751,7 @@ struct TransportTests {
         #expect(requests[0] == requests[1])
         #expect(resumed.messages.count == 1)
         #expect(resumed.messages.first?.status == "done")
-        #expect(try reopened.pending(threadID: "one").isEmpty)
+        #expect(try await reopened.offMain { try $0.pending(threadID: "one") }.isEmpty)
     }
 
     @Test func unsentReconnectResendsAutomatically() async throws {
@@ -758,12 +760,13 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let cache = try await CacheWork.open(url)
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         await chat.send(text: "Retry after the server returns")
         let unsent = try #require(chat.messages.first)
         #expect(unsent.status == "failed")
-        let resumed = ChatStore(client: client(host: host), cache: try LocalCache(url: url), threadID: "one")
+        let resumedCache = try await CacheWork.open(url)
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(resumedCache), threadID: "one")
         defer { resumed.stop() }
         await probe.reconnect()
         await resumed.start()
@@ -776,7 +779,7 @@ struct TransportTests {
         #expect(requests[0] == requests[1])
         #expect(resumed.messages.first?.id == unsent.id)
         #expect(resumed.messages.first?.status == "done")
-        #expect(try cache.pending(threadID: "one").isEmpty)
+        #expect(try await cache.offMain { try $0.pending(threadID: "one") }.isEmpty)
     }
 
     @Test(arguments: [429, 503])
@@ -786,18 +789,18 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let request = SendRequest(id: "inactive", text: "Keep this in the outbox")
-        _ = try cache.enqueue(threadID: "one", request: request, attachments: [])
+        _ = try await cache.offMain { try $0.enqueue(threadID: "one", request: request, attachments: []) }
         let sidebar = SidebarStore(client: client(host: host), cache: cache)
         await sidebar.refresh()
-        #expect(try cache.messages(threadID: "one").first?.status == "failed")
-        #expect(try cache.queued().map(\.request) == [request])
+        #expect(try await cache.offMain { try $0.messages(threadID: "one") }.first?.status == "failed")
+        #expect(try await cache.offMain { try $0.queued() }.map(\.request) == [request])
         await probe.reconnect()
         await sidebar.refresh()
         #expect(await probe.requests == [request, request])
-        #expect(try cache.messages(threadID: "one").first?.status == "done")
-        #expect(try cache.queued().isEmpty)
+        #expect(try await cache.offMain { try $0.messages(threadID: "one") }.first?.status == "done")
+        #expect(try await cache.offMain { try $0.queued() }.isEmpty)
     }
 
     @Test func staleRefreshCannotEraseAcceptedChatOrOutbox() async throws {
@@ -808,23 +811,24 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        try cache.save(agents: agents, threads: [individual])
+        let cache = try await CacheWork.open(url)
+        try await cache.offMain { try $0.save(agents: agents, threads: [individual]) }
         let sidebar = SidebarStore(client: client(host: host), cache: cache)
+        await sidebar.load()
         let refresh = Task { await sidebar.refresh() }
         await probe.waitStarted()
         let group = Thread(id: "group", agentID: "a", title: "Trip", agentIDs: ["a", "b"])
-        sidebar.accept(group)
+        await sidebar.accept(group)
         let queued = SendRequest(id: "offline", text: "Keep this group draft")
-        _ = try cache.enqueue(threadID: group.id, request: queued, attachments: [])
+        _ = try await cache.offMain { try $0.enqueue(threadID: group.id, request: queued, attachments: []) }
         await probe.resume()
         await refresh.value
         #expect(sidebar.groups == [group])
         #expect(sidebar.error == nil)
-        let reopened = try LocalCache(url: url)
-        #expect(try reopened.threads().contains(group))
-        #expect(try reopened.pending(threadID: group.id) == [queued])
-        #expect(try reopened.messages(threadID: group.id).first?.text == queued.text)
+        let reopened = try await CacheWork.open(url)
+        #expect(try await reopened.offMain { try $0.threads() }.contains(group))
+        #expect(try await reopened.offMain { try $0.pending(threadID: group.id) } == [queued])
+        #expect(try await reopened.offMain { try $0.messages(threadID: group.id) }.first?.text == queued.text)
     }
 
     @Test func newestRefreshWinsWithoutLocalMutation() async throws {
@@ -836,7 +840,7 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let sidebar = SidebarStore(client: client(host: host), cache: cache)
         let older = Task { await sidebar.refresh() }
         await probe.waitStarted()
@@ -845,7 +849,7 @@ struct TransportTests {
         await probe.resume()
         await older.value
         #expect(sidebar.groups == [group])
-        #expect(try cache.threads() == [initial, group])
+        #expect(try await cache.offMain { try $0.threads() } == [initial, group])
     }
 
     @Test func acceptedRenameAndAgentSurviveRefreshFailure() async throws {
@@ -859,15 +863,16 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        try cache.save(agents: [a, b], threads: [group, direct])
-        try cache.merge([preview])
+        let cache = try await CacheWork.open(url)
+        try await cache.offMain { try $0.save(agents: [a, b], threads: [group, direct]) }
+        try await cache.offMain { try $0.merge([preview]) }
         let sidebar = SidebarStore(client: client(host: host), cache: cache)
+        await sidebar.load()
         let renamed = Thread(id: group.id, agentID: "a", lastReadSeq: 2, lastSeq: 4, title: "Trip", agentIDs: ["a", "b"])
-        sidebar.accept(renamed)
+        await sidebar.accept(renamed)
         let created = Agent(id: "c", name: "Coach")
-        sidebar.accept(created)
-        sidebar.accept(a)
+        await sidebar.accept(created)
+        await sidebar.accept(a)
         await sidebar.refresh()
         #expect(sidebar.groups.first?.title == "Trip")
         #expect(sidebar.groups.first?.lastMessage == preview)
@@ -876,37 +881,38 @@ struct TransportTests {
         #expect(sidebar.thread(for: created)?.participantIDs == [created.id])
         #expect(sidebar.agents.contains(created))
         #expect(sidebar.error != nil)
-        let reopened = try LocalCache(url: url)
+        let reopened = try await CacheWork.open(url)
         let relaunched = SidebarStore(client: client(host: host), cache: reopened)
+        await relaunched.load()
         #expect(relaunched.groups.first?.title == "Trip")
         #expect(relaunched.agents.contains(created))
         #expect(relaunched.thread(for: created)?.id == created.id)
-        #expect(try reopened.messages(threadID: group.id) == [preview])
+        #expect(try await reopened.offMain { try $0.messages(threadID: group.id) } == [preview])
     }
 
     @Test func acceptedResultStaysVisibleWhenCacheWriteFails() async throws {
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         var db: OpaquePointer?
         #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
         defer { sqlite3_close(db) }
         #expect(sqlite3_exec(db, "CREATE TRIGGER fail_metadata BEFORE INSERT ON metadata BEGIN SELECT RAISE(FAIL,'forced cache failure'); END", nil, nil, nil) == SQLITE_OK)
         let sidebar = SidebarStore(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!), cache: cache)
         let agent = Agent(id: "new", name: "New agent")
-        sidebar.accept(agent)
+        await sidebar.accept(agent)
         #expect(sidebar.agents == [agent])
         #expect(sidebar.thread(for: agent)?.id == agent.id)
-        #expect(sidebar.error != nil)
-        sidebar.reload()
+        #expect(sidebar.error == "Couldn’t save this agent. Retry")
+        await sidebar.reload()
         #expect(sidebar.agents == [agent])
         #expect(sidebar.thread(for: agent)?.id == agent.id)
         #expect(sqlite3_exec(db, "DROP TRIGGER fail_metadata", nil, nil, nil) == SQLITE_OK)
-        sidebar.accept(agent)
+        await sidebar.accept(agent)
         #expect(sidebar.error == nil)
-        let reopened = try LocalCache(url: url)
-        #expect(try reopened.agents() == [agent])
-        #expect(try reopened.threads().first?.id == agent.id)
+        let reopened = try await CacheWork.open(url)
+        #expect(try await reopened.offMain { try $0.agents() } == [agent])
+        #expect(try await reopened.offMain { try $0.threads() }.first?.id == agent.id)
     }
 
     @Test func groupAPIPreservesMentionIdentityAcrossOfflineRetry() async throws {
@@ -921,23 +927,24 @@ struct TransportTests {
         #expect(renamed.title == "Planning")
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        let chat = ChatStore(client: api, cache: cache, threadID: created.id)
+        let cache = try await CacheWork.open(url)
+        let chat = ChatStore(client: api, actor: LocalCacheActor(cache), threadID: created.id)
         await chat.send(text: "@A review this", mentions: ["a"])
-        let request = try #require(cache.pending(threadID: created.id).first)
+        let request = try #require((try await cache.offMain { try $0.pending(threadID: created.id) }).first)
         #expect(request.mentions == ["a"])
         #expect(chat.messages.first?.mentions == ["a"])
-        let reopened = try LocalCache(url: url)
-        #expect(try reopened.pending(threadID: created.id) == [request])
+        let reopened = try await CacheWork.open(url)
+        #expect(try await reopened.offMain { try $0.pending(threadID: created.id) } == [request])
         await probe.reconnect()
         await chat.retry(messageID: request.id)
         #expect(await probe.sends == [request, request])
         var accepted = try #require(chat.messages.first)
         accepted.seq = 1
         accepted.status = "done"
-        try reopened.apply(Event(seq: 1, conversationID: created.id, type: "message.start", message: accepted, createdAt: accepted.createdAt))
-        #expect(try reopened.messages(threadID: created.id).first?.mentions == ["a"])
-        #expect(try reopened.pending(threadID: created.id).isEmpty)
+        let stored = accepted
+        try await reopened.offMain { try $0.apply(Event(seq: 1, conversationID: created.id, type: "message.start", message: stored, createdAt: stored.createdAt)) }
+        #expect(try await reopened.offMain { try $0.messages(threadID: created.id) }.first?.mentions == ["a"])
+        #expect(try await reopened.offMain { try $0.pending(threadID: created.id) }.isEmpty)
     }
 
     @Test func groupMembershipUpdateKeepsCachedHistoryAndPendingSend() async throws {
@@ -948,26 +955,27 @@ struct TransportTests {
         let group = try await api.createThread(agentIDs: ["a", "b"], title: "Team")
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let agents = [Agent(id: "a", name: "A"), Agent(id: "b", name: "B"), Agent(id: "c", name: "C")]
-        try cache.save(agents: agents, threads: agents.map { Thread(id: $0.id, agentID: $0.id, agentIDs: [$0.id]) } + [group])
+        try await cache.offMain { try $0.save(agents: agents, threads: agents.map { Thread(id: $0.id, agentID: $0.id, agentIDs: [$0.id]) } + [group]) }
         let reply = Message(id: "old-author", threadID: group.id, role: "assistant",
                             parts: [Part(kind: "text", text: "Keep this reply")],
                             createdAt: "2026-10-09T10:00:00Z", status: "done", seq: 1, agentID: "b")
-        try cache.apply(Event(seq: 1, conversationID: group.id, type: "message.done", message: reply, createdAt: reply.createdAt))
-        let chat = ChatStore(client: api, cache: cache, threadID: group.id)
+        try await cache.offMain { try $0.apply(Event(seq: 1, conversationID: group.id, type: "message.done", message: reply, createdAt: reply.createdAt)) }
+        let chat = ChatStore(client: api, actor: LocalCacheActor(cache), threadID: group.id)
         await chat.send(text: "@B queued before removal", mentions: ["b"])
-        let queued = try #require(cache.pending(threadID: group.id).first)
+        let queued = try #require((try await cache.offMain { try $0.pending(threadID: group.id) }).first)
         let sidebar = SidebarStore(client: api, cache: cache)
+        await sidebar.load()
         let updated = try await api.updateThread(id: group.id, title: "Solo team", agentIDs: ["c"])
-        sidebar.accept(updated)
+        await sidebar.accept(updated)
         #expect(updated.id == group.id)
         #expect(updated.isGroup)
         #expect(updated.participantIDs == ["c"])
         #expect(sidebar.groups.first?.participantIDs == ["c"])
         #expect(sidebar.agents == agents)
         let renamed = try await api.updateThread(id: group.id, title: "Renamed")
-        sidebar.accept(renamed)
+        await sidebar.accept(renamed)
         #expect(renamed.participantIDs == ["c"])
         #expect(await probe.updates.map(\.agentIDs) == [["c"], nil])
         let bodies = await probe.updateBodies
@@ -975,12 +983,12 @@ struct TransportTests {
         let renameBody = try #require(JSONSerialization.jsonObject(with: bodies[1]) as? [String: Any])
         #expect(membershipBody["agentIDs"] as? [String] == ["c"])
         #expect(renameBody["agentIDs"] == nil)
-        let reopened = try LocalCache(url: url)
-        #expect(try reopened.threads().first { $0.id == group.id }?.participantIDs == ["c"])
-        #expect(try reopened.threads().first { $0.id == group.id }?.title == "Renamed")
-        #expect(try reopened.messages(threadID: group.id).first { $0.id == reply.id } == reply)
-        #expect(try reopened.pending(threadID: group.id) == [queued])
-        #expect(try reopened.agents() == agents)
+        let reopened = try await CacheWork.open(url)
+        #expect(try await reopened.offMain { try $0.threads() }.first { $0.id == group.id }?.participantIDs == ["c"])
+        #expect(try await reopened.offMain { try $0.threads() }.first { $0.id == group.id }?.title == "Renamed")
+        #expect(try await reopened.offMain { try $0.messages(threadID: group.id) }.first { $0.id == reply.id } == reply)
+        #expect(try await reopened.offMain { try $0.pending(threadID: group.id) } == [queued])
+        #expect(try await reopened.offMain { try $0.agents() } == agents)
     }
 
     @Test(arguments: [false, true]) func groupSendWaitsForPendingMembership(reconnect: Bool) async throws {
@@ -990,28 +998,29 @@ struct TransportTests {
         let api = client(host: host)
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let initial = await probe.thread
-        try cache.save(agents: [Agent(id: "a"), Agent(id: "b"), Agent(id: "c")], threads: [initial])
+        try await cache.offMain { try $0.save(agents: [Agent(id: "a"), Agent(id: "b"), Agent(id: "c")], threads: [initial]) }
         let sidebar = SidebarStore(client: api, cache: cache)
-        let chat = ChatStore(client: api, cache: cache, threadID: initial.id, sidebar: sidebar)
+        await sidebar.load()
+        let chat = ChatStore(client: api, actor: sidebar.cacheActor, threadID: initial.id, sidebar: sidebar)
         var updated = initial
         updated.agentIDs = ["a", "c"]
-        sidebar.edit(updated, delay: .seconds(10))
+        await sidebar.edit(updated, delay: .seconds(10))
         #expect(sidebar.groups.first?.participantIDs == ["a", "c"])
         await chat.send(text: "Send to the current members")
         let unsent = try #require(chat.messages.first)
         #expect(unsent.status == "failed")
         #expect(await probe.sends.isEmpty)
-        #expect(try cache.pending(threadID: initial.id).first?.id == unsent.id)
-        #expect(try cache.threadEdits() == [updated])
+        #expect(try await cache.offMain { try $0.pending(threadID: initial.id) }.first?.id == unsent.id)
+        #expect(try await cache.offMain { try $0.threadEdits() } == [updated])
         await probe.reconnect()
         if reconnect { await sidebar.refresh() }
         else { await chat.retry(messageID: unsent.id) }
         #expect(await probe.sends.map(\.id) == [unsent.id])
         #expect(await probe.deliveries == [["a", "c"]])
-        #expect(try cache.pending(threadID: initial.id).isEmpty)
-        #expect(try cache.threadEdits().isEmpty)
+        #expect(try await cache.offMain { try $0.pending(threadID: initial.id) }.isEmpty)
+        #expect(try await cache.offMain { try $0.threadEdits() }.isEmpty)
     }
 
     @Test func offlineReplyKeepsQuoteAndIdentityThroughRetryAndReplay() async throws {
@@ -1020,47 +1029,50 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let attachment = Attachment(id: "quoted-image", kind: "image", name: "Notebook.png",
                                     mimeType: "image/png", size: 123, url: "/attachments/quoted-image", indexingState: "ready")
         let target = Message(id: "quoted-message", threadID: "one", role: "assistant",
                              parts: [Part(kind: "text", text: "Which notebook?"), Part(kind: "attachment", attachment: attachment)],
                              createdAt: "2026-10-09T10:00:00Z", status: "done", seq: 1)
-        try cache.apply(Event(seq: 1, conversationID: "one", type: "message.start", message: target,
-                              createdAt: target.createdAt))
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        try await cache.offMain { try $0.apply(Event(seq: 1, conversationID: "one", type: "message.start", message: target,
+                              createdAt: target.createdAt)) }
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         await chat.send(text: "The blue one", reply: target.replyContext)
         let optimistic = try #require(chat.messages.first { $0.role == "user" })
         #expect(optimistic.status == "failed")
         #expect(optimistic.reply == target.replyContext)
         #expect(optimistic.replyToID == nil)
-        let request = try #require(cache.pending(threadID: "one").first)
+        let request = try #require((try await cache.offMain { try $0.pending(threadID: "one") }).first)
         #expect(request.replyToID == target.id)
         #expect(request.id == optimistic.id)
         #expect(await probe.requests == [request])
 
-        let relaunched = try LocalCache(url: url)
-        let resumed = ChatStore(client: client(host: host), cache: relaunched, threadID: "one")
+        let relaunched = try await CacheWork.open(url)
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(relaunched), threadID: "one")
+        await resumed.ready()
         #expect(resumed.messages.first { $0.id == optimistic.id }?.reply?.attachment == attachment)
-        #expect(try relaunched.pending(threadID: "one") == [request])
+        #expect(try await relaunched.offMain { try $0.pending(threadID: "one") } == [request])
         await probe.reconnect()
         await resumed.retry(messageID: optimistic.id)
         #expect(await probe.requests == [request, request])
-        #expect(try relaunched.pending(threadID: "one").isEmpty)
+        #expect(try await relaunched.offMain { try $0.pending(threadID: "one") }.isEmpty)
         #expect(resumed.messages.first { $0.id == optimistic.id }?.reply == target.replyContext)
 
         let canonical = ReplyContext(messageID: target.id, role: target.role, text: "Server quote snapshot", attachment: attachment)
         let accepted = Message(id: request.id, threadID: "one", role: "user", parts: [Part(kind: "text", text: request.text)],
                                createdAt: "2026-10-09T10:01:00Z", status: "done", seq: 2, reply: canonical)
         let event = Event(seq: 2, conversationID: "one", type: "message.start", message: accepted, createdAt: accepted.createdAt)
-        try relaunched.apply(event)
-        try relaunched.apply(event)
-        try relaunched.acknowledge(id: accepted.id)
-        let replayed = ChatStore(client: client(host: host), cache: try LocalCache(url: url), threadID: "one")
+        try await relaunched.offMain { try $0.apply(event) }
+        try await relaunched.offMain { try $0.apply(event) }
+        try await relaunched.offMain { try $0.acknowledge(id: accepted.id) }
+        let replayCache = try await CacheWork.open(url)
+        let replayed = ChatStore(client: client(host: host), actor: LocalCacheActor(replayCache), threadID: "one")
+        await replayed.ready()
         #expect(replayed.messages.count == 2)
         #expect(replayed.messages.first { $0.id == accepted.id } == accepted)
-        #expect(try relaunched.cursor(threadID: "one") == 2)
-        #expect(try relaunched.pending(threadID: "one").isEmpty)
+        #expect(try await relaunched.offMain { try $0.cursor(threadID: "one") } == 2)
+        #expect(try await relaunched.offMain { try $0.pending(threadID: "one") }.isEmpty)
     }
 
     @Test func offlinePartReplyKeepsSelectorThroughRetryAndReconciliation() async throws {
@@ -1069,26 +1081,26 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let first = Attachment(id: "first", kind: "image", name: "Same.png")
         let second = Attachment(id: "second", kind: "image", name: "Same.png")
         let source = Message(id: "original", threadID: "chat", role: "assistant",
                              parts: [Part(kind: "attachment", attachment: first), Part(kind: "text", text: "Caption"),
                                      Part(kind: "attachment", attachment: second)],
                              createdAt: "2026-10-09T10:00:00Z", status: "done", seq: 1, agentID: "research")
-        try cache.apply(Event(seq: 1, conversationID: "chat", type: "message.done", message: source, createdAt: source.createdAt))
+        try await cache.offMain { try $0.apply(Event(seq: 1, conversationID: "chat", type: "message.done", message: source, createdAt: source.createdAt)) }
         let quote = try #require(source.replyContext(part: 2))
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "chat")
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "chat")
         await chat.send(text: "This image", attachments: [first, second], reply: quote)
         let optimistic = try #require(chat.messages.first { $0.role == "user" })
-        let request = try #require(cache.pending(threadID: "chat").first)
+        let request = try #require((try await cache.offMain { try $0.pending(threadID: "chat") }).first)
         #expect(request.replyPart == 2)
         #expect(request.attachmentIDs == [first.id, second.id])
         #expect(optimistic.parts.count == 3)
         #expect(optimistic.reply == quote)
-        let reopened = try LocalCache(url: url)
-        #expect(try reopened.pending(threadID: "chat") == [request])
-        let resumed = ChatStore(client: client(host: host), cache: reopened, threadID: "chat")
+        let reopened = try await CacheWork.open(url)
+        #expect(try await reopened.offMain { try $0.pending(threadID: "chat") } == [request])
+        let resumed = ChatStore(client: client(host: host), actor: LocalCacheActor(reopened), threadID: "chat")
         await probe.reconnect()
         await resumed.retry(messageID: optimistic.id)
         #expect(await probe.requests == [request, request])
@@ -1096,12 +1108,12 @@ struct TransportTests {
         accepted.seq = 2
         accepted.status = "done"
         let event = Event(seq: 2, conversationID: "chat", type: "message.start", message: accepted, createdAt: accepted.createdAt)
-        try reopened.apply(event)
-        try reopened.apply(event)
-        let final = try LocalCache(url: url)
-        #expect(try final.messages(threadID: "chat").count == 2)
-        #expect(try final.messages(threadID: "chat").first { $0.id == accepted.id }?.reply == quote)
-        #expect(try final.pending(threadID: "chat").isEmpty)
+        try await reopened.offMain { try $0.apply(event) }
+        try await reopened.offMain { try $0.apply(event) }
+        let final = try await CacheWork.open(url)
+        #expect(try await final.offMain { try $0.messages(threadID: "chat") }.count == 2)
+        #expect(try await final.offMain { try $0.messages(threadID: "chat") }.first { $0.id == accepted.id }?.reply == quote)
+        #expect(try await final.offMain { try $0.pending(threadID: "chat") }.isEmpty)
     }
 
     @Test func sendDuringPendingAcknowledgementIsFlushed() async throws {
@@ -1110,8 +1122,8 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let cache = try await CacheWork.open(url)
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         let first = Task { await chat.send(text: "First send") }
         for _ in 0..<100 {
             if await probe.requests.count == 1 { break }
@@ -1122,7 +1134,7 @@ struct TransportTests {
         let requests = await probe.requests
         #expect(requests.map(\.text) == ["First send", "Second send while first POST is pending"])
         #expect(Set(requests.map(\.id)).count == 2)
-        #expect(try cache.pending(threadID: "one").isEmpty)
+        #expect(try await cache.offMain { try $0.pending(threadID: "one") }.isEmpty)
         #expect(chat.messages.allSatisfy { $0.status == "done" })
     }
 
@@ -1132,15 +1144,15 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
+        let cache = try await CacheWork.open(url)
         let request = SendRequest(id: "inactive-send", text: "Queued before selecting another agent")
-        _ = try cache.enqueue(threadID: "inactive", request: request, attachments: [])
+        _ = try await cache.offMain { try $0.enqueue(threadID: "inactive", request: request, attachments: []) }
         let sidebar = SidebarStore(client: client(host: host), cache: cache)
         await sidebar.refresh()
         #expect(sidebar.isConnected)
         #expect(await probe.requests == [request])
-        #expect(try cache.queued().isEmpty)
-        #expect(try cache.messages(threadID: "inactive").first?.status == "done")
+        #expect(try await cache.offMain { try $0.queued() }.isEmpty)
+        #expect(try await cache.offMain { try $0.messages(threadID: "inactive") }.first?.status == "done")
     }
 
     @Test func queuedVoiceRepliesUseTheirOwnUserIdentity() async throws {
@@ -1149,8 +1161,8 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let cache = try await CacheWork.open(url)
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         defer { chat.stop() }
         await chat.start()
         for _ in 0..<200 {
@@ -1190,15 +1202,15 @@ struct TransportTests {
         defer { ProbeProtocol.routes.remove(host) }
         let url = cacheURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let cache = try LocalCache(url: url)
-        let chat = ChatStore(client: client(host: host), cache: cache, threadID: "one")
+        let cache = try await CacheWork.open(url)
+        let chat = ChatStore(client: client(host: host), actor: LocalCacheActor(cache), threadID: "one")
         defer { chat.stop() }
         await chat.start()
         for _ in 0..<200 {
-            if try cache.cursor(threadID: "one") == 2100, await probe.cursors.contains(2100) { break }
+            if try await cache.offMain { try $0.cursor(threadID: "one") } == 2100, await probe.cursors.contains(2100) { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(try cache.cursor(threadID: "one") == 2100)
+        #expect(try await cache.offMain { try $0.cursor(threadID: "one") } == 2100)
         let cursors = await probe.cursors
         #expect(cursors.starts(with: [0, 1000, 2000, 2100]))
     }

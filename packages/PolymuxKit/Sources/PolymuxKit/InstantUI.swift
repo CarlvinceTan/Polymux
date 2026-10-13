@@ -3,28 +3,36 @@ import os
 #endif
 import Foundation
 
-/// Visible feedback within 16 ms, and the published state change within 50 ms.
+/// Visible feedback lands inside one frame. The published state change lands inside 50 ms.
 public enum InstantUI {
+    /// Visible feedback has to finish inside one frame.
     public static let feedbackBudget: Duration = .milliseconds(16)
-    public static let stateBudget: Duration = .milliseconds(50)
-    /// PR #41 names the 16 ms budget `paintBudget`.
-    public static let paintBudget: Duration = feedbackBudget
 
-    /// Records a signpost from the start of `body` through its return.
+    /// A published state change has to finish inside this window.
+    public static let stateBudget: Duration = .milliseconds(50)
+
+    /// Records a signpost from `tap` through `body` and returns the body's value.
     @discardableResult
-    public static func interval(_ name: StaticString, budget: Duration, trace: SignpostTrace, _ body: () -> Void) -> SignpostTrace.Span {
+    public static func interval<T>(
+        _ name: StaticString,
+        budget: Duration,
+        trace: SignpostTrace,
+        from tap: ContinuousClock.Instant? = nil,
+        _ body: () -> T
+    ) -> T {
         prepare()
         let clock = ContinuousClock()
         #if os(macOS) || os(iOS) || os(visionOS) || os(tvOS) || os(watchOS)
         let state = signposter.beginInterval(name)
         #endif
-        let start = clock.now
-        body()
+        let start = tap ?? clock.now
+        let value = body()
         let duration = start.duration(to: clock.now)
         #if os(macOS) || os(iOS) || os(visionOS) || os(tvOS) || os(watchOS)
         signposter.endInterval(name, state)
         #endif
-        return trace.record(signpostName(name), duration: duration, budget: budget)
+        trace.record(signpostName(name), duration: duration, budget: budget)
+        return value
     }
 
     private static func prepare() {
@@ -48,10 +56,9 @@ public final class SignpostTrace: @unchecked Sendable {
         public let name: String
         public let duration: Duration
         public let budget: Duration
-        public var withinBudget: Bool { duration <= budget }
+        /// Strictly inside the budget. A span that merely ties the limit has missed it.
+        public var withinBudget: Bool { duration < budget }
     }
-
-    public static let shared = SignpostTrace()
 
     private let lock = NSLock()
     private var storage: [Span] = []
