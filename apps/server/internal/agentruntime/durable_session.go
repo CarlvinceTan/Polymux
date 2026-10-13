@@ -100,7 +100,7 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	if err != nil {
 		return nil, err
 	}
-	cwd := filepath.Join(r.dir, d.Agent.ID)
+	cwd := d.workingDir(filepath.Join(r.dir, d.Agent.ID))
 	if err := os.MkdirAll(cwd, 0700); err != nil {
 		return nil, err
 	}
