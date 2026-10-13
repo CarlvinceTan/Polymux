@@ -67,7 +67,11 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
     cursor) local K; K=$(vault get "$(cfg lane "$1" key)" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       # Key only in this child's environment: never argv (ps), never exported, keychain untouched.
       (cd "$2" && CURSOR_API_KEY="$K" "$cmd" -p --force --trust --workspace "$2" --output-format text "$P") >> "$3" 2>&1;;
-    codex) (cd "$2" && "$cmd" exec --full-auto "$P") >> "$3" 2>&1;;
+    # No workspace-write sandbox (tested 13 Oct, codex 0.162 seatbelt, network on, .git common dir +
+    # ~/ops/lanes as writable roots): .git stays read-only inside the sandbox, so the agent can't
+    # commit, and simctl/CoreSimulator XPC is refused, so verify.sh (iOS sim build) fails. Re-test
+    # before tightening. (--full-auto no longer exists in codex exec.)
+    codex) (cd "$2" && "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
     opencode) (cd "$2" && "$cmd" run "$P") >> "$3" 2>&1;;
     *) echo "unknown agent $a" >> "$3"; return 99;;
   esac
@@ -83,7 +87,6 @@ ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""; N=0
 for L in $(cfg order "$LANE"); do
   N=$((N+1)); [ $N -gt 2 ] && break
-  [ $N -gt 1 ] && { guard --dispatch "$L" >> "$OPS/logs/$ID-$L.log" 2>&1 || true; }   # requeue to next lane
   B=$BRANCH; [ $N -gt 1 ] && B="$BRANCH-$L"; WT="$WTR/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
   TRIED="$TRIED $L"; BL=$(branch_lock_dir "$B")
   lock_take "$BL" || { ev failed "$L" "branch $B has another writer (pid $(lock_holder "$BL"))"; continue; }; BLS="$BLS $BL"

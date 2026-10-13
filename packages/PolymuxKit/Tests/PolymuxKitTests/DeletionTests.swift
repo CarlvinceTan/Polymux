@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
-@Suite @MainActor
+@Suite
 struct DeletionTests {
     private func location() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("polymux-deletion-\(UUID())/cache.sqlite")

@@ -1,13 +1,13 @@
 #!/bin/bash
-# cleanup.sh [--days N] [--apply]   (default: dry run, N=7)
+# cleanup.sh [--days N] [--proof-days M] [--apply]   (default: dry run, N=7, M=14)
 # pstack-style worktree + simulator cleanup: merged or stale lane worktrees, their cloned sims,
 # per-worktree DerivedData, unavailable sims, and ~/verify-evidence older than N days.
 # Scans ~/code/wt and ~/.cursor/worktrees; age = last activity (commit, index, newest file).
 # Never touches: the main checkout, dirty or unpushed worktrees, anything holding a build slot
 # or unit lock, a running verify/agent, ~/ops/goal-loop, ~/ops/pr-verify.
 set -uo pipefail
-DAYS=7; APPLY=0
-while [ $# -gt 0 ]; do case $1 in --days) DAYS=$2; shift 2;; --apply) APPLY=1; shift;; *) shift;; esac; done
+DAYS=7; APPLY=0; PROOF_DAYS=14
+while [ $# -gt 0 ]; do case $1 in --days) DAYS=$2; shift 2;; --proof-days) PROOF_DAYS=$2; shift 2;; --apply) APPLY=1; shift;; *) shift;; esac; done
 REPO=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel); MAIN=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')
 OPS=${LANES_HOME:-$HOME/ops/lanes}; LOCKS=$(python3 "$REPO/scripts/lanes.py" get lock_dir)
 do_() { if [ $APPLY = 1 ]; then echo "+ $*"; "$@"; else echo "would: $*"; fi; }
@@ -63,6 +63,9 @@ for d in "$CW"/*/*; do [ -d "$d" ] || continue
   [ -e "$d/.git" ] && keep "$d" "cursor worktree not registered with this repo; last activity $(( ( $(date +%s) - $(last_activity "$d") ) / 86400 ))d"; done
 do_ xcrun simctl delete unavailable
 git -C "$REPO" worktree prune --dry-run -v; [ $APPLY = 1 ] && git -C "$REPO" worktree prune
+# proof-media/* branches (one per verify run) older than PROOF_DAYS (default 14): delete on origin.
+NOW=$(date +%s); git -C "$REPO" for-each-ref --format='%(refname:lstrip=3) %(committerdate:unix)' refs/remotes/origin/proof-media/ | \
+  while read -r b t; do [ $(( (NOW - t) / 86400 )) -ge "$PROOF_DAYS" ] && do_ git -C "$REPO" push -q origin --delete "$b"; done
 [ -d "$HOME/verify-evidence" ] && find "$HOME/verify-evidence" -mindepth 2 -maxdepth 2 -type d -mtime +"$DAYS" | \
   while read -r d; do do_ rm -rf "$d"; done
 echo "cleanup done ($([ $APPLY = 1 ] && echo applied || echo dry run), days=$DAYS)"
