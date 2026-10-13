@@ -58,6 +58,9 @@ type Store struct {
 	mu     sync.Mutex
 	issuer *x509.Certificate
 	key    *ecdsa.PrivateKey
+	clock  func() time.Time
+	fails  int
+	until  time.Time
 }
 
 func Open(ctx context.Context, dir, hostname string) (*Store, error) {
@@ -325,6 +328,184 @@ func (s *Store) Revoke(ctx context.Context, id string) error {
 		return errors.New("device not found")
 	}
 	return err
+}
+
+// App codes share the tickets table but are not agent-control PairTickets.
+const appTicket = `{"kind":"app"}`
+
+var (
+	ErrExpired   = &PairError{Code: "pair_expired"}
+	ErrUsed      = &PairError{Code: "pair_used"}
+	ErrLocked    = &PairError{Code: "pair_locked"}
+	ErrNoAddress = &PairError{Code: "no_address"}
+)
+
+type PairError struct{ Code string }
+
+func (e *PairError) Error() string { return e.Code }
+
+func (s *Store) IssueApp(ctx context.Context, candidates []string, agent string) (string, error) {
+	if agent == "" || len(agent) > 128 || strings.ContainsAny(agent, "/\\.\x00") {
+		return "", errors.New("invalid agent")
+	}
+	seen := map[string]bool{}
+	urls := []string{}
+	for _, raw := range candidates {
+		if target, ok := pairTarget(raw); ok && !seen[target] {
+			seen[target] = true
+			urls = append(urls, target)
+		}
+	}
+	if len(urls) == 0 {
+		return "", ErrNoAddress
+	}
+	code := randomID()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM tickets WHERE capabilities=?`, appTicket); err != nil {
+		return "", err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO tickets(hash,agent,capabilities,expires) VALUES(?,?,?,?)`, hash(code), agent, appTicket, s.moment().Add(10*time.Minute).Unix())
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(s.issuer.Raw)
+	return formatPair(urls, hex.EncodeToString(sum[:]), code, agent), nil
+}
+
+func (s *Store) RedeemApp(ctx context.Context, code string) (string, error) {
+	if s.locked() {
+		return "", ErrLocked
+	}
+	if len(code) != 43 {
+		return "", s.reject(ErrUsed)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var agent string
+	err = tx.QueryRowContext(ctx, `DELETE FROM tickets WHERE hash=? AND capabilities=? AND expires>? RETURNING agent`, hash(code), appTicket, s.moment().Unix()).Scan(&agent)
+	if err == nil {
+		if err = tx.Commit(); err != nil {
+			return "", err
+		}
+		s.mu.Lock()
+		s.fails, s.until = 0, time.Time{}
+		s.mu.Unlock()
+		return agent, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	var expires int64
+	qerr := tx.QueryRowContext(ctx, `SELECT expires FROM tickets WHERE hash=? AND capabilities=?`, hash(code), appTicket).Scan(&expires)
+	if qerr == nil && expires <= s.moment().Unix() {
+		return "", s.reject(ErrExpired)
+	}
+	if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
+		return "", qerr
+	}
+	return "", s.reject(ErrUsed)
+}
+
+func (s *Store) locked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.until.IsZero() && s.moment().Before(s.until)
+}
+
+func (s *Store) reject(reason error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.moment()
+	if !s.until.IsZero() && now.Before(s.until) {
+		return ErrLocked
+	}
+	s.until = time.Time{}
+	s.fails++
+	if s.fails >= 5 {
+		s.fails = 0
+		s.until = now.Add(15 * time.Minute)
+	}
+	return reason
+}
+
+func (s *Store) moment() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now()
+}
+
+func pairTarget(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" || host == "localhost" || polymuxHost(host) {
+		return "", false
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast()) {
+		return "", false
+	}
+	u.Path = ""
+	return u.String(), true
+}
+
+func polymuxHost(host string) bool {
+	return host == "polymux.com" || strings.HasSuffix(host, ".polymux.com")
+}
+
+func formatPair(urls []string, fp, code, agent string) string {
+	var b strings.Builder
+	b.WriteString("polymux://pair?v=2")
+	for _, u := range urls {
+		b.WriteString("&u=")
+		b.WriteString(url.QueryEscape(u))
+	}
+	b.WriteString("&fp=")
+	b.WriteString(fp)
+	b.WriteString("&c=")
+	b.WriteString(code)
+	b.WriteString("&a=")
+	b.WriteString(url.QueryEscape(agent))
+	return b.String()
+}
+
+// TailscaleURL keeps Serve/Funnel TCP passthrough. Terminated TLS would replace fp.
+func TailscaleURL(dnsName string, status []byte, port string) string {
+	dnsName = strings.TrimSuffix(strings.TrimSpace(dnsName), ".")
+	if dnsName == "" || port == "" || polymuxHost(strings.ToLower(dnsName)) {
+		return ""
+	}
+	var body struct {
+		TCP map[string]struct {
+			TCPForward, TerminateTLS string
+			HTTPS                    bool
+		}
+	}
+	if json.Unmarshal(status, &body) != nil {
+		return ""
+	}
+	for p, h := range body.TCP {
+		if h.HTTPS || h.TerminateTLS != "" || !strings.HasSuffix(h.TCPForward, ":"+port) {
+			continue
+		}
+		if p == "443" {
+			return "https://" + dnsName
+		}
+		return "https://" + dnsName + ":" + p
+	}
+	return ""
 }
 
 func randomID() string { return base64.RawURLEncoding.EncodeToString(randBytes(32)) }

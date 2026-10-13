@@ -8,10 +8,13 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
@@ -20,7 +23,7 @@ import (
 
 func runDevice(args []string) error {
 	if len(args) == 0 || args[0] != "pair" && args[0] != "list" && args[0] != "revoke" {
-		return errors.New("usage: polymux-server device pair|list|revoke [-data path] [-url https://IP:7339] [-agent ID] [-capabilities native,commands] [-id ID] [-tailscale]")
+		return errors.New("usage: polymux-server device pair|list|revoke [-data path] [-url https://IP:7339] [-agent ID] [-capabilities native,commands] [-id ID] [-tailscale] [-remote URL]")
 	}
 	flags := flag.NewFlagSet("device", flag.ContinueOnError)
 	dir := flags.String("data", os.Getenv("POLYMUX_DATA_DIR"), "server data directory")
@@ -29,6 +32,7 @@ func runDevice(args []string) error {
 	caps := flags.String("capabilities", "native", "native and/or commands")
 	id := flags.String("id", "", "device to revoke")
 	tailscale := flags.Bool("tailscale", os.Getenv("POLYMUX_TAILSCALE") == "1", "use a Tailscale device URL (requires Tailscale)")
+	remote := flags.String("remote", "", "user-entered pairing address")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -98,6 +102,20 @@ func runDevice(args []string) error {
 			return err
 		}
 		fmt.Println(ticket)
+		entered := []string{}
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "url" {
+				entered = append(entered, *address)
+			}
+		})
+		if *remote != "" {
+			entered = append(entered, *remote)
+		}
+		if v2, err := s.IssueApp(ctx, pairCandidates(ctx, port, entered), *agent); err == nil {
+			fmt.Println(v2)
+		} else if !errors.Is(err, device.ErrNoAddress) {
+			return err
+		}
 		fmt.Fprintln(os.Stderr, "Expires in 10 minutes, single use. Paste into Polymux Settings > This Mac. Treat it as a temporary credential.")
 		fmt.Fprintln(os.Stderr, "Link offer (preview; the app does not redeem it yet):", offer.URI())
 		fmt.Fprintln(os.Stderr, "Link offer (preview; the app does not redeem it yet):", offer.Code)
@@ -117,4 +135,134 @@ func runDevice(args []string) error {
 		fmt.Println("Device revoked; active connections close on the next heartbeat or call.")
 	}
 	return nil
+}
+
+func pairRoutes(next http.Handler, dir, port string, tailscale bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/device/pair" {
+			servePair(w, r, dir, port, tailscale)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func servePair(w http.ResponseWriter, r *http.Request, dir, port string, tailscale bool) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	host, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+	ip := net.ParseIP(host)
+	if r.Method != http.MethodPost || splitErr != nil || ip == nil || !ip.IsLoopback() || r.Header.Get("Origin") != "" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	var body struct {
+		Agent   string `json:"agent"`
+		Address string `json:"address"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 2048)
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.Agent == "" {
+		writePair(w, http.StatusBadRequest, "invalid", "Invalid pairing request.")
+		return
+	}
+	name := identityHost("0.0.0.0")
+	if tailscale {
+		if tip, err := tailnet(); err == nil {
+			name = identityHost(tip)
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	s, err := device.Open(ctx, dir, name)
+	if err != nil {
+		writePair(w, http.StatusInternalServerError, "pair", "Couldn't open pairing.")
+		return
+	}
+	defer s.Close()
+	entered := []string{}
+	if body.Address != "" {
+		entered = append(entered, body.Address)
+	}
+	uri, err := s.IssueApp(ctx, pairCandidates(ctx, port, entered), body.Agent)
+	var pe *device.PairError
+	if errors.As(err, &pe) {
+		writePair(w, http.StatusConflict, pe.Code, pairText(pe.Code))
+		return
+	}
+	if err != nil {
+		writePair(w, http.StatusInternalServerError, "pair", "Couldn't create a pairing code.")
+		return
+	}
+	_ = json.NewEncoder(w).Encode(struct {
+		URL string `json:"url"`
+	}{URL: uri})
+}
+
+func pairText(code string) string {
+	text := map[string]string{
+		"no_address":   "Turn on Tailscale Serve or enter an address.",
+		"pair_expired": "This code expired.",
+		"pair_used":    "This code was already used.",
+		"pair_locked":  "Too many attempts. Pairing is locked for 15 minutes.",
+	}[code]
+	if text == "" {
+		return "Pairing failed."
+	}
+	return text
+}
+
+func writePair(w http.ResponseWriter, status int, code, message string) {
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}{Code: code, Message: message})
+}
+
+func pairCandidates(ctx context.Context, port string, entered []string) []string {
+	urls := []string{}
+	if u := tailscalePairURL(ctx, port); u != "" {
+		urls = append(urls, u)
+	}
+	return append(urls, entered...)
+}
+
+var (
+	tsMu  sync.Mutex
+	tsAt  time.Time
+	tsURL string
+)
+
+func tailscalePairURL(ctx context.Context, port string) string {
+	tsMu.Lock()
+	defer tsMu.Unlock()
+	if time.Since(tsAt) < 30*time.Second {
+		return tsURL
+	}
+	tsAt = time.Now()
+	tsURL = ""
+	cctx, cancel := context.WithTimeout(ctx, 400*time.Millisecond)
+	defer cancel()
+	status, err := exec.CommandContext(cctx, "tailscale", "status", "--json").Output()
+	if err != nil {
+		return ""
+	}
+	var body struct {
+		Self struct{ DNSName string }
+	}
+	if json.Unmarshal(status, &body) != nil {
+		return ""
+	}
+	for _, cmd := range []string{"serve", "funnel"} {
+		out, err := exec.CommandContext(cctx, "tailscale", cmd, "status", "--json").Output()
+		if err != nil {
+			continue
+		}
+		if u := device.TailscaleURL(body.Self.DNSName, out, port); u != "" {
+			tsURL = u
+			return u
+		}
+	}
+	return ""
 }
