@@ -43,6 +43,7 @@ needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it und
 run_agent() {  # $1 lane, $2 worktree, $3 log
   local a cmd; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd)
   case " ${LANE_FORCE_FAIL:-} " in *" $1 "*) echo "forced failure (LANE_FORCE_FAIL test)" >> "$3"; return 97;; esac
+  [ -n "${LANE_STUB_CMD:-}" ] && { (cd "$2" && bash -c "$LANE_STUB_CMD") >> "$3" 2>&1; return; }  # test hook
   case $a in
     cursor) local K; K=$(vault get "$(cfg lane "$1" key)" 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       (cd "$2" && "$cmd" -p --force --trust --workspace "$2" --api-key "$K" --output-format text "$PROMPT") >> "$3" 2>&1;;
@@ -73,6 +74,7 @@ for L in $(cfg order "$LANE"); do
   CH=$(git -C "$WT" diff --shortstat "$BASE"...HEAD | awk '{print $4+$6}')
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
     git -C "$WT" log --format=%B "$BASE"..HEAD | grep -qE '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
+  [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && TI_BASE=$BASE bash scripts/verify.sh) >> "$LOG" 2>&1 || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
   BODY="Task: $TASK"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
