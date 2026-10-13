@@ -7,7 +7,8 @@
 #          proof-dir that pass media-check.py, deduped by sha256 (ledger $OPS/board/<unit>.media and
 #          a "proof sha256:" caption on the card), appended as image/video blocks at url-base/<file>.
 #          Only files listed (one name per line) in proof-dir/approved are appended; no list = no media;
-#          .mov is never appended.
+#          .mov is never appended; only files publish_proof uploaded (proof-dir/uploaded) are appended.
+#          media-check exit != 0 (missing Pillow/ffmpeg) -> board_error, nothing appended.
 #   merged <unit>                      Status -> "Completed" (caller confirms mergedAt first)
 # Ships disabled: live only when $OPS/BOARD_LIVE exists AND $GOAL_LOOP_HOME/RELAY_HOLD exists (old relay
 # held, so never two writers); otherwise logs the exact intended write. Read-before-write: a failed read
@@ -72,12 +73,15 @@ else api PATCH "pages/$PAGE" --data "$BODY" >/dev/null && log "wrote $PROP: '$CU
 [ -n "$PDIR" ] || exit 0
 [ -d "$PDIR" ] && case $PBASE in https://*) true;; *) false;; esac || { log "no proof media (dir '$PDIR', base '$PBASE')"; exit 0; }
 LED="$OPS/board/$UNIT.media"; touch "$LED"; CAND=()
+MC=$(python3 "$SD/media-check.py" "$PDIR" 2>&1); MRC=$?
+[ $MRC = 0 ] || { err "media-check failed (rc=$MRC): $(echo "$MC" | tail -1); no media appended"; exit 0; }
 while IFS=$'\t' read -r st x f; do [ -n "$f" ] || continue
   if [ "$st" != PASS ]; then log "held media (pre-publish check failed: $x): $f"; continue; fi
   case $f in *.[mM][oO][vV]) log "held media (.mov is not uploaded by publish_proof): $f"; continue;; esac
   grep -qxF "$f" "$PDIR/approved" 2>/dev/null || { log "held media (not in $PDIR/approved): $f"; continue; }
+  grep -qxF "$f" "$PDIR/uploaded" 2>/dev/null || { log "held media (not uploaded by publish_proof, $PDIR/uploaded): $f"; continue; }
   grep -qx "$x" "$LED" && { log "skip media: sha256 $x already published ($f)"; continue; }
-  CAND+=("$x $f"); done < <(python3 "$SD/media-check.py" "$PDIR" 2>&1)
+  CAND+=("$x $f"); done <<< "$MC"
 [ ${#CAND[@]} -gt 0 ] || exit 0
 HAVE=$(blocks) || { err "blocks read failed; media skipped (nothing appended)"; exit 0; }
 NEW=(); for c in "${CAND[@]}"; do printf '%s' "$HAVE" | grep -qF "proof sha256:${c%% *}" && { log "skip media: sha256 ${c%% *} already on card"; continue; }; NEW+=("$c"); done
