@@ -147,6 +147,7 @@ public final class ChatStore {
     private func commit(messageID: String, files: [LocalFile], reply: ReplyContext?, text: String, mentions: [String]) async {
         guard let message = messages.first(where: { $0.id == messageID }), message.attachments.count == files.count else { return }
         let attachments = message.attachments
+        let threadID = self.threadID
         let request = SendRequest(id: messageID, text: text, attachmentIDs: attachments.map(\.id),
                                   replyToID: reply?.messageID, replyPart: reply?.partIndex,
                                   mentions: mentions.isEmpty ? nil : mentions)
