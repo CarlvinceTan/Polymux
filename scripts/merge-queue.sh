@@ -23,7 +23,7 @@
 #   Any other new commit voids the approval (needs a fresh review). Not approved -> $MQ/blocked/, no fix brief.
 #   Limit: the merge lane holds the same vault key; anything that can read that vault entry can sign.
 #   Task lanes never read it (run-lane.sh only reads lane keys).
-# Notion (board-update.sh) at each step: review (in review), approved, verify (re-verify level or failed), merged.
+# Project 3 board (board-update.sh) at each step: review (in review), approved, verify (re-verify level or failed), merged.
 # On failure: a fix brief (original brief + branch + failure log tail) goes back to $OPS/queue for the PR's
 # task lane, the card goes back to In Progress, and the queue moves on. Nothing else is blocked.
 set -uo pipefail

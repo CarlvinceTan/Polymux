@@ -45,3 +45,11 @@ repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|ht
 # Carl's lane-guard hook; missing = skip, never fatal unless the caller checks rc.
 LANE_GUARD=${LANE_GUARD:-$HOME/.local/bin/lane-guard}
 guard() { [ -x "$LANE_GUARD" ] || return 0; "$LANE_GUARD" "$@"; }
+# no_notion_ref TEXT: rc 1 if TEXT names Notion (notion.so, notion.site, app.notion.com) or carries a Notion
+# page id (32 hex, or dashed 8-4-4-4-12, lowercase, not part of a longer hex run such as a git sha).
+# Everything the lanes write to GitHub (PR bodies, comments, board values) passes this first.
+NOTION_REF_RE='notion\.so|notion\.site|app\.notion\.com|(^|[^0-9a-f])([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})([^0-9a-f]|$)'
+no_notion_ref() { ! printf '%s' "$1" | LC_ALL=C grep -qiE 'notion\.(so|site)|app\.notion\.com' && ! printf '%s' "$1" | LC_ALL=C grep -qE "$NOTION_REF_RE"; }
+# strip_notion_refs: stdin -> stdout with every such reference replaced by "[ref removed]" (perl: BSD sed has no /I)
+strip_notion_refs() { LC_ALL=C perl -pe 's#[^\s(<>"]*(?:notion\.so|notion\.site|app\.notion\.com)[^\s)<>"]*#[ref removed]#gi;
+  s/(?<![0-9a-f])(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f])/[ref removed]/g'; }

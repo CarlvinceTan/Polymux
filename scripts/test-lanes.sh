@@ -304,7 +304,7 @@ check "warm failures capped at 2 attempts, counted under LANES_HOME" '[ "$(grep 
 rm -f "$T/warmfail" "$LANES_HOME/.sim-warm-fail-TPL1"; : > "$T/warm.log"; WSR; WSR
 check "successful warm runs once, then the marker skips it" '[ "$(grep -c "simctl bootstatus" "$T/warm.log")" = 1 ] && [ -f "$LANES_HOME/.sim-warm-TPL1" ] && [ ! -e "$LANES_HOME/.sim-warm-fail-TPL1" ]'
 git worktree remove --force "$T/wsA"
-# 16 board-update.sh (Notion board) cases
+# 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"
 echo "test-lanes: $PASS passed, $FAILS failed"; [ $FAILS = 0 ]
