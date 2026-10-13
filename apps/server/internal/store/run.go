@@ -7,6 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -157,6 +161,13 @@ func (s *Store) Finalize(ctx context.Context, event contract.Event, message *con
 }
 
 func (s *Store) FinalizeTask(ctx context.Context, event contract.Event, message *contract.Message, run *contract.Run, tool *contract.ToolActivity, checkpoint *Checkpoint, tools, output int) error {
+	// Commit the chat notice before the run is sealed. A crash in between is
+	// finished by recovery without a second notice.
+	if run != nil && run.Trigger == "routine" && run.Status == "failed" {
+		if err := s.routineNotice(ctx, run); err != nil {
+			return err
+		}
+	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -231,6 +242,13 @@ func finishRuns(ctx context.Context, tx *sql.Tx, job string) error {
 		return err
 	}
 	for _, run := range runs {
+		if run.Status == "running" && resumeReady(ctx, tx, run) {
+			// The tool result is durable. Requeue so recovery can resume instead of interrupting.
+			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='queued' WHERE id=?`, job); err != nil {
+				return err
+			}
+			continue
+		}
 		if run.Status == "queued" {
 			run.Status, run.Summary = "cancelled", "Not dispatched"
 		} else {
@@ -298,7 +316,7 @@ func (s *Store) Withdraw(ctx context.Context, thread string) error {
 }
 
 func (s *Store) recoverRuns(ctx context.Context) error {
-	rows, err := s.DB.QueryContext(ctx, `SELECT data FROM runs WHERE status IN('running','waiting_input','waiting_peer')`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT data FROM runs WHERE status IN('running','resuming','waiting_input','waiting_peer')`)
 	if err != nil {
 		return err
 	}
@@ -322,6 +340,18 @@ func (s *Store) recoverRuns(ctx context.Context) error {
 		return err
 	}
 	for _, run := range runs {
+		var status string
+		if err := s.DB.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, run.ID).Scan(&status); err != nil {
+			return err
+		}
+		if Terminal(status) {
+			continue
+		}
+		if sealed, err := s.sealRoutineFailure(ctx, &run); err != nil {
+			return err
+		} else if sealed {
+			continue
+		}
 		if run.Status == "waiting_peer" && run.MessageID != nil {
 			var durable int
 			if err := s.DB.QueryRowContext(ctx,
@@ -344,9 +374,25 @@ func (s *Store) recoverRuns(ctx context.Context) error {
 				continue
 			}
 		}
+		if run.Status == "running" && resumeReady(ctx, s.DB, run) {
+			run.Status, run.Activity, run.Summary = "resuming", "", "Resuming from the saved tool result"
+			run.Attempt++
+			run.Error, run.FinishedAt = nil, nil
+			if err := s.RunEvent(ctx, "run.update", &run, nil); err != nil {
+				return err
+			}
+			if _, err := s.DB.ExecContext(ctx, `UPDATE jobs SET state='queued' WHERE id=?`, run.JobID); err != nil {
+				return err
+			}
+			continue
+		}
 		now := Now()
+		message := "The server restarted. Tool effects may be incomplete; review before retrying."
+		if run.Attempt > 1 {
+			message = "The server restarted again during resume. Review before retrying."
+		}
 		run.Status, run.Activity, run.Summary, run.FinishedAt = "interrupted", "", "Execution interrupted", &now
-		run.Error = &contract.Error{Code: "interrupted", Message: "The server restarted. Tool effects may be incomplete; review before retrying."}
+		run.Error = &contract.Error{Code: "interrupted", Message: message}
 		if len(run.Tools) == 0 && run.ToolID != nil {
 			run.Tools = []contract.ToolActivity{{ID: *run.ToolID, RunID: run.ID, Name: "tool"}}
 		}
@@ -421,6 +467,14 @@ func (s *Store) Deliver(ctx context.Context, delivery contract.PeerDelivery, wor
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return delivery, err
+	}
+	var parent string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, delivery.ParentRunID).Scan(&parent)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return delivery, err
+	}
+	if parent == "cancelled" || parent == "interrupted" || parent == "failed" {
+		return delivery, ErrConflict
 	}
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM agents WHERE id IN(?,?)`, delivery.SourceAgentID, delivery.TargetAgentID).Scan(&exists); err != nil {
@@ -538,7 +592,9 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 	}
 	run = stored
 	delivery.Status, delivery.RunID = run.Status, &run.ID
-	if delivery.Intent != "handoff" {
+	// 1:1 timeouts stay off the thread; the parent follow-up explains them.
+	timedOut := run.Error != nil && run.Error.Code == "timeout"
+	if delivery.Intent != "handoff" && !timedOut {
 		text := Text(result)
 		if run.Status != "completed" {
 			text = "Peer work " + run.Status + ". Review before retrying."
@@ -577,6 +633,12 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 		if err := json.Unmarshal([]byte(data), &parent); err != nil {
 			return err
 		}
+		// Groups have no parent follow-up, so the source agent says the timeout in chat.
+		if timedOut && parent.ConversationID != parent.AgentID {
+			if err := timeoutChat(ctx, tx, delivery, parent, run); err != nil {
+				return err
+			}
+		}
 		if parent.Status == "waiting_peer" {
 			parent.Status, parent.Summary = "completed", "Peer results received"
 			now := Now()
@@ -597,6 +659,22 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 		return err
 	}
 	return nil
+}
+
+func timeoutChat(ctx context.Context, tx *sql.Tx, delivery contract.PeerDelivery, parent, child contract.Run) error {
+	text := "The background task timed out and was stopped."
+	if child.Error != nil && child.Error.Message != "" {
+		text = child.Error.Message
+	}
+	text = boundedText(text, 8192)
+	agent := delivery.SourceAgentID
+	m := contract.Message{
+		ID: "timeout:" + delivery.ID, ThreadID: delivery.ConversationID, Role: "assistant", AgentID: &agent,
+		CreatedAt: Now(), Status: "done", ReplyToID: parent.SourceMessageID,
+		Parts: []contract.Part{{Kind: "text", Text: &text}},
+	}
+	_, err := appendTx(ctx, tx, contract.Event{ConversationID: m.ThreadID, Type: "message.start", MessageID: &m.ID, AgentID: m.AgentID}, &m)
+	return err
 }
 
 func finishPeer(ctx context.Context, tx *sql.Tx, job string) error {
@@ -777,4 +855,98 @@ func finishHandoffs(ctx context.Context, tx *sql.Tx, job string) error {
 		}
 	}
 	return nil
+}
+
+type rowQuery interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// ResumeReady reports whether a running turn can continue from a saved tool result.
+// A second crash (Attempt > 1) is not resumable, so recovery interrupts it.
+func (s *Store) ResumeReady(ctx context.Context, run contract.Run) bool {
+	return resumeReady(ctx, s.DB, run)
+}
+
+func resumeReady(ctx context.Context, q rowQuery, run contract.Run) bool {
+	if run.Attempt > 1 || len(run.Tools) > 0 || run.ToolID != nil {
+		return false
+	}
+	db, ok := openDurable(ctx, q)
+	if !ok {
+		return false
+	}
+	defer db.Close()
+	var path string
+	var err error
+	if run.ConversationID == run.AgentID {
+		err = q.QueryRowContext(ctx, `SELECT path FROM sessions WHERE agent_id=?`, run.AgentID).Scan(&path)
+	} else {
+		err = q.QueryRowContext(ctx, `SELECT path FROM group_sessions WHERE thread_id=? AND agent_id=?`, run.ConversationID, run.AgentID).Scan(&path)
+	}
+	raw, found := strings.CutPrefix(path, "durable:")
+	if err != nil || !found {
+		return false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return false
+	}
+	var kind string
+	var isError int
+	err = db.QueryRowContext(ctx, `SELECT json_extract(record,'$.kind'), ifnull(json_extract(record,'$.model[0].isError'), 0) FROM entries WHERE conversation_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&kind, &isError)
+	if err != nil || kind != "pi.tool-result" || isError != 0 {
+		return false
+	}
+	var live int
+	err = db.QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE conversation_id=? AND kind='pi.tool' AND status!='terminal'`, id).Scan(&live)
+	return err == nil && live == 0
+}
+
+func openDurable(ctx context.Context, q rowQuery) (*sql.DB, bool) {
+	var file string
+	if err := q.QueryRowContext(ctx, `SELECT file FROM pragma_database_list WHERE name='main'`).Scan(&file); err != nil {
+		return nil, false
+	}
+	file = strings.TrimPrefix(file, "file:")
+	if cut := strings.IndexByte(file, '?'); cut >= 0 {
+		file = file[:cut]
+	}
+	if file == "" {
+		return nil, false
+	}
+	path := filepath.Join(filepath.Dir(file), "durable.db")
+	if _, err := os.Stat(path); err != nil {
+		return nil, false
+	}
+	db, err := sql.Open("sqlite3", "file:"+path+"?_query_only=1&_busy_timeout=5000")
+	if err != nil {
+		return nil, false
+	}
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, false
+	}
+	return db, true
+}
+
+func (s *Store) SaveSubmission(ctx context.Context, runID string, id int64) error {
+	if err := s.ensureSubmissions(ctx); err != nil {
+		return err
+	}
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO run_submissions(run_id, submission_id) VALUES(?,?) ON CONFLICT(run_id) DO UPDATE SET submission_id=excluded.submission_id`, runID, id)
+	return err
+}
+
+func (s *Store) Submission(ctx context.Context, runID string) (int64, bool) {
+	if err := s.ensureSubmissions(ctx); err != nil {
+		return 0, false
+	}
+	var id int64
+	err := s.DB.QueryRowContext(ctx, `SELECT submission_id FROM run_submissions WHERE run_id=?`, runID).Scan(&id)
+	return id, err == nil
+}
+
+func (s *Store) ensureSubmissions(ctx context.Context) error {
+	_, err := s.DB.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS run_submissions(run_id TEXT PRIMARY KEY, submission_id INTEGER NOT NULL)`)
+	return err
 }

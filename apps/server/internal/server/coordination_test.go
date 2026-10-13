@@ -65,3 +65,15 @@ func TestToolBudget(t *testing.T) {
 		t.Fatal("group budget did not end the chain")
 	}
 }
+
+func TestChildDelegation(t *testing.T) {
+	for _, name := range []string{"spawn_task", "message_agent", "handoff_agent", "manage_tasks"} {
+		t.Run(name, func(t *testing.T) {
+			state := &turnState{work: store.Work{Trigger: "child"}}
+			ctx := context.WithValue(t.Context(), turnKey{}, state)
+			if result := beforeTool(ctx, "call", name, nil); !result.Block {
+				t.Fatal("child delegation was allowed")
+			}
+		})
+	}
+}

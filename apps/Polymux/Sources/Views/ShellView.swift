@@ -13,7 +13,6 @@ struct ShellView: View {
     @State private var searching = false
     @State private var columnWidth: CGFloat = 360
     @FocusState private var searchFocused: Bool
-    @State private var hovered: String?
     @State private var filter = AgentFilter.all
     @State private var order = AgentOrder.recent
     @State private var adding = false
@@ -305,12 +304,10 @@ struct ShellView: View {
         #endif
     }
 
-    /// Selection reads as a slightly stronger version of hover, not the system's
-    /// unfocused selection fill, which is far brighter than the row it marks.
-    private func rowFill(_ id: String) -> Color {
-        if selection == id { return Color.primary.opacity(0.11) }
-        if hovered == id { return Color.primary.opacity(0.06) }
-        return .clear
+    private var duplicateAgentNames: Set<String> {
+        var seen: [String: Int] = [:]
+        for agent in session.sidebar.agents { seen[agent.name, default: 0] += 1 }
+        return Set(seen.filter { $0.value > 1 }.map(\.key))
     }
 
     private var conversations: [PolymuxKit.Thread] {
@@ -354,26 +351,15 @@ struct ShellView: View {
     }
 
     private func chatLink(_ thread: PolymuxKit.Thread) -> some View {
-        NavigationLink(value: thread.id) {
+        SidebarChatLink(threadID: thread.id, selected: selection == thread.id, surface: sidebarSurface) {
             if thread.isGroup {
                 GroupRow(thread: thread, members: participants(thread), activity: session.sidebar.activity, connected: session.sidebar.isConnected)
             } else if let agent = participants(thread).first {
                 AgentRow(agent: agent, thread: thread,
-                         duplicate: session.sidebar.agents.filter { $0.name == agent.name }.count > 1,
+                         duplicate: duplicateAgentNames.contains(agent.name),
                          activity: session.sidebar.activity, connected: session.sidebar.isConnected)
             }
         }
-        .navigationLinkIndicatorVisibility(.hidden)
-        .listRowBackground(
-            // An opaque base hides the system's selection fill, which is far brighter than
-            // the row it marks; the highlight below is then the only thing drawn.
-            ZStack {
-                sidebarSurface
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(rowFill(thread.id))
-                    .padding(.horizontal, 10).padding(.vertical, 2)
-            }
-        )
         #if os(macOS)
         .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 12))
         .overlay {
@@ -416,10 +402,6 @@ struct ShellView: View {
         }
         #endif
         .disabled(deleting == thread.agentID)
-        .onHover { inside in
-            if inside { hovered = thread.id }
-            else if hovered == thread.id { hovered = nil }
-        }
     }
 
     private func edit(_ thread: PolymuxKit.Thread) {
@@ -625,6 +607,35 @@ private struct RowDetails: View {
                 .lineLimit(1).foregroundStyle(secondary)
         }
         #endif
+    }
+}
+
+/// Keeps hover highlight local so moving across sidebar rows does not rebuild `NavigationSplitView`.
+private struct SidebarChatLink<Content: View>: View {
+    let threadID: String
+    let selected: Bool
+    let surface: Color
+    @ViewBuilder var content: () -> Content
+    @State private var hovered = false
+
+    private var fill: Color {
+        if selected { return Color.primary.opacity(0.11) }
+        if hovered { return Color.primary.opacity(0.06) }
+        return .clear
+    }
+
+    var body: some View {
+        NavigationLink(value: threadID) { content() }
+            .navigationLinkIndicatorVisibility(.hidden)
+            .listRowBackground(
+                ZStack {
+                    surface
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(fill)
+                        .padding(.horizontal, 10).padding(.vertical, 2)
+                }
+            )
+            .onHover { hovered = $0 }
     }
 }
 

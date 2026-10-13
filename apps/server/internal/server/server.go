@@ -44,6 +44,8 @@ type Config struct {
 	Log         *slog.Logger
 	Push        PushSender
 	Devices     *device.Broker
+	// BackgroundTimeout defaults to the normal turn limit when unset.
+	BackgroundTimeout time.Duration
 }
 type Server struct {
 	Store      *store.Store
@@ -95,6 +97,10 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 	}
 	if err := os.MkdirAll(filepath.Join(c.DataDir, "attachments"), 0700); err != nil {
 		return nil, err
+	}
+	// Refresh tokens from the removed OneDrive connector must not survive startup.
+	if err := os.RemoveAll(filepath.Join(c.DataDir, "connections", "onedrive")); err != nil {
+		return nil, fmt.Errorf("remove onedrive directory: %w", err)
 	}
 	preferences, err := settings.Open(filepath.Join(c.DataDir, "settings.json"))
 	if err != nil {
@@ -743,29 +749,29 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	a := s.actors[t.AgentID]
 	group := s.groups[t.ID]
 	s.actorsMu.RUnlock()
+	var cancel context.CancelFunc
+	if a != nil && group == nil {
+		a.mu.Lock()
+		cancel = a.cancel
+		a.mu.Unlock()
+	}
+	ids, err := s.Store.StopRuns(r.Context(), t.ID)
+	if err != nil {
+		s.respond(w, nil, err)
+		return
+	}
+	for _, id := range ids {
+		if active, ok := s.turns.Load(id); ok {
+			active.(*execution).cancel()
+		}
+	}
 	if group != nil {
 		group.abort()
 		write(w, 200, map[string]bool{"stopped": true})
 		return
 	}
-	if a != nil {
-		a.mu.Lock()
-		cancel := a.cancel
-		a.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		} else {
-			ids, err := s.Store.StopWaiting(r.Context(), t.ID)
-			if err != nil {
-				s.respond(w, nil, err)
-				return
-			}
-			for _, id := range ids {
-				if active, ok := s.turns.Load(id); ok {
-					active.(*execution).cancel()
-				}
-			}
-		}
+	if cancel != nil {
+		cancel()
 	}
 	write(w, 200, map[string]bool{"stopped": true})
 }
@@ -855,6 +861,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger == "review" {
 		timeout = 2 * time.Minute
 	}
+	background := work.Trigger == "peer" || work.Trigger == "handoff" || work.Trigger == "task"
+	if background && s.config.BackgroundTimeout > 0 {
+		timeout = s.config.BackgroundTimeout
+	}
 	runCtx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	a.mu.Lock()
@@ -864,6 +874,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	writeCtx, end := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
 	defer end()
 	user := work.Message
+	delegated := work.Trigger == "peer" || work.Trigger == "child"
 	run := store.NewRun(user.ID, user.ThreadID, a.id, work.Trigger)
 	if existing, e := s.Store.Run(writeCtx, run.ID); e == nil {
 		run = existing
@@ -892,11 +903,15 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.TaskID != "" {
 		run.TaskID = &work.TaskID
 	}
-	// Capture before flipping to running; approval resume injects a continuation turn.
+	// Capture before flipping to running. Approval resume injects a turn; crash resume replays the saved tool result.
 	resuming := run.Status == "waiting_input"
+	continuing := run.Status == "resuming"
 	run.Status, run.Activity, run.Summary, run.StartedAt, run.FinishedAt = "running", "preparing", "Preparing reply", &now, nil
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		run.SourceMessageID = &user.ID
+	}
+	if work.Trigger != "review" {
+		run.MessageID = pointer("reply:" + run.ID)
 	}
 	state := &turnState{run: run, work: work, store: s.Store, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
 	runCtx = context.WithValue(runCtx, turnKey{}, state)
@@ -920,7 +935,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	} else if err == nil && work.Trigger != "created" && !automatic(work.Trigger) {
 		user, err = s.peerContext(runCtx, store.Work{Trigger: work.Trigger, Message: user, DeliveryID: work.DeliveryID, ParentRunID: work.ParentRunID})
 	}
-	if err == nil && work.Trigger != "created" && work.Trigger != "peer" {
+	if err == nil && work.Trigger != "created" && !delegated {
 		user, err = s.workContext(runCtx, run, user)
 		if err == nil {
 			user, err = s.memoryContext(runCtx, run, user, store.Text(work.Message))
@@ -939,9 +954,6 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	m := contract.Message{ID: "reply:" + run.ID, ThreadID: user.ThreadID, Role: "assistant", Parts: []contract.Part{}, CreatedAt: store.Now(), Status: "streaming", AgentID: &a.id, RunID: &run.ID}
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		m.ReplyToID = &user.ID
-	}
-	if work.Trigger != "review" {
-		run.MessageID = &m.ID
 	}
 	appendEvent := func(kind string, delta *string, problem *contract.Error, usage *contract.Usage) error {
 		_, err := s.Store.Append(writeCtx, contract.Event{ConversationID: m.ThreadID, Type: kind, MessageID: &m.ID, AgentID: &a.id, RunID: &run.ID, Text: delta, Error: problem, Usage: usage}, &m)
@@ -965,7 +977,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	a.mu.Lock()
 	d, revision := a.definition, a.revision
 	sess := a.session
-	isolated := work.Trigger == "peer" || automatic(work.Trigger)
+	isolated := delegated || automatic(work.Trigger)
 	if isolated {
 		sess = nil
 	}
@@ -983,7 +995,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	state.external = map[string]bool{}
 	state.classes = map[string]ToolClass{}
 	state.known = map[string]bool{}
-	if s.config.Devices != nil && a.threadID == "" && work.Trigger != "peer" {
+	if s.config.Devices != nil && a.threadID == "" && !delegated {
 		state.external["control_device"] = true
 		state.known["control_device"] = true
 	}
@@ -1023,6 +1035,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		var pathErr error
 		if isolated {
 			d.Scope = fmt.Sprintf("peer-%x", sha256.Sum256([]byte(work.DeliveryID)))
+			if work.Trigger == "child" {
+				d.Scope = fmt.Sprintf("child-%x", sha256.Sum256([]byte(run.ID)))
+			}
 			if automatic(work.Trigger) {
 				d.Scope = run.ConversationID
 				d.Ephemeral, d.Automatic = true, true
@@ -1046,18 +1061,18 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				d.ExtraTools = nil
 			} else {
 				d.ExtraTools = slices.Clone(d.ExtraTools)
-				if s.config.Devices != nil && a.threadID == "" && work.Trigger != "peer" {
+				if s.config.Devices != nil && a.threadID == "" && !delegated {
 					d.ExtraTools = append(d.ExtraTools, &controlTool{broker: s.config.Devices, agent: a.id})
 				}
 				if !d.Automatic {
 					d.ExtraTools = append(d.ExtraTools,
-						&peerTool{server: s, handoff: a.threadID != ""}, &routineTool{server: s}, &triggerTool{server: s})
+						&peerTool{server: s, handoff: a.threadID != ""}, &spawnTool{server: s}, &routineTool{server: s}, &triggerTool{server: s})
 				}
 				if work.Trigger == "message" && a.threadID == "" {
 					d.ExtraTools = append(d.ExtraTools, &integrationTool{server: s})
 					state.external["manage_integrations"] = true
 				}
-				if work.Trigger != "peer" {
+				if !delegated {
 					d.ExtraTools = append(d.ExtraTools, &workTool{store: s.Store})
 					if work.Trigger != "review" {
 						d.ExtraTools = append(d.ExtraTools, &taskTool{server: s})
@@ -1110,6 +1125,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		})
 	}
 	var result agentruntime.Result
+	var submissionID int64
 	var content strings.Builder
 	var pending strings.Builder
 	var lastFlush time.Time
@@ -1179,9 +1195,57 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		err = setActivity("generating", "Composing reply")
 	}
 	if err == nil {
-		result, err = sess.Send(runCtx, user, func(delta agentruntime.Delta) error {
+		aborted := make(chan struct{})
+		// Durable work outlives Send's wait context until the session is aborted.
+		stopAbort := context.AfterFunc(runCtx, func() {
+			defer close(aborted)
+			// Only a resumable tool result may skip abort. Other runs still abort so shutdown settles them.
+			if ctx.Err() != nil {
+				check, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+				stored, loadErr := s.Store.Run(check, run.ID)
+				ready := loadErr == nil && stored.Attempt <= 1 && s.Store.ResumeReady(check, stored)
+				stop()
+				if ready {
+					return
+				}
+			}
+			abortCtx, end := context.WithTimeout(context.WithoutCancel(runCtx), time.Second)
+			defer end()
+			if e := sess.Abort(abortCtx); e != nil && !errors.Is(e, context.Canceled) {
+				s.config.Log.Warn("abort stopped session", "error", e)
+			}
+		})
+		turn := sess.Send
+		if continuing {
+			if submissionID == 0 {
+				if id, ok := s.Store.Submission(writeCtx, run.ID); ok {
+					submissionID = id
+				}
+			}
+			resumed, ok := sess.(interface {
+				Resume(context.Context, int64, func(agentruntime.Delta) error) (agentruntime.Result, error)
+			})
+			if !ok {
+				turn = func(context.Context, contract.Message, func(agentruntime.Delta) error) (agentruntime.Result, error) {
+					return agentruntime.Result{}, errors.New("session cannot resume a saved tool result")
+				}
+			} else {
+				turn = func(ctx context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
+					return resumed.Resume(ctx, submissionID, emit)
+				}
+			}
+		}
+		result, err = turn(runCtx, user, func(delta agentruntime.Delta) error {
 			messageMu.Lock()
 			defer messageMu.Unlock()
+			if delta.Kind == "submission" {
+				id, convErr := strconv.ParseInt(delta.ToolID, 10, 64)
+				if convErr != nil {
+					return convErr
+				}
+				submissionID = id
+				return s.Store.SaveSubmission(writeCtx, run.ID, id)
+			}
 			if e := runCtx.Err(); e != nil {
 				return e
 			}
@@ -1317,6 +1381,20 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			}
 			return nil
 		})
+		if !stopAbort() {
+			<-aborted
+		}
+	}
+	if background && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		err = errors.Join(err, runCtx.Err())
+		if sess != nil {
+			// Durable generation outlives Send's wait unless explicitly aborted.
+			abortCtx, stop := context.WithTimeout(writeCtx, 5*time.Second)
+			if e := sess.Abort(abortCtx); e != nil {
+				s.config.Log.Warn("abort stuck work", "error", e)
+			}
+			stop()
+		}
 	}
 	messageMu.Lock()
 	accepting = false
@@ -1370,6 +1448,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		err = nil
 	} else if errors.Is(err, context.Canceled) {
 		// keep cancel handling below
+	}
+	// Leave a saved tool result running so the next process can resume it once.
+	if err != nil && ctx.Err() != nil && run.Attempt <= 1 && s.Store.ResumeReady(writeCtx, run) {
+		messageMu.Unlock()
+		return contract.Message{}
 	}
 	if err == nil {
 		if result.Text != "" && result.Text != content.String() {
@@ -1446,10 +1529,18 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		}
 		if ctx.Err() != nil {
 			code, message, run.Status, run.Summary = "interrupted", "The server stopped during this reply. Review before retrying.", "interrupted", "Execution interrupted"
+			if run.Attempt > 1 {
+				message = "The server restarted again during resume. Review before retrying."
+			}
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = "timeout"
 			message = "The model took too long to reply."
+			if background {
+				// Agent context only. The parent follow-up speaks to the user.
+				message = "The background task timed out and was stopped."
+				run.Summary = "Background work timed out"
+			}
 		}
 		run.Error = &contract.Error{Code: code, Message: message}
 	}
@@ -1485,6 +1576,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		finalized = true
 	}
 	messageMu.Unlock()
+	if finalized && endsChildren(run.Status) {
+		s.cancelTree(writeCtx, run.ID)
+	}
 	if err != nil {
 		s.config.Log.Warn("agent reply", "id", user.ID, "error", err)
 	}
@@ -1506,6 +1600,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if finalized && work.DeliveryID != "" {
 		if e := s.Store.Receipt(writeCtx, work.DeliveryID, run, m); e != nil {
 			s.config.Log.Error("publish peer result", "error", e)
+		} else if work.ParentRunID != nil {
+			if origin, e := s.Store.Run(writeCtx, *work.ParentRunID); e == nil && endsChildren(origin.Status) {
+				s.cancelTree(writeCtx, origin.ID)
+			}
 		}
 	}
 	if chain, _ := parent.Value(chainKey{}).(*chainState); finalized && chain != nil && handed && run.Status == "completed" {
@@ -1523,6 +1621,23 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 }
 
 func pointer(text string) *string { return &text }
+
+func endsChildren(status string) bool {
+	return status == "failed" || status == "cancelled" || status == "interrupted"
+}
+
+func (s *Server) cancelTree(ctx context.Context, id string) {
+	ids, err := s.Store.DescendantIDs(ctx, id)
+	if err != nil {
+		s.config.Log.Error("cancel child runs", "error", err)
+		return
+	}
+	for _, child := range ids {
+		if active, ok := s.turns.Load(child); ok {
+			active.(*execution).cancel()
+		}
+	}
+}
 
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<20)

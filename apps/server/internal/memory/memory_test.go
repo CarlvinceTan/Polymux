@@ -162,3 +162,83 @@ func TestDeleteCancelledCloseRetainsHandle(t *testing.T) {
 		t.Fatal("close could not settle on retry", err)
 	}
 }
+
+func TestIdenticalWrites(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	s := New(root)
+	t.Cleanup(func() { s.Close() })
+	first, err := s.Save(t.Context(), "a", "chat", Document{Name: "preference", Text: "Short replies", Source: "user-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := s.Save(t.Context(), "a", "chat", Document{Name: "style", Text: first.Text, Source: "user-2"})
+	if err != nil || duplicate != first {
+		t.Fatal("duplicate changed canonical record", duplicate, err)
+	}
+	for _, scope := range []struct{ owner, scope string }{{"a", "other"}, {"b", "chat"}} {
+		if _, err := s.Save(t.Context(), scope.owner, scope.scope, Document{Name: "style", Text: first.Text}); err != nil {
+			t.Fatal("duplicate crossed scope", err)
+		}
+		items, err := s.List(t.Context(), scope.owner, scope.scope)
+		if err != nil || len(items) != 1 || items[0].Name != "style" {
+			t.Fatal("scope missing its own record", items, err)
+		}
+	}
+	other, err := s.Save(t.Context(), "a", "chat", Document{Name: "other", Text: "Detailed replies"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Text = first.Text
+	stale := other
+	stale.Revision = "stale"
+	if _, err := s.Save(t.Context(), "a", "chat", stale); !errors.Is(err, ErrConflict) {
+		t.Fatal("dedupe bypassed revision check", err)
+	}
+	merged, err := s.Save(t.Context(), "a", "chat", other)
+	if err != nil || merged != first {
+		t.Fatal("edit did not merge identical content", merged, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s = New(root)
+	items, err := s.List(t.Context(), "a", "chat")
+	if err != nil || len(items) != 1 || items[0] != first {
+		t.Fatal("reopened duplicates", items, err)
+	}
+	if err := s.Forget(t.Context(), "a", "chat", first.Name, first.Revision); err != nil {
+		t.Fatal("canonical revision unusable", err)
+	}
+	items, err = s.List(t.Context(), "a", "chat")
+	if err != nil || len(items) != 0 {
+		t.Fatal("forgotten fact still recalled", items, err)
+	}
+}
+
+func TestConcurrentDuplicates(t *testing.T) {
+	t.Parallel()
+	s := New(t.TempDir())
+	defer s.Close()
+	results := make(chan Document, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, name := range []string{"first", "second"} {
+		wg.Go(func() {
+			doc, err := s.Save(t.Context(), "a", "chat", Document{Name: name, Text: "Same fact"})
+			results <- doc
+			errs <- err
+		})
+	}
+	wg.Wait()
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, second := <-results, <-results
+	items, err := s.List(t.Context(), "a", "chat")
+	if err != nil || first != second || len(items) != 1 || items[0] != first {
+		t.Fatal("concurrent writes duplicated fact", first, second, items, err)
+	}
+}

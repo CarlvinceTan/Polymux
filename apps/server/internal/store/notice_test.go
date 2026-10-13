@@ -71,7 +71,7 @@ func TestFailedPushRetriesWithBackoffAndThenStops(t *testing.T) {
 		if err != nil {
 			t.Fatalf("attempt %d not claimable: %v", attempt, err)
 		}
-		if err := s.FinishPush(t.Context(), push, "failed"); err != nil {
+		if err := s.FinishPush(t.Context(), push, PushResult{State: "failed"}); err != nil {
 			t.Fatal(err)
 		}
 		if attempt < PushAttempts {
@@ -89,6 +89,34 @@ func TestFailedPushRetriesWithBackoffAndThenStops(t *testing.T) {
 	var state string
 	if err := s.DB.QueryRowContext(t.Context(), `SELECT state FROM push_queue`).Scan(&state); err != nil || state != "failed" {
 		t.Fatalf("terminal state %q %v", state, err)
+	}
+}
+
+func TestPushRetriesOnce(t *testing.T) {
+	s := runStore(t)
+	device := contract.PushDevice{ID: "fixture-installation", Token: strings.Repeat("ab", 32), Environment: "sandbox", Server: "http://server.test:7337", Enabled: true}
+	if err := s.RegisterPush(t.Context(), device); err != nil {
+		t.Fatal(err)
+	}
+	text := "Fixture notice"
+	m := contract.Message{ID: "once", ThreadID: "a", AgentID: ptr("a"), Role: "assistant", Status: "done", CreatedAt: Now(), Parts: []contract.Part{{Kind: "text", Text: &text}}}
+	if _, err := s.Append(t.Context(), contract.Event{ConversationID: "a", Type: "message.start"}, &m); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		push, err := s.ClaimPush(t.Context())
+		if err != nil {
+			t.Fatalf("retry missing: %v", err)
+		}
+		if err := s.FinishPush(t.Context(), push, PushResult{State: "failed"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.DB.ExecContext(t.Context(), `UPDATE push_queue SET retry_at=NULL`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.ClaimPush(t.Context()); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("push retried more than once")
 	}
 }
 

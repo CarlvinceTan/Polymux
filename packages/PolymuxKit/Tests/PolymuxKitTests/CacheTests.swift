@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
-@Suite @MainActor
+@Suite
 struct CacheTests {
     private func location() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("polymux-tests-\(UUID())/cache.sqlite")
@@ -158,5 +158,13 @@ struct CacheTests {
         #expect(WireDate.parse("2026-10-09T10:00:00Z") != nil)
         #expect(WireDate.parse("2026-10-09T10:00:00.123456789Z") != nil)
         #expect(WireDate.parse(WireDate.string()) != nil)
+    }
+
+    @Test func wireDateParseIsStableUnderRepeatedUse() {
+        let stamp = "2026-10-09T10:00:00.123Z"
+        let expected = WireDate.parse(stamp)
+        for _ in 0..<500 {
+            #expect(WireDate.parse(stamp) == expected)
+        }
     }
 }
