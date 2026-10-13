@@ -1,0 +1,15 @@
+{
+  "agent_overlay_capture": {
+    "status": "not_present"
+  },
+  "capture_id": "capture_5383ad30674a4a48ab2c3293d8d0c95d_0000000000000158",
+  "display": "primary",
+  "platform": "macos",
+  "scale_factor": 1.0,
+  "screen_height": 1080,
+  "screen_width": 1920,
+  "screenshot_file_path": "/Users/carlvincetan/code/wt/lane3-done-1-fix-pr-181-real-capture-o/.proof/done-1-attempt5/desktop-after-turn.png",
+  "screenshot_height": 1080,
+  "screenshot_mime_type": "image/png",
+  "screenshot_width": 1920
+}

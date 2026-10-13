@@ -1,0 +1,5 @@
+- [0] AXWindow [id=SwiftUI.WindowGroup<SwiftUI.ModifiedContent<SwiftUI.ModifiedContent<Polymux.AppRoot, SwiftUI._EnvironmentKeyWritingModifier<Swift.Optional<SwiftUI.AnyShapeStyle>>>, SwiftUI._FlexFrameLayout>>-1-AppWindow-1 actions=[raise]]
+  - AXHeading (Notifications)
+  - AXStaticText = "Allow notifications"
+  - AXStaticText = "Couldn’t update notification permission."
+

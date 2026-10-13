@@ -1,0 +1,33 @@
+[
+  {
+    "id": "done-1-attempt5-20261013",
+    "threadID": "1154a776-9b21-4ac6-948d-598c5b2b29d7",
+    "role": "user",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Reply exactly: DONE-1 capture check complete. Do not use tools or change files."
+      }
+    ],
+    "createdAt": "2026-10-13T10:47:35.36401Z",
+    "status": "done",
+    "seq": 126
+  },
+  {
+    "runID": "run:992641be429aebe8de9e7617eeebd5ec53fcf19391309ca1b2f06197a27c4b39",
+    "id": "reply:run:992641be429aebe8de9e7617eeebd5ec53fcf19391309ca1b2f06197a27c4b39",
+    "threadID": "1154a776-9b21-4ac6-948d-598c5b2b29d7",
+    "role": "assistant",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "DONE-1 capture check complete."
+      }
+    ],
+    "createdAt": "2026-10-13T10:47:35.547478Z",
+    "status": "done",
+    "seq": 131,
+    "replyToID": "done-1-attempt5-20261013",
+    "agentID": "1154a776-9b21-4ac6-948d-598c5b2b29d7"
+  }
+]

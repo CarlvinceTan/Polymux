@@ -1,0 +1,4 @@
+Timestamp               Ty Process[PID:TID]
+2026-10-13 18:46:01.774 Df Polymux[55237:1bdf3ef] [com.apple.UserNotifications:Connections] [com.flarehq.polymux.app] Creating a user notification center
+2026-10-13 18:47:05.699 Df Polymux[55237:1bdf3ef] [com.apple.UserNotifications:Connections] [com.flarehq.polymux.app] Requesting authorization with options 7
+2026-10-13 18:47:05.714 Df Polymux[55237:1bdf5bf] [com.apple.UserNotifications:Connections] [com.flarehq.polymux.app] Requested authorization [ didGrant: 0 hasError: 1 hasCompletionHandler: 1 ]
