@@ -67,7 +67,7 @@ while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2
 TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32 | sed 's/-*$//')   # '# SA1: x' -> sa1-x (no leading '-')
 ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
 prompt() { echo "Task: $TASK
-Rules: work only in this worktree. Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
+Rules: work only in this worktree. Never search or list outside it (no ls, find or grep above it; no \$HOME scans). Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
@@ -87,11 +87,22 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
       K=$(vault get "$KT" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       # Key only in this child's environment: never argv (ps), never exported, keychain untouched.
       (cd "$2" && HOME="${H:-$HOME}" CURSOR_API_KEY="$K" "$cmd" -p --force --trust --workspace "$2" --output-format text "$P") >> "$3" 2>&1;;
-    # No workspace-write sandbox (tested 13 Oct, codex 0.162 seatbelt, network on, .git common dir +
-    # ~/ops/lanes as writable roots): .git stays read-only inside the sandbox, so the agent can't
-    # commit, and simctl/CoreSimulator XPC is refused, so verify.sh (iOS sim build) fails. Re-test
-    # before tightening. (--full-auto no longer exists in codex exec.)
-    codex) (cd "$2" && "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
+    # codex has no per-lane home (unlike cursor): the child gets a scratch HOME inside the worktree
+    # (.build/lanehome, git-ignored) so anything it or its shell reaches via $HOME stays in the
+    # worktree. On 14 Oct 00:56 a run with the real HOME prompted TCC for Downloads, Documents,
+    # Music and Photos; those dialogs block XCUITest alert handling. Auth stays in the real
+    # CODEX_HOME, gh/git config stay reachable through GH_CONFIG_DIR/GIT_CONFIG_GLOBAL, and .local
+    # is linked so verify.sh still finds the go toolchain at $HOME/.local/go.
+    # workspace-write re-tested 14 Oct (codex 0.162.1, network on): the agent still cannot commit
+    # ("index.lock: Operation not permitted" under the worktree gitdir, with -c
+    # sandbox_workspace_write.writable_roots=[git common dir, ~/ops/lanes] or --add-dir), and
+    # simctl/CoreSimulator XPC is refused, so verify.sh cannot pass in the sandbox; keep
+    # danger-full-access. Re-test before tightening. (--full-auto no longer exists in codex exec.)
+    codex) local LH="$2/.build/lanehome" RH=$HOME
+      mkdir -p "$LH"; [ -e "$LH/.local" ] || [ -L "$LH/.local" ] || ln -s "$RH/.local" "$LH/.local"
+      (cd "$2" && HOME="$LH" CODEX_HOME="${CODEX_HOME:-$RH/.codex}" \
+        GH_CONFIG_DIR="${GH_CONFIG_DIR:-$RH/.config/gh}" GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$RH/.gitconfig}" \
+        "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
     opencode) (cd "$2" && "$cmd" run "$P") >> "$3" 2>&1;;
     *) echo "unknown agent $a" >> "$3"; return 99;;
   esac
