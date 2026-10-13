@@ -106,10 +106,10 @@ check "empty-pid lock past grace is reclaimed" '(. scripts/lanelib.sh; lock_take
 check "_mtime/_age are numeric" '(. scripts/lanelib.sh; [ "$(_age "$E")" -ge 0 ] 2>/dev/null)'
 # fake lane-guard: logs every call to $GLOG.all; for --dispatch logs "<args> lock=yes|no" (a unit lock
 # still held at call time) to $GLOG; GSLEEP=n makes --dispatch sleep n s, log "done" and exit 1.
-mkguard() { printf '#!/bin/sh\n# %s\necho "$*" >> "$GLOG.all"\n[ "$1" = --dispatch ] || exit 0\nl=no; ls -d "$LANES_HOME"/units/*.lock >/dev/null 2>&1 && l=yes\necho "$* lock=$l" >> "$GLOG"\n[ -n "${GSLEEP:-}" ] && { sleep "$GSLEEP"; echo done >> "$GLOG"; exit 1; }\nexit 0\n' "$2" > "$1"; chmod +x "$1"; }
+mkguard() { printf '#!/bin/sh\n[ "$1" = --help ] && { echo "usage: %s"; exit 2; }\necho "$*" >> "$GLOG.all"\n[ "$1" = --dispatch ] || exit 0\nl=no; ls -d "$LANES_HOME"/units/*.lock >/dev/null 2>&1 && l=yes\necho "$* lock=$l" >> "$GLOG"\n[ -n "${GSLEEP:-}" ] && { sleep "$GSLEEP"; echo done >> "$GLOG"; exit 1; }\nexit 0\n' "$2" > "$1"; chmod +x "$1"; }
 waitfor() { local k; for k in $(seq 1 50); do grep -q -- "$2" "$1" 2>/dev/null && return 0; sleep 0.1; done; return 1; }   # ~5 s
 ndisp() { cat "$1" 2>/dev/null | grep -c -- '^--dispatch'; }
-FG="$T/fake-guard"; mkguard "$FG" "plain"; FGF="$T/fake-guard-fl"; mkguard "$FGF" "supports --free-lane"; CL="$LANES_HOME/logs/dispatch-chain.log"
+FG="$T/fake-guard"; mkguard "$FG" "lane-guard --dispatch [lane]"; FGF="$T/fake-guard-fl"; mkguard "$FGF" "supports --free-lane"; CL="$LANES_HOME/logs/dispatch-chain.log"
 # 17 failover: no --dispatch while the unit runs, exactly one at its end
 export GLOG="$T/g17"
 OUT=$(LANE_GUARD="$FG" LANE_FORCE_FAIL=laneA LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Failover guard' t8)" 2>&1); waitfor "$GLOG" dispatch

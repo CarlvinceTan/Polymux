@@ -3,6 +3,7 @@
 B="$T/bb"; mkdir -p "$B" "$T/gl"; BLOG="$LANES_HOME/board.log"; BU="bash scripts/board-update.sh"
 export GOAL_LOOP_HOME="$T/gl" BOARD_T="$T"; BP="$B:$T/bin:$PATH"
 cp "$SRC"/scripts/{board-update.sh,media-check.py} scripts/
+command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || check "test-board needs ffmpeg + ffprobe (run scripts/bootstrap-mac.sh)" false
 printf '#!/bin/sh\necho "{\\"password\\":\\"SECRET-TOK\\"}"\n' > "$B/vault"
 printf '#!/bin/sh\ncase "$*" in "pr view"*) echo 2026-10-13T01:00:00Z;; esac\nexit 0\n' > "$B/gh"
 cat > "$B/curl" <<'STUB'
@@ -75,9 +76,14 @@ printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBo
 PATH=$BP LANE_FORCE_FAIL="laneA laneB" $RL laneA "$T/bf.task" >/dev/null 2>&1
 check "run-lane: no start without work; final failure -> Verification failed only" '! grep -q "board-fails start" "$BLOG" && grep -q "board-fails verify: DRY-RUN .*Verification: .. -> .failed." "$BLOG"'
 printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard works\n' > "$T/bw.task"
-PATH=$BP LANE_DRY=1 LANE_STUB_CMD="sleep 2; grep -q \"board-works start\" \"$BLOG\" && echo early > \"$T/bw.seen\"; printf %s \"\$PROMPT\" > \"$T/bw.prompt\"; $STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
+PATH=$BP LANE_DRY=1 LANE_STUB_CMD="sleep 2; grep -q \"board-works start\" \"$BLOG\" && echo early > \"$T/bw.seen\"; $STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
 check "run-lane: start not written before the agent works, written after its first commit" '[ ! -f "$T/bw.seen" ] && grep -q "board-works start: DRY-RUN .*-> .In Progress." "$BLOG"'
-check "run-lane: agent prompt asks it to review the shots and write .build/approved" 'grep -q "open every screenshot and video" "$T/bw.prompt" && grep -q "to .build/approved" "$T/bw.prompt"'
+# approve-proof.sh: reviewer approves viewed files; then the board append runs (dry: no BOARD_LIVE)
+AW="$HOME/code/wt/laneA-approve-me"; AP="$AW/.build/proof"; mkdir -p "$AP"; cp "$P5/fresh.png" "$AP/"; echo fresh.png > "$AP/uploaded"
+echo https://github.com/o/r/raw/proof-media/run8 > "$AP/url-base"; echo UI-verified > "$AP/level"; echo laneA-approve-me > "$LANES_HOME/cards/approve-me.wt"; echo 11111111-2222-3333-4444-666666666666 > "$LANES_HOME/cards/approve-me"
+cp "$SRC/scripts/approve-proof.sh" scripts/; rm -f "$LANES_HOME/BOARD_LIVE"; : > "$BLOG"
+PATH=$BP bash scripts/approve-proof.sh "$AW" nope.png >/dev/null 2>&1; A1=$?; PATH=$BP bash scripts/approve-proof.sh "$AW" fresh.png >/dev/null 2>&1; A2=$?
+check "approve-proof: unknown file refused, viewed file approved and board append runs" '[ $A1 != 0 ] && [ $A2 = 0 ] && [ "$(cat "$AP/approved")" = fresh.png ] && grep -q "approve-me verify: DRY-RUN would append .*run8/fresh.png" "$BLOG"'
 touch "$LANES_HOME/BOARD_LIVE"; echo Review > "$T/cur"; : > "$T/curl.log"; : > "$BLOG"; C=$LANES_HOME/cards
 echo 11111111-2222-3333-4444-555555555555 | tee "$C/board-done" > "$C/done"; echo laneA-board-done > "$C/board-done.wt"; echo other > "$C/done.wt"
 printf '2026-10-13 11:00:00\t10131100-board-done\thttps://github.com/o/r/pull/7\tabc\tUI-verified\n' >> "$LANES_HOME/results.tsv"

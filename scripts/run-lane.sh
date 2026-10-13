@@ -26,7 +26,7 @@ publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own 
   [ $rc = 0 ] && (cd "$wt/.build/proof" && ls *.png *.mp4 2>/dev/null) > "$wt/.build/proof/uploaded"   # board appends only these
   if [ $rc -ne 0 ]; then echo "proof push failed ($ref): $err" >&2
     echo "_media upload to \`$ref\` failed: $(echo "$err" | tail -1 | cut -c1-200)_"; return; fi
-  local u="https://github.com/$SLUG_REPO/raw/$ref"
+  local u="https://github.com/$SLUG_REPO/raw/$ref"; echo "$u" > "$wt/.build/proof/url-base"   # for approve-proof.sh
   for f in "$wt"/.build/proof/*.png; do [ -f "$f" ] && echo "![$(basename "$f")]($u/$(basename "$f"))"; done
   [ -f "$wt/.build/proof/ios.mp4" ] && echo "[iOS video]($u/ios.mp4)"
 }
@@ -60,10 +60,7 @@ Rules: work only in this worktree. Keep the change small and scoped.${SCOPE:+ On
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
-needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it under ~300 changed lines. If you cannot make verify.sh pass, say why and stop.
-Proof review: after your last verify.sh run, open every screenshot and video in .build/proof and write the
-names of the ones that really show this change (one per line, e.g. ready-main.png) to .build/approved.
-Nothing listed means no proof media goes on the board card."; }
+needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it under ~300 changed lines. If you cannot make verify.sh pass, say why and stop."; }
 run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer name.
   local a cmd P; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd); P=$(prompt "$1")
   export GIT_COMMITTER_NAME="$(git -C "$2" config user.name || echo agent) ($1/$a)"
@@ -93,13 +90,14 @@ lock_take "$UL" || { echo "unit '$SLUG' already has a writer (pid $(lock_holder 
 # Background, non-fatal, never changes our exit code. LANE_NO_CHAIN=1 disables it.
 # No chain when: stopped by SIGINT/SIGTERM (Ctrl-C, launchd stop); a failed unit ran < LANE_CHAIN_MIN_S
 # (default 120 s); or this is the 2nd+ failed unit end in a row ($OPS/chain-fails, reset by a success),
-# so an outage can't drain the queue into NEEDS_CODY.
+# so an outage can't drain the queue into NEEDS_CODY. Reset by hand after fixing the outage:
+#   echo 0 > ~/ops/lanes/chain-fails     (or delete it; the next successful unit also resets it)
 # The call runs under the lanelib lock $OPS/dispatch-chain.lock (one chained dispatch at a time; if it
 # is held, one is already running and we skip). lane-guard --dispatch also takes its own
 # $OPS/dispatch.lock, shared with the launchd tick, and exits 0 if that is held. When no slot is free
 # (units/*.lock count >= max_builds) or every lane is busy, lane-guard logs that and exits 0 before
 # touching the queue: a no-op. Our unit/branch locks are dropped first, so this unit isn't counted.
-# The freed lane is passed as --free-lane only if lane-guard supports that flag (today it doesn't;
+# The freed lane is passed as --free-lane only if 'lane-guard --help' lists that flag (today it doesn't;
 # the positional 'lane-guard --dispatch <lane>' forces that lane with no busy check, so we don't use it).
 UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE
 chain_ok() { local rc=$1 n k
@@ -110,7 +108,7 @@ chain_ok() { local rc=$1 n k
   [ $(( $(date +%s) - UNIT_T0 )) -ge "${LANE_CHAIN_MIN_S:-120}" ] && [ $n -lt 2 ]; }
 next_dispatch() { { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
   chain_ok "$1" || { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (signal, short failure or fail streak)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
-  local fl=""; grep -q -- '--free-lane' "$LANE_GUARD" 2>/dev/null && fl="--free-lane $FREED"
+  local fl=""; { "$LANE_GUARD" --help 2>&1 </dev/null || true; } | grep -q -- '--free-lane' && fl="--free-lane $FREED"
   nohup bash -c '. "$1"; lock_take "$2" || exit 0; trap "lock_drop \"$2\"" EXIT; shift 2; "$@"' _ \
     "$SD/lanelib.sh" "$OPS/dispatch-chain.lock" "$LANE_GUARD" --dispatch $fl >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null &
   return 0; }
@@ -149,7 +147,6 @@ for L in $(cfg order "$LANE"); do
     git -C "$WT" log --format=%B "$BASE"..HEAD | grep -qE '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" bash "$SD/verify.sh") >> "$LOG" 2>&1; VRC=$?
-  [ -f "$WT/.build/approved" ] && cp "$WT/.build/approved" "$WT/.build/proof/approved"   # verify.sh wipes proof/; the agent's review list survives
   [ -x ~/.local/bin/lane-guard ] && { ~/.local/bin/lane-guard --task-end "$L" "$ID" "$VRC" "$LOG" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
   [ $VRC = 0 ] || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
