@@ -59,6 +59,14 @@ OUT=$(LANE_DRY=1 LANE_KILL_WAIT=2 LANE_STUB_CMD='( set -m; sleep 300 & echo $! >
 OP=$(cat "$T/orphan.pid" 2>/dev/null); sleep 0.5
 check "attempt end reaps a worktree process outside the agent group" '[ $RC = 0 ] && [ -n "$OP" ] && ! kill -0 "$OP" 2>/dev/null && grep -q "reap: TERM leftover pids" "$LANES_HOME"/logs/*orphan-reap-laneA.log'
 [ -n "$OP" ] && kill "$OP" 2>/dev/null
+# 2g SIGPIPE: a match early in a long output must still count under pipefail (was rc 141 -> "no Size-reason")
+( . scripts/lanelib.sh; set -o pipefail
+  { echo "Size-reason: big refactor"; seq 1 400000; } | out_has '^Size-reason: *[^ ]' || exit 1
+  { echo "branch refs/heads/x"; seq 1 400000; } | out_has -x "branch refs/heads/x" || exit 2
+  { seq 1 400000; } | out_has '^Size-reason:' && exit 3
+  { echo "Size-reason: big"; seq 1 400000; } | grep -qE '^Size-reason:'; [ $? = 0 ] || echo "(note: bare grep -q gave a non-zero status here, the bug out_has avoids)" >&2
+  exit 0 ); RC=$?
+check "out_has: early match in a 400k-line pipe is found under pipefail (no SIGPIPE false negative)" '[ $RC = 0 ]'
 # 3 stop rule
 cp "$T/t2b.task" "$T/t3.task"; $RL laneA "$T/t3.task" >/dev/null 2>&1; RC=$?
 check "stop rule refuses a twice-failed brief (exit 2)" '[ $RC = 2 ]'

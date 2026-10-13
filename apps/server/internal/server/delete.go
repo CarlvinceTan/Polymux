@@ -185,5 +185,27 @@ func (s *Server) removeAgent(ctx context.Context, id string, a *actor, groups ..
 			}
 		}
 	}
+	var workspace string
+	if a != nil {
+		a.mu.Lock()
+		workspace = a.definition.Workspace
+		a.mu.Unlock()
+	}
+	if workspace != "" {
+		// The agent's own chat, plus any group thread this deletion emptied. A
+		// dirty checkout is left in place; the warning names the reason.
+		threads := []string{id}
+		for _, group := range groups {
+			if _, err := s.Store.Thread(ctx, group.id); err == nil {
+				continue
+			}
+			threads = append(threads, group.id)
+		}
+		for _, thread := range threads {
+			if err := s.worktrees.Remove(ctx, workspace, id, thread); err != nil {
+				s.config.Log.Warn("remove conversation worktree", "thread", thread, "error", err)
+			}
+		}
+	}
 	return true, cleanupErr
 }

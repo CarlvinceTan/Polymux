@@ -36,7 +36,10 @@ scope_check() {
 lock_holder() { cat "$1/pid" 2>/dev/null; }
 lock_drop() { [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] && rm -rf "$1"; return 0; }
 # Lane scripts changed between BASE and HEAD in the current repo?
-lane_files_changed() { git diff --name-only "$1"...HEAD | grep -qE '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write)\.sh|scripts/(lanes|media-check|verdict)\.py|agents/lanes\.toml)$'; }
+# out_has [grep -E opts] PATTERN: does stdin have a matching line? Reads ALL of stdin first, so the writer
+# never gets SIGPIPE. (`cmd | grep -q` under pipefail returns 141 when grep exits early on a long output.)
+out_has() { local s; s=$(cat); grep -qE "$@" <<< "$s"; }
+lane_files_changed() { git diff --name-only "$1"...HEAD | out_has '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write)\.sh|scripts/(lanes|media-check|verdict)\.py|agents/lanes\.toml)$'; }
 # test-lanes.sh to run: the checkout under test (a PR's own worktree in --verify-only), else ours.
 lane_tests_path() { if [ -f "$1/scripts/test-lanes.sh" ]; then echo "$1/scripts/test-lanes.sh"; else echo "$2/test-lanes.sh"; fi; }
 branch_lock_dir() { echo "${LANES_HOME:-$HOME/ops/lanes}/branches/$(echo "$1" | tr '/' '%').lock"; }
@@ -62,7 +65,7 @@ in_use() {  # $1 worktree path. Needs LOCKS (lanes.toml lock_dir) and OPS; same 
 # cwd_in_use PATH: 0 = a process has its cwd in PATH, 1 = none, 2 = can't tell (lsof missing/failed): callers fail closed.
 cwd_in_use() { local out rc r; command -v lsof >/dev/null 2>&1 || return 2
   out=$(lsof -d cwd -Fn 2>/dev/null); rc=$?; [ $rc != 0 ] && [ -z "$out" ] && return 2
-  r=$(cd "$1" 2>/dev/null && pwd -P); printf '%s\n' "$out" | grep -qE "^n($1|${r:-$1})(/|\$)" && return 0; return 1; }
+  r=$(cd "$1" 2>/dev/null && pwd -P); printf '%s\n' "$out" | out_has "^n($1|${r:-$1})(/|\$)" && return 0; return 1; }
 # wt_pids PATH: pids whose cwd is PATH or below (lsof -d cwd), one per line; never this shell or its parent.
 wt_pids() { local r; r=$(cd "$1" 2>/dev/null && pwd -P); command -v lsof >/dev/null 2>&1 || return 2
   lsof -d cwd -Fpn 2>/dev/null | awk -v a="$1" -v b="${r:-$1}" -v me="$$" -v pp="$PPID" '
