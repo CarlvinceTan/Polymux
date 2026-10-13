@@ -36,6 +36,8 @@ git -C "$REPO" worktree list --porcelain | awk '/^worktree /{print $2}' | while 
   if [ "$BR" != HEAD ] && [ -n "$(git -C "$W" log --oneline "origin/$BR..HEAD" 2>/dev/null || git -C "$W" log --oneline origin/main..HEAD)" ]; then
     keep "$W" "unpushed commits on $BR"; continue; fi
   MERGED=0; git -C "$W" merge-base --is-ancestor HEAD origin/main && MERGED=1
+  if [ "$BR" = HEAD ] && [ $MERGED = 0 ] && [ -z "$(git -C "$W" branch -r --contains HEAD 2>/dev/null)" ]; then
+    keep "$W" "detached HEAD not on any remote branch"; continue; fi
   AGE=$(( ( $(date +%s) - $(last_activity "$W") ) / 86400 ))
   [ $MERGED = 1 ] || [ $AGE -ge $DAYS ] || { keep "$W" "active, ${AGE}d old"; continue; }
   echo "remove: $W (merged=$MERGED age=${AGE}d)"
