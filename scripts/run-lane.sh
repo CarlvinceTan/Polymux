@@ -1,0 +1,76 @@
+#!/bin/bash
+# run-lane.sh <lane> "<task>" [--branch B] [--base origin/main]
+# run-lane.sh --verify-only <branch>     (Mac proof for cloud-agent PRs)
+# Worktree -> headless agent -> our own verify.sh -> push + PR with proof.
+# On failure the task fails over once to the next lane in agents/lanes.toml; after 2
+# failures it writes ~/ops/lanes/failures.tsv + NEEDS_CODY. No daemon, no DB.
+set -uo pipefail
+REPO=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
+OPS=${LANES_HOME:-$HOME/ops/lanes}; mkdir -p "$OPS/logs"; EV="$OPS/events.tsv"
+ev() { printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$1" "${2:-}" "${3:-}" >> "$EV"; }
+cfg() { python3 "$REPO/scripts/lanes.py" "$@"; }
+publish_proof() {  # $1 worktree, $2 tag -> prints markdown with raw media links
+  local wt=$1 tag=$2 idx; idx=$(mktemp); local par
+  git -C "$wt" fetch -q origin proof-media 2>/dev/null && par=$(git -C "$wt" rev-parse FETCH_HEAD)
+  ( cd "$wt"; export GIT_INDEX_FILE=$idx
+    [ -n "${par:-}" ] && git read-tree "$par" || git read-tree --empty
+    for f in .build/proof/*.png .build/proof/*.mp4; do [ -f "$f" ] || continue
+      git update-index --add --cacheinfo "100644,$(git hash-object -w "$f"),$tag/$(basename "$f")"; done
+    c=$(git commit-tree "$(git write-tree)" ${par:+-p $par} -m "proof $tag")
+    git push -q origin "$c:refs/heads/proof-media" ) >/dev/null 2>&1 || { echo "_media upload failed_"; return; }
+  rm -f "$idx"; local u="https://github.com/CarlvinceTan/Polymux/raw/proof-media/$tag"
+  for f in "$wt"/.build/proof/*.png; do [ -f "$f" ] && echo "![$(basename "$f")]($u/$(basename "$f"))"; done
+  [ -f "$wt/.build/proof/ios.mp4" ] && echo "[iOS video]($u/ios.mp4)"
+}
+if [ "${1:-}" = "--verify-only" ]; then
+  BR=$2; ID="verify-${BR//\//-}"; WT="$HOME/code/wt/$ID"; ev running verify "$BR"
+  git -C "$REPO" fetch -q origin "$BR" && { [ -d "$WT" ] || git -C "$REPO" worktree add -q --detach "$WT" FETCH_HEAD; }
+  git -C "$WT" checkout -q --detach FETCH_HEAD
+  (cd "$WT" && bash scripts/wt-setup.sh && bash scripts/verify.sh) > "$OPS/logs/$ID.log" 2>&1; rc=$?
+  BODY="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID")"
+  gh pr comment "$BR" -R CarlvinceTan/Polymux --body "Mac proof (cvmini):"$'\n'"$BODY" && ev pr verify "$BR"
+  [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
+fi
+LANE=$1; TASK=$2; shift 2; BASE=origin/main; BRANCH=""
+while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
+SLUG=$(echo "$TASK" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-32 | sed 's/-$//')
+ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}; ev queued "$LANE" "$TASK"
+PROMPT="Task: $TASK
+Rules: work only in this worktree. Keep the change small and scoped. Build and test ONLY via
+'bash scripts/verify.sh' and iterate until it exits 0. Commit your work with a clear message.
+Do not push and do not open a PR. If you cannot make verify.sh pass, say why and stop."
+run_agent() {  # $1 lane, $2 worktree, $3 log
+  local a cmd; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd)
+  case " ${LANE_FORCE_FAIL:-} " in *" $1 "*) echo "forced failure (LANE_FORCE_FAIL test)" >> "$3"; return 97;; esac
+  case $a in
+    cursor) local K; K=$(vault get "$(cfg lane "$1" key)" 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
+      (cd "$2" && "$cmd" -p --force --trust --workspace "$2" --api-key "$K" --output-format text "$PROMPT") >> "$3" 2>&1;;
+    codex) (cd "$2" && "$cmd" exec --full-auto "$PROMPT") >> "$3" 2>&1;;
+    opencode) (cd "$2" && "$cmd" run "$PROMPT") >> "$3" 2>&1;;
+    *) echo "unknown agent $a" >> "$3"; return 99;;
+  esac
+}
+git -C "$REPO" fetch -q origin; TRIED=""; N=0
+for L in $(cfg order "$LANE"); do
+  N=$((N+1)); [ $N -gt 2 ] && break
+  B=$BRANCH; [ $N -gt 1 ] && B="$BRANCH-$L"; WT="$HOME/code/wt/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
+  TRIED="$TRIED $L"; ev running "$L" "$WT"
+  [ -d "$WT" ] || git -C "$REPO" worktree add -q -b "$B" "$WT" "$BASE" >> "$LOG" 2>&1
+  (cd "$WT" && bash scripts/wt-setup.sh) >> "$LOG" 2>&1
+  [ -n "${LANE_PREV:-}" ] && sleep "${LANE_STAGGER:-20}"   # stagger agent launches (keychain race)
+  LANE_PREV=$L
+  run_agent "$L" "$WT" "$LOG"; rc=$?
+  if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
+  [ -n "$(git -C "$WT" log --oneline "$BASE"..HEAD)" ] || { echo "agent made no commit" >> "$LOG"; ev failed "$L" "no commit"; continue; }
+  (cd "$WT" && bash scripts/verify.sh) >> "$LOG" 2>&1 || { ev failed "$L" "verify failed"; continue; }
+  git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
+  BODY="Task: $TASK"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
+  BODY+="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID")"
+  URL=$(cd "$WT" && gh pr create -R CarlvinceTan/Polymux --head "$B" --base main --title "$TASK" --body "$BODY" 2>>"$LOG")
+  [ -n "$URL" ] || { ev failed "$L" "gh pr create failed"; continue; }
+  ev pr "$L" "$URL"; echo "$URL"; exit 0
+done
+ERR=$(tail -n 5 "$LOG" | tr '\t\n' '  ')
+printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$TASK" "${TRIED# }" "$ERR" "$LOG" >> "$OPS/failures.tsv"
+echo "$(date '+%F %T') $ID: $TASK (lanes:$TRIED) log $LOG" >> "$OPS/NEEDS_CODY"
+ev needs_cody "${TRIED# }" "$LOG"; echo "FAILED after:$TRIED -> $OPS/NEEDS_CODY"; exit 1
