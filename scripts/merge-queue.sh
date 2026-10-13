@@ -1,6 +1,6 @@
 #!/bin/bash
 # merge-queue.sh: the 'merge' lane. Script only, no model agent. Serial FIFO post-approval gate.
-#   merge-queue.sh enqueue <pr> [task-file]   approved PR -> $OPS/merge-queue/<ts>-pr<N> (Notion: approved)
+#   merge-queue.sh enqueue <pr> [task-file]   approved PR -> $OPS/merge-queue/<ts>-pr<N> (board: In review)
 #   merge-queue.sh run                       drain the queue one PR at a time (launchd tick or by hand)
 #   merge-queue.sh status                    list queued PRs
 # Task lanes (lane3 codex, lane2 cursor) only code, verify in their worktree and attach proof; they never merge.
