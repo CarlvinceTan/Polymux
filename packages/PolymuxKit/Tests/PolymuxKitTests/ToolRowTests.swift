@@ -14,13 +14,13 @@ import Testing
 
     @Test func activityToolRowsCollapseReads() {
         let rows = ActivityStore.toolRows(for: run([
-            tool("1", "read", "/tmp/one.swift"), tool("2", "read", "/tmp/two.swift"), tool("3", "read", "/tmp/three.swift"),
-            tool("4", "bash", "go test ./..."), tool("5", "read", "/tmp/failed.swift", status: "failed", output: "no such file"),
-            tool("6", "read", "/tmp/after.swift")
+            tool("1", "read", "/tmp/one.go"), tool("2", "read", "/tmp/two.go"), tool("3", "read", "/tmp/three.go"),
+            tool("4", "bash", "go test ./..."), tool("5", "read", "/tmp/failed.go", status: "failed", output: "no such file"),
+            tool("6", "read", "/tmp/after.go")
         ]))
-        #expect(rows.map(\.title) == ["Read 3 files", "Ran go test ./...", "Read failed.swift", "Read after.swift"])
-        #expect(rows[0].output == "/tmp/one.swift\n/tmp/two.swift\n/tmp/three.swift")
-        #expect(rows[2].failed && rows[2].output == "/tmp/failed.swift\nno such file")
+        #expect(rows.map(\.title) == ["Read 3 files", "Ran go test ./...", "Read failed.go", "Read after.go"])
+        #expect(rows[0].output == "/tmp/one.go\n/tmp/two.go\n/tmp/three.go")
+        #expect(rows[2].failed && rows[2].output == "/tmp/failed.go\nno such file")
     }
 
     @Test func activityToolRowsSurviveReplay() {
