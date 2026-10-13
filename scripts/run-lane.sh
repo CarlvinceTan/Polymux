@@ -34,7 +34,7 @@ fi
 LANE=$1; TASK=$2; shift 2; BASE=origin/main; BRANCH=""
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
 SLUG=$(echo "$TASK" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-32 | sed 's/-$//')
-ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}; ev queued "$LANE" "$TASK"
+ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
 PROMPT="Task: $TASK
 Rules: work only in this worktree. Keep the change small and scoped. Build and test ONLY via
 'bash scripts/verify.sh' and iterate until it exits 0. Commit your work with a clear message.
@@ -58,7 +58,7 @@ grep -qF "	$TASK	" "$OPS/failures.tsv" 2>/dev/null && { echo "refusing: '$TASK' 
 UL="$OPS/units/$SLUG.lock"; mkdir -p "$OPS/units"
 if ! mkdir "$UL" 2>/dev/null; then kill -0 "$(cat "$UL/pid" 2>/dev/null)" 2>/dev/null && \
   { echo "unit '$SLUG' already has a writer (pid $(cat "$UL/pid")); not starting"; exit 3; }; rm -rf "$UL"; mkdir "$UL"; fi
-echo $$ > "$UL/pid"; trap 'rm -rf "$UL"' EXIT
+ev queued "$LANE" "$TASK"; echo $$ > "$UL/pid"; trap 'rm -rf "$UL"' EXIT
 git -C "$REPO" fetch -q origin; TRIED=""; N=0
 for L in $(cfg order "$LANE"); do
   N=$((N+1)); [ $N -gt 2 ] && break

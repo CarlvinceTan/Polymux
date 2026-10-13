@@ -8,7 +8,7 @@ ROOT=$(git rev-parse --show-toplevel); cd "$ROOT"
 . .build/env
 P=.build/proof; L=.build/logs; R=.build/results
 rm -rf "$P" "$R"; mkdir -p "$P" "$L" "$R"
-LOCKS=$(python3 scripts/lanes.py get lock_dir); MAX=$(python3 scripts/lanes.py get max_builds)
+LOCKS=$(python3 scripts/lanes.py get lock_dir); MAX=${VERIFY_MAX_BUILDS:-$(python3 scripts/lanes.py get max_builds)}
 mkdir -p "$LOCKS"; SLOT=""; VPID=""
 cleanup() { [ -n "$VPID" ] && kill -INT "$VPID" 2>/dev/null
   pkill -f "derivedDataPath $DD" 2>/dev/null; xcrun simctl shutdown "$SIM_UDID" >/dev/null 2>&1
