@@ -12,7 +12,7 @@ import (
 )
 
 type PushSender interface {
-	Send(context.Context, store.Push) string
+	Send(context.Context, store.Push) store.PushResult
 }
 
 func (s *Server) notices(w http.ResponseWriter, r *http.Request) {
@@ -61,9 +61,9 @@ func (s *Server) sendNotices(ctx context.Context) {
 				}
 				break
 			}
-			state := s.config.Push.Send(ctx, item)
+			result := s.config.Push.Send(ctx, item)
 			writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err = s.Store.FinishPush(writeCtx, item, state)
+			err = s.Store.FinishPush(writeCtx, item, result)
 			cancel()
 			if err != nil {
 				s.config.Log.Error("save push notification outcome")

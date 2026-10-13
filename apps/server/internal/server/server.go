@@ -48,7 +48,6 @@ type Config struct {
 	BackgroundTimeout time.Duration
 }
 type Server struct {
-	drive      *oneDrive
 	Store      *store.Store
 	memory     *memory.Store
 	settings   *settings.Store
@@ -99,11 +98,11 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(c.DataDir, "attachments"), 0700); err != nil {
 		return nil, err
 	}
-	preferences, err := settings.Open(filepath.Join(c.DataDir, "settings.json"))
-	if err != nil {
-		return nil, err
+	// Refresh tokens from the removed OneDrive connector must not survive startup.
+	if err := os.RemoveAll(filepath.Join(c.DataDir, "connections", "onedrive")); err != nil {
+		return nil, fmt.Errorf("remove onedrive directory: %w", err)
 	}
-	drive, err := openDrive(c.DataDir)
+	preferences, err := settings.Open(filepath.Join(c.DataDir, "settings.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +181,7 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	v := &Server{drive: drive, Store: s, settings: preferences, memory: memory.New(filepath.Join(c.DataDir, "memory")), config: c, ctx: ctx, cancel: cancel, actors: map[string]*actor{}, groups: map[string]*groupActor{}, presence: map[string]int{}, deletes: map[string]*deletion{}, voices: map[string]*voiceWork{}, voiceSeen: map[string]bool{}, mux: http.NewServeMux(), slots: make(chan struct{}, 4)}
+	v := &Server{Store: s, settings: preferences, memory: memory.New(filepath.Join(c.DataDir, "memory")), config: c, ctx: ctx, cancel: cancel, actors: map[string]*actor{}, groups: map[string]*groupActor{}, presence: map[string]int{}, deletes: map[string]*deletion{}, voices: map[string]*voiceWork{}, voiceSeen: map[string]bool{}, mux: http.NewServeMux(), slots: make(chan struct{}, 4)}
 	for _, d := range definitions {
 		actorCtx, stop := context.WithCancel(ctx)
 		a := &actor{id: d.Agent.ID, definition: d, stop: stop, done: make(chan struct{})}
@@ -253,7 +252,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
-	s.driveRoutes()
 	s.mux.HandleFunc("POST /triggers/{id}/events", s.ingestEvent)
 	s.mux.HandleFunc("GET /notifications", s.notices)
 	s.mux.HandleFunc("PUT /notifications/device", s.registerPush)
@@ -905,8 +903,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.TaskID != "" {
 		run.TaskID = &work.TaskID
 	}
-	// Capture before flipping to running; approval resume injects a continuation turn.
+	// Capture before flipping to running. Approval resume injects a turn; crash resume replays the saved tool result.
 	resuming := run.Status == "waiting_input"
+	continuing := run.Status == "resuming"
 	run.Status, run.Activity, run.Summary, run.StartedAt, run.FinishedAt = "running", "preparing", "Preparing reply", &now, nil
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		run.SourceMessageID = &user.ID
@@ -1126,6 +1125,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		})
 	}
 	var result agentruntime.Result
+	var submissionID int64
 	var content strings.Builder
 	var pending strings.Builder
 	var lastFlush time.Time
@@ -1199,15 +1199,53 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		// Durable work outlives Send's wait context until the session is aborted.
 		stopAbort := context.AfterFunc(runCtx, func() {
 			defer close(aborted)
+			// Only a resumable tool result may skip abort. Other runs still abort so shutdown settles them.
+			if ctx.Err() != nil {
+				check, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+				stored, loadErr := s.Store.Run(check, run.ID)
+				ready := loadErr == nil && stored.Attempt <= 1 && s.Store.ResumeReady(check, stored)
+				stop()
+				if ready {
+					return
+				}
+			}
 			abortCtx, end := context.WithTimeout(context.WithoutCancel(runCtx), time.Second)
 			defer end()
 			if e := sess.Abort(abortCtx); e != nil && !errors.Is(e, context.Canceled) {
 				s.config.Log.Warn("abort stopped session", "error", e)
 			}
 		})
-		result, err = sess.Send(runCtx, user, func(delta agentruntime.Delta) error {
+		turn := sess.Send
+		if continuing {
+			if submissionID == 0 {
+				if id, ok := s.Store.Submission(writeCtx, run.ID); ok {
+					submissionID = id
+				}
+			}
+			resumed, ok := sess.(interface {
+				Resume(context.Context, int64, func(agentruntime.Delta) error) (agentruntime.Result, error)
+			})
+			if !ok {
+				turn = func(context.Context, contract.Message, func(agentruntime.Delta) error) (agentruntime.Result, error) {
+					return agentruntime.Result{}, errors.New("session cannot resume a saved tool result")
+				}
+			} else {
+				turn = func(ctx context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
+					return resumed.Resume(ctx, submissionID, emit)
+				}
+			}
+		}
+		result, err = turn(runCtx, user, func(delta agentruntime.Delta) error {
 			messageMu.Lock()
 			defer messageMu.Unlock()
+			if delta.Kind == "submission" {
+				id, convErr := strconv.ParseInt(delta.ToolID, 10, 64)
+				if convErr != nil {
+					return convErr
+				}
+				submissionID = id
+				return s.Store.SaveSubmission(writeCtx, run.ID, id)
+			}
 			if e := runCtx.Err(); e != nil {
 				return e
 			}
@@ -1411,6 +1449,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	} else if errors.Is(err, context.Canceled) {
 		// keep cancel handling below
 	}
+	// Leave a saved tool result running so the next process can resume it once.
+	if err != nil && ctx.Err() != nil && run.Attempt <= 1 && s.Store.ResumeReady(writeCtx, run) {
+		messageMu.Unlock()
+		return contract.Message{}
+	}
 	if err == nil {
 		if result.Text != "" && result.Text != content.String() {
 			found := false
@@ -1486,6 +1529,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		}
 		if ctx.Err() != nil {
 			code, message, run.Status, run.Summary = "interrupted", "The server stopped during this reply. Review before retrying.", "interrupted", "Execution interrupted"
+			if run.Attempt > 1 {
+				message = "The server restarted again during resume. Review before retrying."
+			}
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = "timeout"
