@@ -3,6 +3,8 @@
 # macOS XCUITest needs the gui/<uid> launchd domain (Automation Mode, window server); a bare ssh
 # session is "Background" and the runner times out. Already in Aqua (lane/merge LaunchAgents) -> exec.
 # Otherwise: a one-shot LaunchAgent in gui/$UID runs CMD in this cwd with this env PATH, output to stdout.
+# Killed (verify.sh's step alarm: ALRM/TERM) -> boots the agent out, kills the job's process tree and
+# removes its temp dir, then exits 143.
 set -uo pipefail
 [ "$(launchctl managername 2>/dev/null)" = Aqua ] && exec "$@"
 [ "${GUI_RUN_FORCE_EXEC:-0}" = 1 ] && exec "$@"   # tests only
@@ -11,7 +13,11 @@ printf "%q " "$@" > "$D/cmd"
 cat > "$D/run.sh" <<SH
 #!/bin/bash
 cd $(printf %q "$PWD"); export PATH=$(printf %q "$PATH") HOME=$(printf %q "$HOME")
-bash $(printf %q "$D/cmd.sh") > $(printf %q "$D/out") 2>&1; echo \$? > $(printf %q "$D/rc.tmp"); mv $(printf %q "$D/rc.tmp") $(printf %q "$D/rc")
+# cmd.sh leads its own session (setsid), so $D/pid identifies the whole job to kill on a timeout.
+perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV' -- bash $(printf %q "$D/cmd.sh") > $(printf %q "$D/out") 2>&1 &
+echo \$! > $(printf %q "$D/pid")
+wait \$!; rc=\$?
+echo \$rc > $(printf %q "$D/rc.tmp"); mv $(printf %q "$D/rc.tmp") $(printf %q "$D/rc")
 SH
 { echo "#!/bin/bash"; cat "$D/cmd"; echo; } > "$D/cmd.sh"
 cat > "$D/job.plist" <<PL
@@ -21,7 +27,10 @@ cat > "$D/job.plist" <<PL
 <key>ProgramArguments</key><array><string>/bin/bash</string><string>$D/run.sh</string></array>
 <key>RunAtLoad</key><true/><key>LimitLoadToSessionType</key><string>Aqua</string></dict></plist>
 PL
-cleanup() { launchctl bootout "gui/$U/$LBL" >/dev/null 2>&1; rm -rf "$D"; }
+cleanup() { # kill the job's process tree (xcodebuild) before unloading it, and drop the temp dir
+  if [ -s "$D/pid" ]; then p=$(cat "$D/pid"); kill -TERM -- -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null; fi
+  [ -n "${T:-}" ] && kill "$T" 2>/dev/null
+  launchctl bootout "gui/$U/$LBL" >/dev/null 2>&1; rm -rf "$D"; }
 trap cleanup EXIT; trap "exit 143" TERM INT ALRM HUP
 launchctl bootstrap "gui/$U" "$D/job.plist" || { echo "gui-run: no GUI session for uid $U (is the user logged in?)"; exit 125; }
 touch "$D/out"; tail -f "$D/out" & T=$!

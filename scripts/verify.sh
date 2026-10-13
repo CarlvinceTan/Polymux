@@ -5,6 +5,9 @@
 # VERIFY_TARGETS=full (default; merge lane / --verify-only) | affected (task lanes: only the Go packages,
 # Swift test targets and app builds reachable from paths changed since TI_BASE, via scripts/affected.py),
 # write .build/proof/summary.md. Exit 0 only when everything passed.
+# macos-test has its own cap (MACOS_TEST_TIMEOUT, default 600 s, not the 2400 s per-step limit) and a
+# codesign preflight (macos-sign); a blocking com.apple.UserNotificationCenter dialog is reported as
+# UNAVAILABLE, never as a hang or FAIL.
 # Builds wait for a slot in the shared lock dir (max_builds; 1 while ~/ops/pr-verify builds).
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd)   # scripts may live in another checkout (cloud PRs)
@@ -76,12 +79,17 @@ VT=full GO_PKGS=./... SWIFT=all APP=1 WHY="verify-targets.sh missing"; [ -f "$SD
 [ "$VT" = affected ] && echo "verify: affected ($WHY): go=[${GO_PKGS:-none}] swift=[${SWIFT:-none}] app=$APP" || echo "verify: targets full ($WHY)"
 step() {  # step NAME cmd...
   local n=$1; shift; local t=$SECONDS; mark
-  perl -e 'alarm shift; exec @ARGV' 2400 "$@" > "$L/$n.log" 2>&1; local rc=$?
+  # macos-test has its own cap (MACOS_TEST_TIMEOUT, default 600s) so one stuck runner never spends
+  # the 2400s per-step budget. The alarm kills gui-run.sh, which boots its LaunchAgent out, kills
+  # the job and removes its temp dir (scripts/test-gui-run.sh); 142/143 tells the classifier which.
+  local cap=2400; [ "$n" = macos-test ] && cap=${MACOS_TEST_TIMEOUT:-600}
+  perl -e 'alarm shift; exec @ARGV' "$cap" "$@" > "$L/$n.log" 2>&1; local rc=$?
+  case $rc in 142|143) echo "verify: $n hit the ${cap}s cap (step alarm)" >> "$L/$n.log";; esac
   local res; res=$(verify_result "$n" "$rc" "$L/$n.log")
   [ "$res" = FAIL ] && FAIL=1
   if [ "$res" = UNAVAILABLE ]; then
     UI_UNAVAILABLE=1
-    echo "verify: $n readiness unavailable (runner automation timeout); caps level below UI-verified"
+    echo "verify: $n ${VERIFY_UNAVAILABLE_REASON:-readiness unavailable (runner automation timeout)}; caps level below UI-verified"
   fi
   local tests=$(awk '/^Test Case .* passed/||/^. Test .* passed after/{p++} /^Test Case .* failed/||/^. Test .* failed after/{f++}
     END{if(p+f) printf "%d passed, %d failed", p, f}' "$L/$n.log")
@@ -122,9 +130,17 @@ step macos-build xcodebuild build -project apps/Polymux/Polymux.xcodeproj -schem
 # App scheme gains a test action later (UI tests); until then build it and rely on package tests.
 ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme && ACT=test
 if [ $ACT = test ]; then
-  # XCUITest needs the GUI (Aqua) session; gui-run.sh runs it there when verify.sh came from ssh.
-  step macos-test bash "$ROOT/scripts/gui-run.sh" xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
-    -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
+  # An unsigned/damaged runner makes macOS show the Gatekeeper dialog and XCUITest loop on it
+  # (scripts/check-runner-sign.sh): check the built runner signs, and never launch into that.
+  step macos-sign bash "$ROOT/scripts/check-runner-sign.sh" "$DD/Build/Products/Debug/PolymuxUITests-Runner.app"
+  if grep -q '^| macos-sign | PASS' <(printf '%s\n' "${ROWS[@]}"); then
+    # XCUITest needs the GUI (Aqua) session; gui-run.sh runs it there when verify.sh came from ssh.
+    step macos-test bash "$ROOT/scripts/gui-run.sh" xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+      -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
+  else
+    ROWS+=("| macos-test | FAIL | not launched (runner fails codesign -v) | 0s |"); FAIL=1
+    echo "verify: macos-test not launched (macos-sign failed)"
+  fi
 fi
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1
 step ios-$ACT xcodebuild $ACT -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
