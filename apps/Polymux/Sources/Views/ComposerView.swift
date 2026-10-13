@@ -433,7 +433,7 @@ struct ComposerView: View {
         guard png != nil || tiff != nil else { return }
         let file = pastedFile()
         Task {
-            let data = await Task.detached(priority: .userInitiated) {
+            let data = await Task.detached(priority: .userInitiated) { () -> Data? in
                 if let png { return png }
                 guard let tiff, let rep = NSBitmapImageRep(data: tiff) else { return nil as Data? }
                 return rep.representation(using: .png, properties: [:])
@@ -454,7 +454,7 @@ struct ComposerView: View {
         }
     }
 
-    private nonisolated static func pasteData(_ provider: NSItemProvider) async -> Data? {
+    private static func pasteData(_ provider: NSItemProvider) async -> Data? {
         await withCheckedContinuation { continuation in
             provider.loadObject(ofClass: UIImage.self) { object, _ in
                 continuation.resume(returning: (object as? UIImage)?.pngData())
