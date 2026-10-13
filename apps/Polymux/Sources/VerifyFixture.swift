@@ -98,7 +98,8 @@ struct ApprovalFixture: View {
         ChoiceOption(id: "day", label: "Plan my day"),
         ChoiceOption(id: "code", label: "Build something")
     ])
-    private let client = APIClient(baseURL: URL(string: "http://approval.invalid")!, session: VerifyFixture.session())
+    private let client = APIClient(baseURL: URL(string: "http://approval.invalid")!,
+                                   session: VerifyFixture.session(), token: "")
 
     var body: some View {
         VStack(spacing: 16) {

@@ -28,7 +28,13 @@ struct PolymuxApp: App {
     init() {
         _ = Notifications.shared
         #if os(macOS)
+        #if DEBUG
+        if !VerifyFixture.enabled && !CommandLine.arguments.contains("--verify-approval") {
+            ControlCoordinator.shared.start()
+        }
+        #else
         ControlCoordinator.shared.start()
+        #endif
         #endif
     }
     var body: some Scene {
@@ -63,7 +69,8 @@ final class AppSession {
             throw URLError(.badURL)
         }
         #if DEBUG
-        client = APIClient(baseURL: url, session: VerifyFixture.local ? VerifyFixture.session() : .shared)
+        client = APIClient(baseURL: url, session: VerifyFixture.local ? VerifyFixture.session() : .shared,
+                           token: VerifyFixture.local ? "" : nil)
         #else
         client = APIClient(baseURL: url)
         #endif
