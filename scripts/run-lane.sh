@@ -12,6 +12,7 @@ OPS=${LANES_HOME:-$HOME/ops/lanes}; WTR=${LANES_WT:-$HOME/code/wt}; mkdir -p "$O
 SLUG_REPO=$(repo_slug "$REPO"); HOST=$(hostname -s)
 ev() { printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$1" "${2:-}" "${3:-}" >> "$EV"; }
 cfg() { python3 "$SD/lanes.py" "$@"; }
+BU() { bash "$SD/board-update.sh" "$@" >/dev/null 2>&1 || true; }   # Notion board; never fails the lane
 publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own branch proof-media/<id>
   local wt=$1 id=$2 idx c err ref="proof-media/$2-$(date +%Y%m%d%H%M%S)-$$" n=0; idx=$(mktemp)   # unique per run; never force
   for f in "$wt"/.build/proof/*.png "$wt"/.build/proof/*.mp4; do [ -f "$f" ] && n=$((n+1)); done
@@ -42,10 +43,10 @@ if [ "${1:-}" = "--verify-only" ]; then
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
 fi
 LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60; SCOPE=""
-if [ -f "$TASK" ]; then  # task file: "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
+TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "card:" (Notion card), "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
-  TASK=$(grep -vE '^(unit|needs|scope|expected_min):' "$TASK"); EXP=${EXP:-60}
+  TASK=$(grep -vE '^(unit|needs|scope|expected_min|card):' "$TASK"); EXP=${EXP:-60}
 fi
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
@@ -80,6 +81,7 @@ G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight r
 UL="$OPS/units/$SLUG.lock"; BLS=""
 lock_take "$UL" || { echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
 trap 'lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done' EXIT
+BU card "$SLUG" "${TASKF:-/dev/null}"; BU start "$SLUG"
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""; N=0
 for L in $(cfg order "$LANE"); do
@@ -112,7 +114,7 @@ for L in $(cfg order "$LANE"); do
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" bash "$SD/verify.sh") >> "$LOG" 2>&1; VRC=$?
   [ -x ~/.local/bin/lane-guard ] && { ~/.local/bin/lane-guard --task-end "$L" "$ID" "$VRC" "$LOG" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
-  [ $VRC = 0 ] || { ev failed "$L" "verify failed"; continue; }
+  [ $VRC = 0 ] || { BU verify "$SLUG" "$(cat "$WT/.build/proof/level" 2>/dev/null || echo failed)"; ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
   BODY="Task: $TITLE"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
   BODY+="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID" 2>>"$LOG")"
@@ -121,6 +123,7 @@ for L in $(cfg order "$LANE"); do
   [ "$LV" = build-only ] && { DRAFT=--draft; BODY="**Verification level: build-only, so this is NOT ready for review (draft).**"$'\n\n'"$BODY"; }
   URL=$(cd "$WT" && gh pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG")
   [ -n "$URL" ] || { ev failed "$L" "gh pr create failed"; continue; }
+  BU pr "$SLUG" "$URL"; BU verify "$SLUG" "$LV" $(echo "$BODY" | grep -oE "https://github.com/$SLUG_REPO/raw/proof-media/[^) ]+")
   ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV" >> "$OPS/results.tsv"
   echo "$URL ($LV)"; exit 0
 done

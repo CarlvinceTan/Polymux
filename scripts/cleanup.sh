@@ -41,6 +41,8 @@ git -C "$REPO" worktree list --porcelain | awk '/^worktree /{print $2}' | while 
   AGE=$(( ( $(date +%s) - $(last_activity "$W") ) / 86400 ))
   [ $MERGED = 1 ] || [ $AGE -ge $DAYS ] || { keep "$W" "active, ${AGE}d old"; continue; }
   echo "remove: $W (merged=$MERGED age=${AGE}d)"
+  [ $MERGED = 1 ] && for c in "$OPS"/cards/*; do [ -f "$c" ] && [[ "$(basename "$W")" == *-"$(basename "$c")" ]] && \
+    bash "$(dirname "$0")/board-update.sh" merged "$(basename "$c")" >/dev/null 2>&1; done   # board: Completed (gated by BOARD_LIVE)
   U=$(sed -n 's/^SIM_UDID=//p' "$W/.build/env" 2>/dev/null)
   [ -n "$U" ] && { do_ xcrun simctl shutdown "$U" 2>/dev/null; do_ xcrun simctl delete "$U"; }
   do_ rm -rf "$W/.build"
