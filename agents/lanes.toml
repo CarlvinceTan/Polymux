@@ -7,6 +7,8 @@
 # Any lane field may have a per-host override `field@<hostname -s>` (e.g. key@cvmini).
 
 max_units = 3           # at most 3 coding units at once, one per lane
+batch_lanes = ["lane3", "lane2"]   # batch.sh coding agents, one card each (lane2 = UniMelb key@cvmini)
+batch_fallback = ["lane4"]        # only when a batch lane fails; never lane1
 max_builds = 2          # concurrent xcodebuild slots (verify.sh drops to 1 while ~/ops/pr-verify builds)
 lock_dir = "~/ops/lanes/locks"
 sim_device = "iPhone 17"
