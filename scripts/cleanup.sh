@@ -35,6 +35,11 @@ wts() { git -C "$REPO" worktree list --porcelain | sed -n 's/^worktree //p'; }  
 wts | while IFS= read -r W; do
   [ "$W" = "$MAIN" ] && continue
   case $W in */ops/goal-loop*|*/ops/pr-verify*) continue;; esac
+  # Never remove the merge lane: launchd com.carlvince.merge-lane runs ~/code/wt/merge-lane/scripts/merge-queue.sh,
+  # so deleting it makes that job exit 127. Match the name, and skip symlinks: git lists the resolved path, so
+  # also skip a worktree reached through a symlink ~/code/wt/<name> (merge-lane now lives at ~/code/merge-lane).
+  case ${W##*/} in merge-lane) keep "$W" "merge-lane (never removed)"; continue;; esac
+  { [ -L "$W" ] || [ -L "$HOME/code/wt/${W##*/}" ]; } && { keep "$W" "symlink (never removed)"; continue; }
   case $W in "$HOME"/code/wt/*|"$HOME"/.cursor/worktrees/*) ;; *) keep "$W" "not a lane worktree"; continue;; esac
   board_merged "$W"   # squash merges never show in ancestry, so ask gh
   in_use "$W" && { keep "$W" "in use or locked"; continue; }
