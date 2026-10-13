@@ -59,11 +59,11 @@ final class AppSession {
     let avatars: AvatarStore
 
     init(address: String) async throws {
-        guard let url = ServerAddress.parse(address) else {
+        guard let url = ServerAddress.parse(UserDefaults.standard.string(forKey: "PolymuxServer") ?? address) else {
             throw URLError(.badURL)
         }
         #if DEBUG
-        client = APIClient(baseURL: url, session: VerifyFixture.enabled ? VerifyFixture.session() : .shared)
+        client = APIClient(baseURL: url, session: VerifyFixture.local ? VerifyFixture.session() : .shared)
         #else
         client = APIClient(baseURL: url)
         #endif
@@ -117,7 +117,7 @@ struct AppRoot: View {
                 error = nil
                 if let session {
                     #if DEBUG
-                    if !VerifyFixture.enabled { Notifications.shared.connect(session.client) }
+                    if !VerifyFixture.local { Notifications.shared.connect(session.client) }
                     #else
                     Notifications.shared.connect(session.client)
                     #endif

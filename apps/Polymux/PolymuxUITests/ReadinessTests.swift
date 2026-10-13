@@ -40,9 +40,20 @@ final class ReadinessTests: XCTestCase {
         timed("foreground") { app.wait(for: .runningForeground, timeout: 1) }
         let any = app.descendants(matching: .any)
         timed("chats.list") { any["chats.list"].exists }
-        timed("sidebar.rows.12") { Self.seededIDs.allSatisfy { any["sidebar.row.\($0)"].exists } }
-        let rows = any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.' AND NOT identifier CONTAINS '.unread'"))
-        XCTAssertEqual(rows.count, Self.seededIDs.count, "sidebar shows \(rows.count) rows, seed has 12")
+        var observed = Set<String>()
+        timed("sidebar.rows.12") {
+            let rows = any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.' AND NOT identifier CONTAINS '.unread'"))
+            observed.formUnion(rows.allElementsBoundByIndex.map(\.identifier))
+            if Self.seededIDs.allSatisfy({ observed.contains("sidebar.row.\($0)") }) { return true }
+            // List virtualizes offscreen rows; verify every row across its viewports.
+            #if os(macOS)
+            any["chats.list"].scroll(byDeltaX: 0, deltaY: -400)
+            #else
+            any["chats.list"].swipeUp()
+            #endif
+            return false
+        }
+        XCTAssertEqual(observed.count, Self.seededIDs.count, "sidebar shows \(observed.count) rows, seed has 12")
         // app.status is required: a missing element fails readiness (never silently skipped).
         let status = any["app.status"]
         timed("app.status") { status.exists }
@@ -56,8 +67,16 @@ final class ReadinessTests: XCTestCase {
         }
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "ready"; shot.lifetime = .keepAlways; add(shot)
+        #if os(macOS)
+        any["chats.list"].scroll(byDeltaX: 0, deltaY: 400)
+        #else
+        any["chats.list"].swipeDown()
+        #endif
+        let sidebar = XCTAttachment(screenshot: app.screenshot())
+        sidebar.name = "ready-sidebar"; sidebar.lifetime = .keepAlways; add(sidebar)
         let json = XCTAttachment(data: try JSONSerialization.data(withJSONObject: waits, options: [.sortedKeys]),
                                  uniformTypeIdentifier: "public.json")
-        json.name = "ready.json"; json.lifetime = .keepAlways; add(json)
+        // Xcode strips the final extension; keep ready.json for verify.sh's manifest match.
+        json.name = "ready.json.json"; json.lifetime = .keepAlways; add(json)
     }
 }

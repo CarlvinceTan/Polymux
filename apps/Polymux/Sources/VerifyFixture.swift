@@ -5,15 +5,25 @@ import PolymuxKit
 // Only the explicit UI-test launch uses this isolated, deterministic transport.
 final class VerifyFixture: URLProtocol, @unchecked Sendable {
     static var enabled: Bool { CommandLine.arguments.contains("--verify-fixture") }
+    static var local: Bool { enabled && UserDefaults.standard.string(forKey: "PolymuxServer") == nil }
     static let ids = ["t-chief", "t-aria", "t-milo", "t-nova", "t-long", "t-stream", "t-approval",
                       "grp-trip", "t-media", "t-activity", "t-fern", "grp-empty"]
     static let agents = ["Chief", "Aria", "Milo", "Nova", "Approval", "Fern"].map {
-        Agent(id: $0.lowercased(), name: $0, active: true)
+        Agent(id: "t-" + $0.lowercased(), name: $0, active: true)
     }
-    static let threads = ids.enumerated().map { index, id in
-        let agent = agents[index % agents.count]
-        return PolymuxKit.Thread(id: id, agentID: id.hasPrefix("grp-") ? "" : agent.id,
-                                 title: id, agentIDs: id.hasPrefix("grp-") ? [agents[0].id, agents[1].id] : [agent.id])
+    static let threads = ids.map { id in
+        let direct = agents.first { $0.id == id }
+        let members: [String]
+        switch id {
+        case "t-long": members = ["t-chief", "t-aria"]
+        case "t-stream", "grp-empty": members = ["t-nova", "t-fern"]
+        case "grp-trip": members = ["t-chief", "t-aria", "t-milo"]
+        case "t-media": members = ["t-aria", "t-milo"]
+        case "t-activity": members = ["t-chief", "t-milo"]
+        default: members = [id]
+        }
+        return PolymuxKit.Thread(id: id, agentID: members[0], title: direct == nil ? id : "",
+                                 agentIDs: members)
     }
     static func session() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
