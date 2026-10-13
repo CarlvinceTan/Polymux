@@ -49,4 +49,4 @@ until = "2026-10-30"    # Codex access ends 30 Oct 2026; lane auto-skipped after
 agent = "opencode"
 account = "default"
 cmd = "opencode"
-role = "fallback"       # standing failover: dispatched only when lane3 is unusable
+role = "primary"        # TEMP (live only): until lane3 max_concurrent=2 is confirmed working; then fallback
