@@ -196,7 +196,11 @@ func TestMergeIgnoresWorktreeScripts(t *testing.T) {
 
 func TestMergeRequiresLane(t *testing.T) {
 	for _, lane := range []string{"", "relative", "missing"} {
-		t.Run(lane, func(t *testing.T) {
+		name := lane
+		if name == "" {
+			name = "empty" // an empty name becomes #00, and # cuts the sqlite file: URI short
+		}
+		t.Run(name, func(t *testing.T) {
 			tool, ctx, state := mergeFixture(t, `"isDraft":false`)
 			if lane == "missing" {
 				state.mergeLane = t.TempDir()
