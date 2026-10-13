@@ -217,9 +217,19 @@ func appCode(t *testing.T, s *Store, urls []string) string {
 	return uri
 }
 
-func TestPairCodeSingleUse(t *testing.T) {
+func TestConcurrentRedeemApp(t *testing.T) {
 	t.Parallel()
-	s := openStore(t)
+	dir := t.TempDir()
+	s, err := Open(t.Context(), dir, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	other, err := Open(t.Context(), dir, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
 	urls := []string{"https://mac.example:7339"}
 	first := appCode(t, s, urls)
 	code := codeOf(t, appCode(t, s, urls))
@@ -228,11 +238,11 @@ func TestPairCodeSingleUse(t *testing.T) {
 	}
 	var wins atomic.Int32
 	var wg sync.WaitGroup
-	for range 2 {
+	for _, handle := range []*Store{s, other} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := s.RedeemApp(context.Background(), "peer", code); err == nil {
+			if _, err := handle.RedeemApp(context.Background(), "peer", code); err == nil {
 				wins.Add(1)
 			}
 		}()
@@ -243,19 +253,19 @@ func TestPairCodeSingleUse(t *testing.T) {
 	}
 }
 
-func TestPairCodeExpiry(t *testing.T) {
+func TestCodeExpiresAt3Min(t *testing.T) {
 	t.Parallel()
 	s := openStore(t)
 	now := time.Unix(1_700_000_000, 0)
 	s.clock = func() time.Time { return now }
 	urls := []string{"https://mac.example:7339"}
 	uri := appCode(t, s, urls)
-	now = now.Add(9 * time.Minute)
+	now = now.Add(3*time.Minute - time.Second)
 	if _, err := s.RedeemApp(t.Context(), "peer", codeOf(t, uri)); err != nil {
 		t.Fatal(err)
 	}
 	uri = appCode(t, s, urls)
-	now = now.Add(10*time.Minute + time.Second)
+	now = now.Add(3 * time.Minute)
 	if _, err := s.RedeemApp(t.Context(), "peer", codeOf(t, uri)); !errors.Is(err, ErrExpired) {
 		t.Fatal(err)
 	}
@@ -276,7 +286,7 @@ func TestQRPayloadNoLoopback(t *testing.T) {
 	}
 }
 
-func TestPairLockout(t *testing.T) {
+func TestLockoutPerCaller(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	now := time.Unix(1_700_000_000, 0)

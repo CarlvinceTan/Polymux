@@ -3,12 +3,11 @@ package link
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"runtime"
-	"slices"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/grandcat/zeroconf"
 )
 
 func TestAdvertise(t *testing.T) {
@@ -18,6 +17,9 @@ func TestAdvertise(t *testing.T) {
 	defer cancel()
 	stop, err := Advertise(ctx, instance, port, []string{"127.0.0.1"}, map[string]string{"v": "1", "k": "test-fingerprint"})
 	if err != nil {
+		if runtime.GOOS == "darwin" {
+			t.Fatal(err)
+		}
 		t.Skipf("multicast advertisement unavailable: %v", err)
 	}
 	defer stop()
@@ -28,33 +30,10 @@ func TestAdvertise(t *testing.T) {
 		}
 		t.Skip(message)
 	}
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		unavailable(fmt.Sprintf("multicast resolver unavailable: %v", err))
-	}
-	entries := make(chan *zeroconf.ServiceEntry)
-	if err := resolver.Browse(ctx, "_polymux._tcp", "local.", entries); err != nil {
-		unavailable(fmt.Sprintf("multicast browse unavailable: %v", err))
-	}
-	for {
-		select {
-		case entry, ok := <-entries:
-			if !ok {
-				unavailable("multicast browse ended without discovering the local advertisement")
-			}
-			if entry.Instance != instance {
-				continue
-			}
-			if entry.Port != port {
-				t.Errorf("port = %d, want %d", entry.Port, port)
-			}
-			if !slices.Contains(entry.Text, "v=1") || !slices.Contains(entry.Text, "k=test-fingerprint") {
-				t.Errorf("TXT = %v, want version and fingerprint", entry.Text)
-			}
-			return
-		case <-ctx.Done():
-			unavailable(fmt.Sprintf("multicast unavailable: local advertisement not discovered within 5s: %v", ctx.Err()))
-		}
+	output, _ := exec.CommandContext(ctx, "/usr/bin/dns-sd", "-L", instance, "_polymux._tcp", "local.").CombinedOutput()
+	text := string(output)
+	if !strings.Contains(text, fmt.Sprintf(":%d", port)) || !strings.Contains(text, "v=1") || !strings.Contains(text, "k=test-fingerprint") {
+		unavailable(fmt.Sprintf("local advertisement not resolved with port and TXT: %s", text))
 	}
 }
 

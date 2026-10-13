@@ -163,7 +163,7 @@ func TestControlIngress(t *testing.T) {
 		want   int
 	}{
 		{"plaintext", "POST", "/enroll", "", "", false, 403},
-		{"unauthenticated", "GET", "/connect", "", "", true, 401},
+		{"unauthenticated", "GET", "/connect", "", "", true, 403},
 		{"browser", "GET", "/connect", p.Token, "https://example.com", true, 403},
 		{"unknown", "GET", "/unknown", p.Token, "", true, 404},
 	} {

@@ -13,6 +13,8 @@ import (
 	"github.com/flynn/noise"
 )
 
+const HandshakeTimeout = 10 * time.Second
+
 const noisePrologue = "polymux/1"
 const frameLimit = 65535
 const plainLimit = frameLimit - 16
@@ -34,6 +36,10 @@ func pairNoise(conn net.Conn, static noise.DHKey, secret []byte, initiator bool)
 	if len(secret) != 32 {
 		return nil, nil, errors.New("noise pairing secret must be 32 bytes")
 	}
+	if err := conn.SetDeadline(time.Now().Add(HandshakeTimeout)); err != nil {
+		return nil, nil, errors.Join(err, conn.Close())
+	}
+	defer conn.SetDeadline(time.Time{})
 	cfg := noiseConfig(static, initiator, noise.HandshakeXX)
 	cfg.PresharedKey = bytes.Clone(secret)
 	// flynn/noise appends psk to messagePatterns[2], matching Noise XXpsk3.
@@ -78,6 +84,12 @@ func Dial(conn net.Conn, static noise.DHKey, peerStatic []byte) (*Session, error
 }
 
 func handshake(conn net.Conn, cfg noise.Config, paired func([]byte) bool) (_ *Session, _ []byte, err error) {
+	if cfg.Pattern.Name != noise.HandshakeXX.Name {
+		if err := conn.SetDeadline(time.Now().Add(HandshakeTimeout)); err != nil {
+			return nil, nil, errors.Join(err, conn.Close())
+		}
+		defer conn.SetDeadline(time.Time{})
+	}
 	// A failed handshake cannot safely be resumed on this stream.
 	defer func() {
 		if err != nil {

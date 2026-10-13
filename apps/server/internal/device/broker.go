@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -58,6 +59,8 @@ type connection struct {
 
 type Broker struct {
 	store       *Store
+	limit       Limiter
+	events      []Paired
 	mu          sync.Mutex
 	connections map[string]*connection
 	closed      bool
@@ -77,12 +80,16 @@ func (b *Broker) Close() {
 }
 
 func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Control is a separate TLS-only listener; browser origins are never admitted.
-	if r.TLS == nil || r.Header.Get("Origin") != "" {
-		http.Error(w, "TLS required", http.StatusForbidden)
+	if !b.limit.Allow(Caller(r), time.Now()) {
+		Reject(w)
 		return
 	}
-	if r.Method == "POST" && r.URL.Path == "/enroll" {
+	// Control is a separate TLS-only listener; browser origins are never admitted.
+	if r.TLS == nil || r.Header.Get("Origin") != "" {
+		Reject(w)
+		return
+	}
+	if r.Method == "POST" && (r.URL.Path == "/enroll" || r.URL.Path == "/redeem") {
 		r.Body = http.MaxBytesReader(w, r.Body, 4096)
 		var input struct {
 			Code         string   `json:"code"`
@@ -90,14 +97,26 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Capabilities []string `json:"capabilities"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			http.Error(w, "invalid enrollment", 400)
+			Reject(w)
 			return
 		}
-		p, err := b.store.Enroll(r.Context(), input.Code, input.Name, input.Capabilities)
+		var p Enrollment
+		var err error
+		if r.URL.Path == "/redeem" {
+			p, err = b.store.enrollApp(r.Context(), Caller(r), input.Code)
+		} else {
+			p, err = b.store.Enroll(r.Context(), input.Code, input.Name, input.Capabilities)
+		}
 		if err != nil {
-			http.Error(w, "pairing rejected", 403)
+			Reject(w)
 			return
 		}
+		b.mu.Lock()
+		b.events = append(b.events, Paired{Type: "device.paired", Pairing: p.Pairing})
+		if len(b.events) > 64 {
+			b.events = b.events[len(b.events)-64:]
+		}
+		b.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(p)
@@ -106,7 +125,7 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	p, err := b.store.Authenticate(r.Context(), token)
 	if err != nil {
-		http.Error(w, "device unauthorized", 401)
+		Reject(w)
 		return
 	}
 	if r.Method == "DELETE" && r.URL.Path == "/pairing" {
@@ -132,7 +151,7 @@ func (b *Broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	c := &connection{pair: p, token: token, ws: ws, gate: make(chan struct{}, 1), done: make(chan struct{}), pending: map[string]chan Packet{}}
 	ws.SetReadLimit(MaxMessage)
-	ws.SetReadDeadline(time.Now().Add(15 * time.Second))
+	ws.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var hello Packet
 	if err := ws.ReadJSON(&hello); err != nil || hello.Type != "hello" || !validReady(p, hello) {
 		ws.Close()
@@ -302,4 +321,24 @@ func (b *Broker) Call(ctx context.Context, agent, id, operation string, args jso
 		c.ws.Close()
 		return Packet{}, errors.New("device call interrupted; completion unknown, inspect before retrying")
 	}
+}
+
+type Paired struct {
+	Type string `json:"type"`
+	Pairing
+}
+
+// Paired serves the owner on loopback; remote routes cannot read device metadata.
+func (b *Broker) Paired(w http.ResponseWriter, r *http.Request) {
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() || r.Method != "GET" || r.Header.Get("Origin") != "" {
+		Reject(w)
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(b.events)
 }

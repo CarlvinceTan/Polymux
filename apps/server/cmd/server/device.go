@@ -116,7 +116,7 @@ func runDevice(args []string) error {
 		} else if !errors.Is(err, device.ErrNoAddress) {
 			return err
 		}
-		fmt.Fprintln(os.Stderr, "Expires in 10 minutes, single use. Paste into Polymux Settings > This Mac. Treat it as a temporary credential.")
+		fmt.Fprintln(os.Stderr, "Expires in 3 minutes, single use. Paste into Polymux Settings > This Mac. Treat it as a temporary credential.")
 		fmt.Fprintln(os.Stderr, "Link offer (preview; the app does not redeem it yet):", offer.URI())
 		fmt.Fprintln(os.Stderr, "Link offer (preview; the app does not redeem it yet):", offer.Code)
 	case "list":

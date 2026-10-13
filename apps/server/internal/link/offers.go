@@ -17,7 +17,7 @@ var (
 type Offers struct {
 	mu       sync.Mutex
 	items    map[[32]byte]Offer
-	used     map[[32]byte]bool
+	used     map[[32]byte]time.Time
 	failures int
 	locked   time.Time
 }
@@ -27,9 +27,23 @@ func (r *Offers) Add(o Offer) {
 	defer r.mu.Unlock()
 	if r.items == nil {
 		r.items = make(map[[32]byte]Offer)
-		r.used = make(map[[32]byte]bool)
+		r.used = make(map[[32]byte]time.Time)
 	}
-	if r.used[o.Secret] {
+	now := o.Expires.Add(-3 * time.Minute)
+	for secret, expiry := range r.used {
+		if !now.Before(expiry) {
+			delete(r.used, secret)
+		}
+	}
+	if _, used := r.used[o.Secret]; used {
+		return
+	}
+	for secret, existing := range r.items {
+		if !now.Before(existing.Expires) || hmac.Equal(existing.Issuer, o.Issuer) {
+			delete(r.items, secret)
+		}
+	}
+	if len(r.items)+len(r.used) >= 64 {
 		return
 	}
 	o.Issuer = append([]byte(nil), o.Issuer...)
@@ -45,6 +59,11 @@ func (r *Offers) Redeem(secretOrCode string, now time.Time) (Offer, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for secret, expiry := range r.used {
+		if !now.Before(expiry) {
+			delete(r.used, secret)
+		}
+	}
 	if now.Before(r.locked) {
 		return Offer{}, ErrLocked
 	}
@@ -68,7 +87,7 @@ func (r *Offers) Redeem(secretOrCode string, now time.Time) (Offer, error) {
 	// Ambiguous short codes must never select an arbitrary offer.
 	if count == 1 {
 		delete(r.items, match.Secret)
-		r.used[match.Secret] = true
+		r.used[match.Secret] = match.Expires
 		r.failures = 0
 		return match, nil
 	}

@@ -3,12 +3,10 @@ package link
 import (
 	"context"
 	"fmt"
-	"os"
+	"os/exec"
 	"sort"
-	"strings"
+	"strconv"
 	"sync"
-
-	"github.com/grandcat/zeroconf"
 )
 
 func Advertise(ctx context.Context, instance string, port int, ips []string, txt map[string]string) (stop func(), err error) {
@@ -26,22 +24,19 @@ func Advertise(ctx context.Context, instance string, port int, ips []string, txt
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("bonjour requires at least one IP")
 	}
-	host, err := os.Hostname()
-	if err != nil {
-		return nil, fmt.Errorf("bonjour hostname: %w", err)
-	}
-	host, _, _ = strings.Cut(host, ".")
-	server, err := zeroconf.RegisterProxy(
-		instance, "_polymux._tcp", "local.", port, host, ips, records, nil,
-	)
-	if err != nil {
+	ctx, cancel := context.WithCancel(ctx)
+	args := append([]string{"-R", instance, "_polymux._tcp", "local.", strconv.Itoa(port)}, records...)
+	cmd := exec.CommandContext(ctx, "/usr/bin/dns-sd", args...)
+	if err := cmd.Start(); err != nil {
+		cancel()
 		return nil, fmt.Errorf("advertise bonjour: %w", err)
 	}
 	done := make(chan struct{})
 	var once sync.Once
 	stop = func() {
 		once.Do(func() {
-			server.Shutdown()
+			cancel()
+			_ = cmd.Wait()
 			close(done)
 		})
 	}
