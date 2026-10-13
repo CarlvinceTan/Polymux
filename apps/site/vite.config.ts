@@ -63,6 +63,7 @@ export default defineConfig({
         docs: resolve(import.meta.dirname, 'docs/index.html'),
         releases: resolve(import.meta.dirname, 'releases/index.html'),
         product: resolve(import.meta.dirname, 'product/index.html'),
+        privacy: resolve(import.meta.dirname, 'privacy/index.html'),
         privacyPolicy: resolve(import.meta.dirname, 'privacy-policy/index.html'),
         ...Object.fromEntries(blogPosts),
         ...Object.fromEntries(docsPages),

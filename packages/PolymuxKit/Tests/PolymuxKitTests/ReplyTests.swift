@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
-@Suite @MainActor
+@Suite
 struct ReplyTests {
     @Test func requestUsesReferenceAndMessageKeepsSnapshot() throws {
         let quote = ReplyContext(messageID: "target", role: "assistant", text: "Quoted words")

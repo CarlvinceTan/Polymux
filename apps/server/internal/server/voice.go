@@ -186,6 +186,12 @@ func (v *voiceWork) run(ctx context.Context, task voiceTask) (agentruntime.Resul
 	for name := range builtinClass {
 		state.known[name] = true
 	}
+	for _, connection := range d.MCP {
+		state.prefixes = append(state.prefixes, connection.Name+"__")
+		if connection.ReadOnly {
+			state.readPrefixes = append(state.readPrefixes, connection.Name+"__")
+		}
+	}
 	ctx = context.WithValue(ctx, turnKey{}, state)
 	ctx = context.WithValue(ctx, htmlKey{}, &htmlScope{messageID: state.run.ID, publish: func(ctx context.Context, attachment contract.Attachment, path string) error {
 		return v.publish(ctx, task.target, attachment.ID, "", &attachment, path)

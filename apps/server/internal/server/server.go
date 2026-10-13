@@ -44,8 +44,11 @@ type Config struct {
 	Log         *slog.Logger
 	Push        PushSender
 	Devices     *device.Broker
+	// BackgroundTimeout defaults to the normal turn limit when unset.
+	BackgroundTimeout time.Duration
 }
 type Server struct {
+	drive      *oneDrive
 	Store      *store.Store
 	memory     *memory.Store
 	settings   *settings.Store
@@ -97,6 +100,10 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 		return nil, err
 	}
 	preferences, err := settings.Open(filepath.Join(c.DataDir, "settings.json"))
+	if err != nil {
+		return nil, err
+	}
+	drive, err := openDrive(c.DataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +182,7 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	v := &Server{Store: s, settings: preferences, memory: memory.New(filepath.Join(c.DataDir, "memory")), config: c, ctx: ctx, cancel: cancel, actors: map[string]*actor{}, groups: map[string]*groupActor{}, presence: map[string]int{}, deletes: map[string]*deletion{}, voices: map[string]*voiceWork{}, voiceSeen: map[string]bool{}, mux: http.NewServeMux(), slots: make(chan struct{}, 4)}
+	v := &Server{drive: drive, Store: s, settings: preferences, memory: memory.New(filepath.Join(c.DataDir, "memory")), config: c, ctx: ctx, cancel: cancel, actors: map[string]*actor{}, groups: map[string]*groupActor{}, presence: map[string]int{}, deletes: map[string]*deletion{}, voices: map[string]*voiceWork{}, voiceSeen: map[string]bool{}, mux: http.NewServeMux(), slots: make(chan struct{}, 4)}
 	for _, d := range definitions {
 		actorCtx, stop := context.WithCancel(ctx)
 		a := &actor{id: d.Agent.ID, definition: d, stop: stop, done: make(chan struct{})}
@@ -246,6 +253,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
+	s.driveRoutes()
 	s.mux.HandleFunc("POST /triggers/{id}/events", s.ingestEvent)
 	s.mux.HandleFunc("GET /notifications", s.notices)
 	s.mux.HandleFunc("PUT /notifications/device", s.registerPush)
@@ -743,29 +751,29 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	a := s.actors[t.AgentID]
 	group := s.groups[t.ID]
 	s.actorsMu.RUnlock()
+	var cancel context.CancelFunc
+	if a != nil && group == nil {
+		a.mu.Lock()
+		cancel = a.cancel
+		a.mu.Unlock()
+	}
+	ids, err := s.Store.StopRuns(r.Context(), t.ID)
+	if err != nil {
+		s.respond(w, nil, err)
+		return
+	}
+	for _, id := range ids {
+		if active, ok := s.turns.Load(id); ok {
+			active.(*execution).cancel()
+		}
+	}
 	if group != nil {
 		group.abort()
 		write(w, 200, map[string]bool{"stopped": true})
 		return
 	}
-	if a != nil {
-		a.mu.Lock()
-		cancel := a.cancel
-		a.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		} else {
-			ids, err := s.Store.StopWaiting(r.Context(), t.ID)
-			if err != nil {
-				s.respond(w, nil, err)
-				return
-			}
-			for _, id := range ids {
-				if active, ok := s.turns.Load(id); ok {
-					active.(*execution).cancel()
-				}
-			}
-		}
+	if cancel != nil {
+		cancel()
 	}
 	write(w, 200, map[string]bool{"stopped": true})
 }
@@ -855,6 +863,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger == "review" {
 		timeout = 2 * time.Minute
 	}
+	background := work.Trigger == "peer" || work.Trigger == "handoff" || work.Trigger == "task"
+	if background && s.config.BackgroundTimeout > 0 {
+		timeout = s.config.BackgroundTimeout
+	}
 	runCtx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	a.mu.Lock()
@@ -864,6 +876,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	writeCtx, end := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
 	defer end()
 	user := work.Message
+	delegated := work.Trigger == "peer" || work.Trigger == "child"
 	run := store.NewRun(user.ID, user.ThreadID, a.id, work.Trigger)
 	if existing, e := s.Store.Run(writeCtx, run.ID); e == nil {
 		run = existing
@@ -898,6 +911,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		run.SourceMessageID = &user.ID
 	}
+	if work.Trigger != "review" {
+		run.MessageID = pointer("reply:" + run.ID)
+	}
 	state := &turnState{run: run, work: work, store: s.Store, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
 	runCtx = context.WithValue(runCtx, turnKey{}, state)
 	if resuming {
@@ -920,10 +936,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	} else if err == nil && work.Trigger != "created" && !automatic(work.Trigger) {
 		user, err = s.peerContext(runCtx, store.Work{Trigger: work.Trigger, Message: user, DeliveryID: work.DeliveryID, ParentRunID: work.ParentRunID})
 	}
-	if err == nil && work.Trigger != "created" && work.Trigger != "peer" {
+	if err == nil && work.Trigger != "created" && !delegated {
 		user, err = s.workContext(runCtx, run, user)
 		if err == nil {
-			user, err = s.memoryContext(runCtx, run, user)
+			user, err = s.memoryContext(runCtx, run, user, store.Text(work.Message))
 		}
 	}
 	if err == nil && automatic(work.Trigger) {
@@ -939,9 +955,6 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	m := contract.Message{ID: "reply:" + run.ID, ThreadID: user.ThreadID, Role: "assistant", Parts: []contract.Part{}, CreatedAt: store.Now(), Status: "streaming", AgentID: &a.id, RunID: &run.ID}
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		m.ReplyToID = &user.ID
-	}
-	if work.Trigger != "review" {
-		run.MessageID = &m.ID
 	}
 	appendEvent := func(kind string, delta *string, problem *contract.Error, usage *contract.Usage) error {
 		_, err := s.Store.Append(writeCtx, contract.Event{ConversationID: m.ThreadID, Type: kind, MessageID: &m.ID, AgentID: &a.id, RunID: &run.ID, Text: delta, Error: problem, Usage: usage}, &m)
@@ -965,7 +978,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	a.mu.Lock()
 	d, revision := a.definition, a.revision
 	sess := a.session
-	isolated := work.Trigger == "peer" || automatic(work.Trigger)
+	isolated := delegated || automatic(work.Trigger)
 	if isolated {
 		sess = nil
 	}
@@ -983,7 +996,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	state.external = map[string]bool{}
 	state.classes = map[string]ToolClass{}
 	state.known = map[string]bool{}
-	if s.config.Devices != nil && a.threadID == "" && work.Trigger != "peer" {
+	if s.config.Devices != nil && a.threadID == "" && !delegated {
 		state.external["control_device"] = true
 		state.known["control_device"] = true
 	}
@@ -1004,6 +1017,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	}
 	for _, server := range d.MCP {
 		state.prefixes = append(state.prefixes, server.Name+"__")
+		if server.ReadOnly {
+			state.readPrefixes = append(state.readPrefixes, server.Name+"__")
+		}
 	}
 	for name := range builtinClass {
 		state.known[name] = true
@@ -1020,6 +1036,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		var pathErr error
 		if isolated {
 			d.Scope = fmt.Sprintf("peer-%x", sha256.Sum256([]byte(work.DeliveryID)))
+			if work.Trigger == "child" {
+				d.Scope = fmt.Sprintf("child-%x", sha256.Sum256([]byte(run.ID)))
+			}
 			if automatic(work.Trigger) {
 				d.Scope = run.ConversationID
 				d.Ephemeral, d.Automatic = true, true
@@ -1043,18 +1062,18 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				d.ExtraTools = nil
 			} else {
 				d.ExtraTools = slices.Clone(d.ExtraTools)
-				if s.config.Devices != nil && a.threadID == "" && work.Trigger != "peer" {
+				if s.config.Devices != nil && a.threadID == "" && !delegated {
 					d.ExtraTools = append(d.ExtraTools, &controlTool{broker: s.config.Devices, agent: a.id})
 				}
 				if !d.Automatic {
 					d.ExtraTools = append(d.ExtraTools,
-						&peerTool{server: s, handoff: a.threadID != ""}, &routineTool{server: s}, &triggerTool{server: s})
+						&peerTool{server: s, handoff: a.threadID != ""}, &spawnTool{server: s}, &routineTool{server: s}, &triggerTool{server: s})
 				}
 				if work.Trigger == "message" && a.threadID == "" {
 					d.ExtraTools = append(d.ExtraTools, &integrationTool{server: s})
 					state.external["manage_integrations"] = true
 				}
-				if work.Trigger != "peer" {
+				if !delegated {
 					d.ExtraTools = append(d.ExtraTools, &workTool{store: s.Store})
 					if work.Trigger != "review" {
 						d.ExtraTools = append(d.ExtraTools, &taskTool{server: s})
@@ -1176,6 +1195,16 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		err = setActivity("generating", "Composing reply")
 	}
 	if err == nil {
+		aborted := make(chan struct{})
+		// Durable work outlives Send's wait context until the session is aborted.
+		stopAbort := context.AfterFunc(runCtx, func() {
+			defer close(aborted)
+			abortCtx, end := context.WithTimeout(context.WithoutCancel(runCtx), time.Second)
+			defer end()
+			if e := sess.Abort(abortCtx); e != nil && !errors.Is(e, context.Canceled) {
+				s.config.Log.Warn("abort stopped session", "error", e)
+			}
+		})
 		result, err = sess.Send(runCtx, user, func(delta agentruntime.Delta) error {
 			messageMu.Lock()
 			defer messageMu.Unlock()
@@ -1189,6 +1218,12 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				if e := flush(); e != nil {
 					return e
 				}
+			}
+			if delta.Kind == "context.compacted" {
+				_, e := s.Store.Append(writeCtx, contract.Event{
+					Type: delta.Kind, ConversationID: m.ThreadID, RunID: &run.ID, AgentID: &a.id,
+				}, nil)
+				return e
 			}
 			if delta.Kind == "generating" {
 				if len(tools) > 0 {
@@ -1308,6 +1343,20 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			}
 			return nil
 		})
+		if !stopAbort() {
+			<-aborted
+		}
+	}
+	if background && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		err = errors.Join(err, runCtx.Err())
+		if sess != nil {
+			// Durable generation outlives Send's wait unless explicitly aborted.
+			abortCtx, stop := context.WithTimeout(writeCtx, 5*time.Second)
+			if e := sess.Abort(abortCtx); e != nil {
+				s.config.Log.Warn("abort stuck work", "error", e)
+			}
+			stop()
+		}
 	}
 	messageMu.Lock()
 	accepting = false
@@ -1441,6 +1490,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = "timeout"
 			message = "The model took too long to reply."
+			if background {
+				// Agent context only. The parent follow-up speaks to the user.
+				message = "The background task timed out and was stopped."
+				run.Summary = "Background work timed out"
+			}
 		}
 		run.Error = &contract.Error{Code: code, Message: message}
 	}
@@ -1476,6 +1530,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		finalized = true
 	}
 	messageMu.Unlock()
+	if finalized && endsChildren(run.Status) {
+		s.cancelTree(writeCtx, run.ID)
+	}
 	if err != nil {
 		s.config.Log.Warn("agent reply", "id", user.ID, "error", err)
 	}
@@ -1497,6 +1554,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if finalized && work.DeliveryID != "" {
 		if e := s.Store.Receipt(writeCtx, work.DeliveryID, run, m); e != nil {
 			s.config.Log.Error("publish peer result", "error", e)
+		} else if work.ParentRunID != nil {
+			if origin, e := s.Store.Run(writeCtx, *work.ParentRunID); e == nil && endsChildren(origin.Status) {
+				s.cancelTree(writeCtx, origin.ID)
+			}
 		}
 	}
 	if chain, _ := parent.Value(chainKey{}).(*chainState); finalized && chain != nil && handed && run.Status == "completed" {
@@ -1514,6 +1575,23 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 }
 
 func pointer(text string) *string { return &text }
+
+func endsChildren(status string) bool {
+	return status == "failed" || status == "cancelled" || status == "interrupted"
+}
+
+func (s *Server) cancelTree(ctx context.Context, id string) {
+	ids, err := s.Store.DescendantIDs(ctx, id)
+	if err != nil {
+		s.config.Log.Error("cancel child runs", "error", err)
+		return
+	}
+	for _, child := range ids {
+		if active, ok := s.turns.Load(child); ok {
+			active.(*execution).cancel()
+		}
+	}
+}
 
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<20)

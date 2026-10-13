@@ -25,6 +25,7 @@ import (
 	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/embedproc"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/fixture"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/link"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/push"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/search"
@@ -58,7 +59,18 @@ func run() error {
 	deviceListen := flag.String("device-listen", "", "TLS device listener (defaults to backend port + 2)")
 	noMDNS := flag.Bool("no-mdns", os.Getenv("POLYMUX_NO_MDNS") == "1", "disable Bonjour LAN advertisement")
 	tailscale := flag.Bool("tailscale", os.Getenv("POLYMUX_TAILSCALE") == "1", "use Tailscale listeners (requires Tailscale)")
+	verify := fixture.Register(flag.CommandLine)
 	flag.Parse()
+	if *verify {
+		dataDir, addr, err := fixture.Apply(*dir)
+		if err != nil {
+			return err
+		}
+		*dir = dataDir
+		*listen = addr
+		*dev = true
+		fmt.Println(addr)
+	}
 	if *dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -145,7 +157,9 @@ func run() error {
 	}
 	defer runtime.Close()
 	definitions := defaults(model)
-	if path := os.Getenv("POLYMUX_AGENTS"); path != "" {
+	if *verify {
+		definitions = fixture.Agents(model)
+	} else if path := os.Getenv("POLYMUX_AGENTS"); path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -194,6 +208,11 @@ func run() error {
 		return err
 	}
 	defer api.Close()
+	if *verify {
+		if err := fixture.HoldStream(ctx, s); err != nil {
+			return err
+		}
+	}
 	httpServer := &http.Server{Addr: *listen, Handler: api, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {

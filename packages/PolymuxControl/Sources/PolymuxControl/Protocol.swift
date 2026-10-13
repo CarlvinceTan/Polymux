@@ -41,8 +41,9 @@ public struct PairTicket: Codable, Sendable {
 
     public static func parse(_ input: String, server: URL) throws -> PairTicket {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.hasPrefix("polymux-pair:"), text.count < 8192 else { throw ControlError.invalidTicket }
-        var encoded = String(text.dropFirst(10)).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        let prefix = "polymux-pair:"
+        guard text.hasPrefix(prefix), text.count < 8192 else { throw ControlError.invalidTicket }
+        var encoded = String(text.dropFirst(prefix.count)).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
         guard let data = Data(base64Encoded: encoded) else { throw ControlError.invalidTicket }
         let ticket = try JSONDecoder().decode(PairTicket.self, from: data)

@@ -391,6 +391,88 @@ func TestX6DisconnectMidStream(t *testing.T) {
 	}
 }
 
+func TestB1Spawn(t *testing.T) {
+	for _, target := range []struct{ name, id string }{{"own agent", ""}, {"other agent", "b"}} {
+		t.Run(target.name, func(t *testing.T) {
+			opened := make(chan struct{})
+			release := make(chan struct{})
+			args := map[string]any{"task": "CHILD_ONLY_B1: Complete the bounded task"}
+			if target.id != "" {
+				args["agent_id"] = target.id
+			}
+			reply := func(req *ChatRequest) Response {
+				text := requestText(req)
+				if strings.Contains(text, "CHILD_ONLY_B1") {
+					if strings.Contains(text, "PRIVATE_PARENT_B1") {
+						t.Error("child received private parent context")
+					}
+					return HoldReply("child finished", release, func() { close(opened) }, nil)
+				}
+				if !hasToolResult(req, "b1-spawn", "child") {
+					t.Error("parent did not receive the child run")
+				}
+				return TextReply("parent continues independently")
+			}
+			h := Start(t, Options{
+				ID: "B1",
+				Agents: []agentruntime.Definition{
+					{Agent: contract.Agent{ID: "a", Name: "A", Model: evalModel}, Tools: []string{}},
+					{Agent: contract.Agent{ID: "b", Name: "B", Model: evalModel}, Tools: []string{}},
+				},
+				Steps: []Step{
+					Fixed(func(req *ChatRequest) error {
+						if !strings.Contains(string(req.Tools), "spawn_task") {
+							return fmt.Errorf("spawn_task is unavailable")
+						}
+						return nil
+					}, ToolReply("b1-spawn", "spawn_task", args)),
+					{Response: reply}, {Response: reply},
+				},
+			})
+			t.Cleanup(func() { close(release) })
+			if code := h.Send("a", "b1-user", "Spawn a bounded child task, then reply. PRIVATE_PARENT_B1"); code != http.StatusAccepted && code != http.StatusOK {
+				fail(t, "B1", fmt.Sprintf("send status %d", code))
+				return
+			}
+			WaitHold(t, "B1", opened, holdWait)
+			parent := h.WaitRun("a", "b1-user", "a", deadline)
+			owner := target.id
+			if owner == "" {
+				owner = "a"
+			}
+			runs, err := h.Store.Runs(t.Context(), owner)
+			if err != nil {
+				fail(t, "B1", err.Error())
+				return
+			}
+			var children []contract.Run
+			for _, run := range runs {
+				if run.ParentRunID != nil && *run.ParentRunID == parent.ID {
+					children = append(children, run)
+				}
+			}
+			if parent.Status != "completed" || len(children) != 1 || children[0].Trigger != "child" || children[0].Status != "running" {
+				fail(t, "B1", fmt.Sprintf("parent=%s children=%+v", parent.Status, children))
+				return
+			}
+			if parent.MessageID == nil {
+				fail(t, "B1", "parent has no final message")
+				return
+			}
+			message, err := h.Store.Message(t.Context(), *parent.MessageID)
+			if err != nil || messageText(message) != "parent continues independently" {
+				fail(t, "B1", fmt.Sprintf("parent did not continue after spawn: %v", err))
+				return
+			}
+			if err := h.Emulator.Done(); err != nil {
+				fail(t, "B1", err.Error())
+				return
+			}
+			pass(t, "B1", "parent continued and completed while its isolated child run remained active")
+		})
+	}
+}
+
 func TestB2BackgroundNotify(t *testing.T) {
 	b2Reply := func(req *ChatRequest) Response {
 		text := requestText(req)
@@ -480,6 +562,207 @@ func TestB2BackgroundNotify(t *testing.T) {
 	default:
 		pass(t, "B2", "peer result delivered exactly once without user action")
 	}
+}
+
+func TestB4StopChildren(t *testing.T) {
+	for _, status := range []string{"running", "waiting_peer"} {
+		t.Run(status, func(t *testing.T) {
+			opened := map[string]chan struct{}{}
+			closed := map[string]chan struct{}{}
+			for _, id := range []string{"parent", "b", "c", "unrelated"} {
+				opened[id], closed[id] = make(chan struct{}), make(chan struct{})
+			}
+			release := make(chan struct{})
+			defer close(release)
+			hold := func(id string) Response {
+				return HoldReply("working", release, func() { close(opened[id]) }, func() { close(closed[id]) })
+			}
+			reply := func(req *ChatRequest) Response {
+				text := requestText(req)
+				switch {
+				case strings.Contains(text, "B4 unrelated"):
+					return hold("unrelated")
+				case strings.Contains(text, "B4 child b"):
+					return hold("b")
+				case strings.Contains(text, "B4 child c"):
+					return hold("c")
+				case strings.Contains(text, "B4 child d"):
+					return TextReply("queued child should never execute")
+				default:
+					for _, id := range []string{"b", "c", "d"} {
+						if !hasToolResult(req, "b4-"+id, "delivery:") {
+							return ToolReply("b4-"+id, "message_agent", map[string]any{
+								"agent_id": id, "message": "B4 child " + id, "intent": "request",
+							})
+						}
+					}
+					if status == "running" {
+						return hold("parent")
+					}
+					return TextReply("delegated work")
+				}
+			}
+			var steps []Step
+			for range 7 {
+				steps = append(steps, Step{Response: reply})
+			}
+			var agents []agentruntime.Definition
+			for _, id := range []string{"a", "b", "c", "d"} {
+				agents = append(agents, agentruntime.Definition{Agent: contract.Agent{ID: id, Name: id, Model: evalModel}, Tools: []string{}})
+			}
+			h := Start(t, Options{ID: "B4", Agents: agents, Steps: steps})
+			if code := h.Send("d", "b4-unrelated", "B4 unrelated"); code != http.StatusAccepted {
+				h.die(fmt.Sprintf("unrelated send status %d", code))
+			}
+			WaitHold(t, "B4", opened["unrelated"], holdWait)
+			if code := h.Send("a", "b4-parent", "Delegate three tasks"); code != http.StatusAccepted {
+				h.die(fmt.Sprintf("parent send status %d", code))
+			}
+			parentID := RunID("b4-parent", "a")
+			for _, id := range []string{"b", "c"} {
+				WaitHold(t, "B4", opened[id], holdWait)
+			}
+			if status == "running" {
+				WaitHold(t, "B4", opened["parent"], holdWait)
+			}
+			h.WaitStatus(parentID, deadline, status)
+			childID := func(id string) string { return RunID("delivery:"+parentID+":b4-"+id, id) }
+			h.WaitStatus(childID("d"), deadline, "queued")
+			stopAt := time.Now()
+			end := stopAt.Add(cancelMax)
+			if code := h.Stop("a"); code != http.StatusOK {
+				h.die(fmt.Sprintf("stop status %d", code))
+			}
+			for _, id := range []string{parentID, childID("b"), childID("c"), childID("d")} {
+				run := h.WaitRunID(id, time.Until(end))
+				if run.Status != "cancelled" || run.Error == nil || run.Error.Code != "stopped" {
+					h.die(fmt.Sprintf("run %s not stopped: %+v", id, run))
+				}
+			}
+			for _, id := range []string{"b", "c"} {
+				WaitHold(t, "B4", closed[id], time.Until(end))
+			}
+			if status == "running" {
+				WaitHold(t, "B4", closed["parent"], time.Until(end))
+			}
+			if time.Now().After(end) {
+				h.die("parent and children took at least 2 seconds to stop")
+			}
+			select {
+			case <-closed["unrelated"]:
+				h.die("stop cancelled unrelated work on a child agent")
+			default:
+			}
+			time.Sleep(200 * time.Millisecond)
+			for _, ts := range h.Emulator.RequestTimes() {
+				if ts.After(stopAt) {
+					h.die("model request arrived after parent stop")
+				}
+			}
+			var queued int
+			if err := h.Store.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM jobs WHERE id=? AND state!='done'`, "delivery:"+parentID+":b4-d").Scan(&queued); err != nil || queued != 0 {
+				h.die(fmt.Sprintf("queued child remains executable: %d %v", queued, err))
+			}
+			if _, err := h.Store.Work(t.Context(), "followup:"+parentID); !errors.Is(err, sql.ErrNoRows) {
+				h.die(fmt.Sprintf("stopped parent generated a follow-up: %v", err))
+			}
+			if err := h.Emulator.Done(); err != nil {
+				h.die(err.Error())
+			}
+			pass(t, "B4", "stop cancelled parent, active streams, and queued children within 2s while preserving unrelated work")
+		})
+	}
+}
+
+func TestB5StuckBackground(t *testing.T) {
+	opened, closed, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	reply := func(req *ChatRequest) Response {
+		if _, ok := toolMessage(req, "b5-call"); ok {
+			return TextReply("Delegated background work.")
+		}
+		return HoldReply("child still working", release, func() { close(opened) }, func() { close(closed) })
+	}
+	h := Start(t, Options{
+		ID: "B5", BackgroundTimeout: time.Second,
+		Agents: []agentruntime.Definition{
+			{Agent: contract.Agent{ID: "a", Name: "A", Model: evalModel}},
+			{Agent: contract.Agent{ID: "b", Name: "B", Model: evalModel}},
+		},
+		Steps: []Step{
+			Fixed(nil, ToolReply("b5-call", "message_agent", map[string]any{
+				"agent_id": "b", "message": "Hold this background task", "intent": "request",
+			})),
+			{Response: reply},
+			{Response: reply},
+			Fixed(func(req *ChatRequest) error {
+				text := requestText(req)
+				if !strings.Contains(text, "timed out") || !strings.Contains(text, `"status":"failed"`) {
+					return errors.New("follow-up did not receive the timeout")
+				}
+				return nil
+			}, TextReply("I stopped that background task because it took too long. Tell me if you want to try again.")),
+		},
+	})
+	t.Cleanup(func() { close(release) })
+	if code := h.Send("a", "b5-user", "Ask B for background help"); code != http.StatusAccepted {
+		h.die(fmt.Sprintf("send status %d", code))
+	}
+	WaitHold(t, "B5", opened, holdWait)
+	parentID := RunID("b5-user", "a")
+	deliveryID := "delivery:" + parentID + ":b5-call"
+	childID := store.NewRun(deliveryID, "b", "b", "peer").ID
+	child := h.WaitRunID(childID, holdWait)
+	parent := h.WaitRunID(parentID, holdWait)
+	WaitHold(t, "B5", closed, holdWait)
+	if child.Status != "failed" || child.Error == nil || child.Error.Code != "timeout" || child.FinishedAt == nil {
+		h.die(fmt.Sprintf("child did not fail cleanly on timeout: %+v", child))
+	}
+	if !strings.Contains(strings.ToLower(child.Error.Message), "timed out") {
+		h.die("child timeout did not explain the stop")
+	}
+	if parent.Status != "failed" || parent.Error == nil || parent.Error.Code != "peer_failed" {
+		h.die("parent left waiting: " + parent.Status)
+	}
+	if followup := h.WaitRunID(store.NewRun("followup:"+parentID, "a", "a", "follow_up").ID, holdWait); followup.Status != "completed" {
+		h.die("follow-up did not finish: " + followup.Status)
+	}
+	said := "I stopped that background task because it took too long. Tell me if you want to try again."
+	sawReply := false
+	for _, message := range h.Messages("a") {
+		body := messageText(message)
+		if strings.HasPrefix(message.ID, "receipt:") || strings.Contains(body, "Background work appears stuck") || strings.Contains(body, child.Error.Message) {
+			h.die(fmt.Sprintf("stuck notice in the user conversation: %+v", message))
+		}
+		if message.Role == "assistant" && message.Status == "done" && body == said {
+			sawReply = true
+		}
+	}
+	if !sawReply {
+		h.die("follow-up reply missing from the user conversation")
+	}
+	if err := h.Store.Receipt(t.Context(), deliveryID, child, contract.Message{}); err != nil {
+		h.die(err.Error())
+	}
+	events, err := h.Store.Events(t.Context(), "a", 0, 200)
+	if err != nil {
+		h.die(err.Error())
+	}
+	notices, failures := 0, 0
+	for _, event := range events {
+		if event.Type == "message.start" && event.MessageID != nil && strings.HasPrefix(*event.MessageID, "receipt:") {
+			notices++
+		}
+		if event.Type == "peer.delivery" && event.Delivery != nil && event.Delivery.ID == deliveryID && event.Delivery.Status == "failed" {
+			failures++
+		}
+	}
+	if notices != 0 || failures != 1 {
+		h.die(fmt.Sprintf("want no receipt notice and one failed delivery, got %d and %d", notices, failures))
+	}
+	if err := h.Emulator.Done(); err != nil {
+		h.die(err.Error())
+	}
+	pass(t, "B5", "held child timed out and aborted, and the parent explained it in chat without a receipt notice")
 }
 
 func countPeerReceipts(messages []contract.Message) int {
@@ -592,7 +875,7 @@ func TestC5ApprovalGate(t *testing.T) {
 		fail(t, "C5", "missing approval_requested event")
 		return
 	}
-	resp, err := approvalPost(h.HTTP.URL+"/approvals/"+pending[0].ID+"/approve")
+	resp, err := approvalPost(h.HTTP.URL + "/approvals/" + pending[0].ID + "/approve")
 	if err != nil {
 		fail(t, "C5", err.Error())
 		return
@@ -647,7 +930,7 @@ func TestC5ApprovalGate(t *testing.T) {
 		fail(t, "C5", fmt.Sprintf("deny pending: %v %v", denyPending, err))
 		return
 	}
-	resp, err = approvalPost(h2.HTTP.URL+"/approvals/"+denyPending[0].ID+"/deny")
+	resp, err = approvalPost(h2.HTTP.URL + "/approvals/" + denyPending[0].ID + "/deny")
 	if err != nil {
 		fail(t, "C5", err.Error())
 		return

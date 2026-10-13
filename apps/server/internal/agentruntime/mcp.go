@@ -20,6 +20,8 @@ type MCPServer struct {
 	Args       []string          `json:"args,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
 	NativeOnly bool              `json:"nativeOnly,omitempty"`
+	// ReadOnly is an operator-reviewed guarantee for every tool on this connection.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 func connectMCP(ctx context.Context, servers []MCPServer, cwd string) ([]agent.AgentTool, []*mcp.Client, error) {
@@ -73,16 +75,24 @@ func connectMCP(ctx context.Context, servers []MCPServer, cwd string) ([]agent.A
 				cleanup()
 				return nil, nil, err
 			}
-			tools = append(tools, &mcpTool{client: client, tool: tool, schema: ai.ToolSchema{Name: config.Name + "__" + tool.Name, Description: tool.Description, Parameters: params}})
+			tools = append(tools, &mcpTool{client: client, tool: tool, readOnly: config.ReadOnly, schema: ai.ToolSchema{Name: config.Name + "__" + tool.Name, Description: tool.Description, Parameters: params}})
 		}
 	}
 	return tools, clients, nil
 }
 
 type mcpTool struct {
-	client *mcp.Client
-	tool   mcp.Tool
-	schema ai.ToolSchema
+	client   *mcp.Client
+	tool     mcp.Tool
+	schema   ai.ToolSchema
+	readOnly bool
+}
+
+func (t *mcpTool) ToolClass() string {
+	if t.readOnly {
+		return "read"
+	}
+	return "consequential"
 }
 
 func (t *mcpTool) Name() string                           { return t.schema.Name }

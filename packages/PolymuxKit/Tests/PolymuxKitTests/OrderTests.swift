@@ -2,9 +2,9 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
-@Suite @MainActor
+@Suite
 struct OrderTests {
-    @Test func agentsFollowTheirLatestMessage() throws {
+    @Test func agentsFollowTheirLatestMessage() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("polymux-order-\(UUID())")
         defer { try? FileManager.default.removeItem(at: folder) }
         let cache = try LocalCache(url: folder.appendingPathComponent("cache.sqlite"))
@@ -18,12 +18,15 @@ struct OrderTests {
             Thread(id: "milo", agentID: "milo", lastSeq: 1, lastMessage: newer),
             Thread(id: "cleo", agentID: "cleo"),
         ])
-        let sidebar = SidebarStore(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!), cache: cache)
-        #expect(sidebar.recentFirst([arlo, milo, cleo]).map(\.name) == ["Milo", "Arlo", "Cleo"])
-        #expect(sidebar.recentFirst([cleo, milo, arlo]).map(\.name) == ["Milo", "Arlo", "Cleo"])
+        let sidebar = await SidebarStore(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!), cache: cache)
+        await sidebar.load()
+        let forward = await sidebar.recentFirst([arlo, milo, cleo]).map(\.name)
+        let reversed = await sidebar.recentFirst([cleo, milo, arlo]).map(\.name)
+        #expect(forward == ["Milo", "Arlo", "Cleo"])
+        #expect(reversed == ["Milo", "Arlo", "Cleo"])
     }
 
-    @Test func threadsWithoutMessagesFallBackToName() throws {
+    @Test func threadsWithoutMessagesFallBackToName() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("polymux-order-\(UUID())")
         defer { try? FileManager.default.removeItem(at: folder) }
         let cache = try LocalCache(url: folder.appendingPathComponent("cache.sqlite"))
@@ -33,8 +36,10 @@ struct OrderTests {
             Thread(id: "wren", agentID: "wren"),
             Thread(id: "arlo", agentID: "arlo"),
         ])
-        let sidebar = SidebarStore(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!), cache: cache)
-        #expect(sidebar.recentFirst([wren, arlo]).map(\.name) == ["Arlo", "Wren"])
+        let sidebar = await SidebarStore(client: APIClient(baseURL: URL(string: "http://127.0.0.1:1")!), cache: cache)
+        await sidebar.load()
+        let names = await sidebar.recentFirst([wren, arlo]).map(\.name)
+        #expect(names == ["Arlo", "Wren"])
     }
 
     private func message(id: String, thread: String, at seconds: TimeInterval) -> Message {

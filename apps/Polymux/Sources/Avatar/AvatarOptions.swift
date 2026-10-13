@@ -165,7 +165,7 @@ struct AvatarOptions: Codable, Equatable, Sendable {
                 let agent = try await write.task.value
                 let current = writes[agentID]?.token == write.token
                 if current { writes.removeValue(forKey: agentID) }
-                if current, !removedIDs.contains(agentID) { sidebar.accept(agent) }
+                if current, !removedIDs.contains(agentID) { await sidebar.accept(agent) }
                 if current, !removedIDs.contains(agentID), options(for: agentID) == write.options {
                     if let design = agent.avatar { saved[agentID] = AvatarOptions(design: design) }
                     dirtyIDs.remove(agentID)
