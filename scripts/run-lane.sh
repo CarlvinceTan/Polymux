@@ -151,7 +151,9 @@ git -C "$REPO" fetch -q origin; TRIED=""
 # brief goes back to $OPS/queue/ as "<title> (attempt 2)" and we exit; lane-guard --dispatch (chained
 # at exit) starts it on a free lane. A failed attempt 2+ goes to failures.tsv + NEEDS_CODY.
 # free_branch BRANCH WT: another worktree holding refs/heads/BRANCH makes `git worktree add` fail. If no live
-# process has its cwd in it (and we hold the branch lock), it is stale: a clean one is removed, a dirty one is
+# process has its cwd in it (lsof; missing/failing lsof = in use, fail closed) and lanelib in_use (cleanup.sh's
+# rule: live verify lock / fresh marker, build slot, live unit lock, pgrep) says free, it is stale (.build/proof is
+# archived to $OPS/proof-archive first): a clean one is removed, a dirty one is
 # detached (changes kept). A local branch that has diverged from origin/BRANCH is kept as
 # cody-stale/<branch>-<sha7> and the local branch is moved to origin/BRANCH.
 free_branch() {
@@ -159,8 +161,13 @@ free_branch() {
   while IFS= read -r line; do case $line in "worktree "*) cur=${line#worktree };; "branch refs/heads/$b") p=$cur;; esac; done \
     < <(git -C "$REPO" worktree list --porcelain)
   if [ -n "$p" ] && [ "$p" != "$me" ]; then
-    if lsof -d cwd -Fn 2>/dev/null | grep -qE "^n$p(/|\$)"; then echo "branch $b is checked out in $p by a live process; leaving it" >> "$LOG"
-    elif [ -z "$(git -C "$p" status --porcelain 2>/dev/null)" ]; then git -C "$REPO" worktree remove "$p" >> "$LOG" 2>&1 && echo "removed stale worktree $p (held $b)" >> "$LOG"
+    local cw; cwd_in_use "$p"; cw=$?; LOCKS=${LOCKS:-$(cfg get lock_dir)}
+    if [ $cw = 0 ]; then echo "branch $b is checked out in $p by a live process; leaving it" >> "$LOG"
+    elif [ $cw = 2 ]; then echo "branch $b is checked out in $p; can't check live processes (lsof missing or failed); leaving it (fail closed)" >> "$LOG"
+    elif OPS=$OPS in_use "$p"; then echo "branch $b is checked out in $p, which is in use (verify lock/marker, build slot or unit lock); leaving it" >> "$LOG"
+    elif [ -z "$(git -C "$p" status --porcelain 2>/dev/null)" ]; then
+      [ -d "$p/.build/proof" ] && mkdir -p "$OPS/proof-archive" && cp -R "$p/.build/proof" "$OPS/proof-archive/$(basename "$p")-$(date +%Y%m%d%H%M%S)" 2>/dev/null   # keep evidence (ignored files go with the tree)
+      git -C "$REPO" worktree remove "$p" >> "$LOG" 2>&1 && echo "removed stale worktree $p (held $b)" >> "$LOG"
     else git -C "$p" checkout -q --detach >> "$LOG" 2>&1 && echo "detached stale dirty worktree $p (held $b; changes kept)" >> "$LOG"; fi
   fi
   git -C "$REPO" show-ref -q "refs/heads/$b" && git -C "$REPO" show-ref -q "refs/remotes/origin/$b" || return 0
