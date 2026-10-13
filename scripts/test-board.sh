@@ -41,6 +41,7 @@ P1="$T/proof1"; P2="$T/proof2"; mkdir -p "$P1" "$P2"
 HOME=$(eval echo ~"$(id -un)") python3 -c 'import random,sys; from PIL import Image; r=random.Random(1); im=Image.new("RGB",(200,100))
 im.putdata([(r.randrange(256),r.randrange(256),r.randrange(256)) for _ in range(20000)]); im.save(sys.argv[1]+"/ready-a.png")
 Image.new("RGB",(200,100),"white").save(sys.argv[1]+"/blank.png")' "$P1"; cp "$P1/ready-a.png" "$P2/"
+printf 'ready-a.png\nblank.png\n' | tee "$P1/approved" > "$P2/approved"
 SHA=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$P1/ready-a.png")
 rm "$LANES_HOME/BOARD_LIVE"; PATH=$BP $BU verify fake-unit UI-verified "$P1" https://github.com/o/r/raw/proof-media/run1
 check "board: dry-run media line carries sha256; blank image held" 'grep -q "DRY-RUN would append .*run1/ready-a.png sha256=$SHA" "$BLOG" && grep -q "held media (pre-publish check failed: mostly empty space.*blank.png" "$BLOG" && [ "$(NP blocks)" = 0 ]'
@@ -51,6 +52,14 @@ check "board: same proof across two runs (new refs) appended once (sha ledger)" 
 rm "$LANES_HOME/board/fake-unit.media"; printf '{"type":"image","image":{"caption":[{"plain_text":"proof sha256:%s ready-a.png"}]}}' "$SHA" > "$T/blocks"
 PATH=$BP $BU verify fake-unit UI-verified "$P2" https://github.com/o/r/raw/proof-media/run3
 check "board: proof already on card (caption sha, page 2) not re-appended" '[ "$(NP blocks)" = 1 ] && grep -q "already on card" "$BLOG"'
+# approved-list gate: unlisted file, .mov, missing list -> no append (live)
+P3="$T/proof3"; P4="$T/proof4"; mkdir -p "$P3" "$P4"
+HOME=$(eval echo ~"$(id -un)") python3 -c 'import random,sys; from PIL import Image; r=random.Random(2); im=Image.new("RGB",(200,100))
+im.putdata([(r.randrange(256),r.randrange(256),r.randrange(256)) for _ in range(20000)]); im.save(sys.argv[1]+"/fresh.png")' "$P3"; cp "$P3/fresh.png" "$P4/"
+ffmpeg -v error -f lavfi -i testsrc=size=320x240:rate=10 -t 1 -pix_fmt yuv420p "$P3/clip.mov"
+echo clip.mov > "$P3/approved"; : > "$BLOG"
+PATH=$BP $BU verify fake-unit UI-verified "$P3" https://github.com/o/r/raw/proof-media/run4; PATH=$BP $BU verify fake-unit UI-verified "$P4" https://github.com/o/r/raw/proof-media/run5
+check "board: unlisted file, .mov, or no approved list -> no append" '[ "$(NP blocks)" = 1 ] && grep -q "PASS.*clip.mov" <(python3 scripts/media-check.py "$P3") && grep -q "not in $P3/approved): fresh.png" "$BLOG" && grep -q "not uploaded by publish_proof): clip.mov" "$BLOG" && grep -q "not in $P4/approved): fresh.png" "$BLOG"'
 rm "$LANES_HOME/BOARD_LIVE"; echo Backlog > "$T/cur"; : > "$BLOG"
 printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard fails\n' > "$T/bf.task"
 PATH=$BP LANE_FORCE_FAIL="laneA laneB" $RL laneA "$T/bf.task" >/dev/null 2>&1
