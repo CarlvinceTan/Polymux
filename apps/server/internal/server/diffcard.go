@@ -70,9 +70,9 @@ func diffHTML(ctx context.Context, dir string) (string, error) {
 	return body.String(), nil
 }
 
-func prStatus(ctx context.Context, dir, thread string) (string, bool) {
+func prStatus(ctx context.Context, dir, agent, thread string) (string, bool) {
 	// gh pr view accepts a branch as its positional selector, not --head.
-	data, err := repoOutput(ctx, dir, "gh", "pr", "view", "polymux/"+thread, "--json", "number,url,state,isDraft,statusCheckRollup,mergeable,headRefOid")
+	data, err := repoOutput(ctx, dir, "gh", "pr", "view", agentruntime.BranchName(agent, thread), "--json", "number,url,state,isDraft,statusCheckRollup,mergeable,headRefOid")
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok && strings.Contains(string(exit.Stderr), "no pull requests found") {
 			return "No PR yet", false
@@ -130,9 +130,9 @@ func (s *Server) diffCard(d agentruntime.Definition, run contract.Run) {
 
 func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *contract.Message, body string, interval time.Duration) {
 	dir := s.worktrees.Path(d.Agent.ID, agentruntime.WorkspaceThread(d))
-	action := mergeAction(ctx, dir, agentruntime.WorkspaceThread(d))
+	action := mergeAction(ctx, dir, d.Agent.ID, agentruntime.WorkspaceThread(d))
 	for {
-		status, pending := prStatus(ctx, dir, agentruntime.WorkspaceThread(d))
+		status, pending := prStatus(ctx, dir, d.Agent.ID, agentruntime.WorkspaceThread(d))
 		if !strings.Contains(status, " · open") {
 			action = ""
 		}
@@ -163,14 +163,18 @@ func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *
 	}
 }
 
-func mergeAction(ctx context.Context, dir, thread string) string {
-	data, err := repoOutput(ctx, dir, "gh", "pr", "view", "polymux/"+thread, "--json", "number,state,isDraft,headRefOid")
-	var pr struct {
+func mergeAction(ctx context.Context, dir, agent, thread string) string {
+	data, err := repoOutput(ctx, dir, "gh", "pr", "list", "--head", agentruntime.BranchName(agent, thread), "--json", "number,state,isDraft,headRefOid")
+	var prs []struct {
 		Number            int
 		State, HeadRefOid string
 		IsDraft           bool
 	}
-	if err != nil || json.Unmarshal(data, &pr) != nil || pr.Number < 1 || pr.State != "OPEN" || pr.IsDraft || !mergeSHA.MatchString(pr.HeadRefOid) {
+	if err != nil || json.Unmarshal(data, &prs) != nil || len(prs) != 1 {
+		return ""
+	}
+	pr := prs[0]
+	if pr.Number < 1 || pr.State != "OPEN" || pr.IsDraft || !mergeSHA.MatchString(pr.HeadRefOid) {
 		return ""
 	}
 	intent, _ := json.Marshal(mergeArgs{PR: pr.Number, HeadSHA: pr.HeadRefOid})
