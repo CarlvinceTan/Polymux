@@ -8,6 +8,10 @@ struct AttachmentPreview: View {
     let client: APIClient
     var showsName = true
     var square: CGFloat? = nil
+    /// The composer's file while the upload is in flight; rendered without a server round trip.
+    var localURL: URL? = nil
+    /// 0...1 while uploading. Shows the per-file ring; nil hides it.
+    var progress: Double? = nil
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: CGImage?
     @State private var loading = false
@@ -15,7 +19,14 @@ struct AttachmentPreview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Group {
-                if let imageURL {
+                if localURL != nil {
+                    if let thumbnail {
+                        Image(decorative: thumbnail, scale: displayScale)
+                            .resizable().aspectRatio(contentMode: square == nil ? .fit : .fill)
+                    } else {
+                        fallback
+                    }
+                } else if let imageURL {
                     AsyncImage(url: imageURL) { phase in
                         switch phase {
                         case .success(let image): image.resizable().aspectRatio(contentMode: square == nil ? .fit : .fill)
@@ -36,6 +47,9 @@ struct AttachmentPreview: View {
             .frame(width: square, height: square)
             .frame(maxWidth: square ?? 160, maxHeight: square ?? 140)
             .clipShape(.rect(cornerRadius: 8))
+            .overlay(alignment: .bottomTrailing) {
+                if let progress { UploadRing(progress: progress) }
+            }
             if showsName {
                 Text(attachment.name)
                     .font(.caption2).foregroundStyle(.secondary)
@@ -84,11 +98,17 @@ struct AttachmentPreview: View {
         guard !Task.isCancelled else { return }
         thumbnail = nil
         loading = false
-        guard imageURL == nil, let url = client.resolve(attachment.url) else { return }
+        let file: URL
+        if let localURL {
+            file = localURL
+        } else {
+            guard imageURL == nil, let url = client.resolve(attachment.url) else { return }
+            guard let cached = try? await MediaCache.shared.file(url: url, name: attachment.name) else { return }
+            file = cached
+        }
+        guard !Task.isCancelled else { return }
         loading = true
         do {
-            let file = try await MediaCache.shared.file(url: url, name: attachment.name)
-            try Task.checkCancellation()
             let request = QLThumbnailGenerator.Request(fileAt: file, size: CGSize(width: 160, height: 140), scale: displayScale, representationTypes: .all)
             let representation = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
             try Task.checkCancellation()
@@ -98,5 +118,27 @@ struct AttachmentPreview: View {
             guard !Task.isCancelled else { return }
             loading = false
         }
+    }
+}
+
+/// The small per-file upload ring the composer's bubble shows.
+private struct UploadRing: View {
+    let progress: Double
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(.quaternary, lineWidth: 2.5)
+            Circle()
+                .trim(from: 0, to: max(0.06, min(1, progress)))
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 18, height: 18)
+        .padding(4)
+        .background(.thinMaterial, in: Circle())
+        .padding(5)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Uploading")
+        .accessibilityValue("\(Int((min(1, max(0, progress)) * 100).rounded())) percent")
     }
 }

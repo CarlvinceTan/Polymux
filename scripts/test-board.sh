@@ -57,6 +57,11 @@ for l in unit-test-verified:38201913 build-only:0f2c4aa2 blocked:b8e8ce46 failed
 check "board: every Verification level maps to its Project option" '[ ! -f "$T/lvbad" ]'
 : > "$T/ghb.log"; PATH=$BP $BU start hdr-unit; PATH=$BP $BU merged hdr-unit
 check "board: issue not in map -> one node lookup, cached for the next event" '[ "$(grep -c "issue(number" "$T/ghb.log")" = 1 ] && [ "$(NA "c=LOOKED_7")" = 2 ] && [ "$(cat "$LANES_HOME/board/issue-7.node")" = LOOKED_7 ]'
+# DIFF-1 (#174), 13 Oct: legacy Notion card mapped to an issue with an EMPTY node column -> one lookup, Status "In progress" (65b9edf8)
+printf '3f80dbb6e05381f591eff5293992f92c\t174\t\n' >> "$BOARD_MAP"; printf 'needs: none\ncard: https://app.notion.com/p/3f80dbb6e05381f591eff5293992f92c\nDiff unit\n' > "$T/d.task"
+PATH=$BP $BU card diff-unit "$T/d.task"; : > "$T/ghb.log"; echo Backlog > "$T/cur"; PATH=$BP $BU start diff-unit
+check "board: legacy card with empty map node (DIFF-1 #174) -> issue lookup + Status 'In progress' (65b9edf8)" \
+  '[ "$(cat "$C/diff-unit")" = 174 ] && [ "$(grep -c "issue(number.* n=174" "$T/ghb.log")" = 1 ] && [ "$(NA "c=LOOKED_174")" = 1 ] && [ "$(NW "o=65b9edf8")" = 1 ]'
 : > "$T/ghb.log"; touch "$T/addfail"; OUT=$(PATH=$BP $BU merged fake-unit); rm "$T/addfail"
 touch "$T/lookfail"; echo 8 > "$C/look-unit"; PATH=$BP $BU start look-unit >/dev/null; rm "$T/lookfail"
 check "board: failed add / lookup -> board_error, no field write, exit 0" '[ "$(NW)" = 0 ] && echo "$OUT" | grep -q "^board_error:" && grep -q "board_error	start	issue #8 node lookup failed" "$LANES_HOME/events.tsv"'
