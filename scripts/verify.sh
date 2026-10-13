@@ -52,11 +52,10 @@ step() {  # step NAME cmd...
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
-scope_check() {  # every changed file must match one VERIFY_SCOPE glob
-  local bad=0 f g ok; for f in $(git diff --name-only "${TI_BASE:-origin/main}"...HEAD); do ok=0
-    for g in $(echo "$VERIFY_SCOPE" | tr ',' ' '); do case $f in $g) ok=1; break;; esac; done
-    [ $ok = 1 ] || { echo "outside scope: $f"; bad=1; }; done; return $bad; }
-[ -n "${VERIFY_SCOPE:-}" ] && { export -f scope_check; export VERIFY_SCOPE TI_BASE="${TI_BASE:-origin/main}"; step allowed-files bash -c scope_check; }
+[ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"
+# Lane scripts changed -> run their hermetic tests too.
+git diff --name-only "${TI_BASE:-origin/main}"...HEAD | grep -qE '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac)\.sh|scripts/lanes\.py|agents/lanes\.toml)$' && \
+  step lane-tests bash "$SD/test-lanes.sh"
 [ -d apps/server ] && { step go-vet sh -c 'cd apps/server && go vet -tags sqlite_fts5 ./...'
   step go-test sh -c 'cd apps/server && go test -tags sqlite_fts5 -count=1 ./...'; }
 python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }
@@ -84,14 +83,23 @@ rm -rf "$SLOT"; SLOT=""
 # simctl shots and no macOS screencapture (unreliable over SSH on cvmini).
 for r in mac ios ready; do [ -d "$R/$r.xcresult" ] && xcrun xcresulttool export attachments \
   --path "$R/$r.xcresult" --output-path "$P/att-$r" >/dev/null 2>&1; done
-[ -d "$P/att-ready" ] && find "$P/att-ready" -name '*.png' | while read -r f; do cp "$f" "$P/ready-$(basename "$f")"; done
-[ -f "$P/att-ready/ready.json" ] && cp "$P/att-ready/ready.json" "$P/ready.json"
+# Exported files have generated names; manifest.json maps them to the attachment names.
+[ -f "$P/att-ready/manifest.json" ] && python3 - "$P" <<'PY'
+import json, shutil, sys, os
+P = sys.argv[1]; A = os.path.join(P, "att-ready")
+for t in json.load(open(os.path.join(A, "manifest.json"))):
+    for a in t.get("attachments", []):
+        f, n = a.get("exportedFileName", ""), a.get("suggestedHumanReadableName", "")
+        if not f or not os.path.exists(os.path.join(A, f)): continue
+        if n.startswith("ready.json"): shutil.copy(os.path.join(A, f), os.path.join(P, "ready.json"))
+        elif f.endswith(".png"): shutil.copy(os.path.join(A, f), os.path.join(P, "ready-" + f))
+PY
 grep -hE "error: .*(failed|XCTAssert)|Test Case .* failed" "$L"/*.log | sort -u | head -20 > "$P/failures.txt"
 MEDIA=$(cd "$P" && ls *.png *.mp4 *.mov 2>/dev/null | tr '\n' ' ')
 # Verification level (exact names): UI-verified | unit-test-verified | build-only | blocked | failed
 ok() { printf '%s\n' "${ROWS[@]}" | grep -q "^| $1 | PASS | [1-9]"; }
 LEVEL=build-only; ok packages && LEVEL=unit-test-verified
-[ $READY = yes ] && ls "$P"/ready-*.png >/dev/null 2>&1 && LEVEL=UI-verified   # readiness is required
+[ $READY = yes ] && [ -s "$P/ready.json" ] && ls "$P"/ready-*.png >/dev/null 2>&1 && LEVEL=UI-verified   # readiness + ready.json required
 [ $FAIL = 1 ] && LEVEL=failed
 echo $LEVEL > "$P/level"
 { echo "## verify.sh: $([ $FAIL = 0 ] && echo PASS || echo FAIL)"

@@ -3,7 +3,7 @@
 // Identifiers and waits follow /workspace/polymux-merge/verify-polymux-features.md:
 //  - launch argument --verify-fixture (DEBUG seed: 6 agents, 12 sessions), POLYMUX_DATA_DIR per worktree,
 //  - list `chats.list`, rows `sidebar.row.<threadID>` (all 12 seeded ids),
-//  - optional server health (POLYMUX_VERIFY_PORT), hidden `app.status` value (connected=1, cache=warm),
+//  - optional server health (POLYMUX_VERIFY_PORT), REQUIRED hidden `app.status` value (connected=1, cache=warm),
 //  - no activity indicators / "Loading" labels for 2 polls, app running in the foreground.
 // Each wait's elapsed ms goes to ready.json (attachment) for ~/verify-evidence/<worktree>/<run-id>/.
 import XCTest
@@ -43,11 +43,11 @@ final class ReadinessTests: XCTestCase {
         timed("sidebar.rows.12") { Self.seededIDs.allSatisfy { any["sidebar.row.\($0)"].exists } }
         let rows = any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.' AND NOT identifier CONTAINS '.unread'"))
         XCTAssertEqual(rows.count, Self.seededIDs.count, "sidebar shows \(rows.count) rows, seed has 12")
+        // app.status is required: a missing element fails readiness (never silently skipped).
         let status = any["app.status"]
-        if status.exists {
-            timed("stream.connected") { (status.value as? String ?? "").contains("connected=1") }
-            timed("cache.warm") { (status.value as? String ?? "").contains("cache=warm") }
-        }
+        timed("app.status") { status.exists }
+        timed("stream.connected") { (status.value as? String ?? "").contains("connected=1") }
+        timed("cache.warm") { (status.value as? String ?? "").contains("cache=warm") }
         var quiet = 0
         timed("no.spinner") {
             let busy = app.activityIndicators.count > 0 ||
