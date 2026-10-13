@@ -1,6 +1,6 @@
-//go:build !release
+//go:build verifyfixture
 
-// Package fixture seeds the debug-only verification data set.
+// Package fixture seeds the verification data set for verifyfixture builds.
 package fixture
 
 import (
@@ -120,10 +120,24 @@ func Agents(model string) []agentruntime.Definition {
 	return out
 }
 
-// HoldStream puts the streaming row back after startup recovery marks it interrupted.
+// HoldStream puts the streaming row back after startup recovery, and drops the recovery event
+// it produced, so a restart serves the same fixture state as the first start.
 func HoldStream(ctx context.Context, s *store.Store) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE messages SET status='streaming', data=json_set(data,'$.status','streaming') WHERE id='m-stream'`)
-	return err
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE messages SET status='streaming', data=json_set(data,'$.status','streaming') WHERE id='m-stream'`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE thread_id='t-stream'`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET last_seq=(SELECT max(seq) FROM messages WHERE thread_id='t-stream') WHERE id='t-stream'`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Seed fills an empty dir, or does nothing when this fixture already owns it.

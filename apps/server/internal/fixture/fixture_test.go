@@ -1,4 +1,4 @@
-//go:build !release
+//go:build verifyfixture
 
 package fixture
 
@@ -102,28 +102,69 @@ func TestSeedMatchesManifest(t *testing.T) {
 	}
 }
 
+func TestHoldStreamClearsRecovery(t *testing.T) {
+	dir := t.TempDir()
+	if err := Seed(dir); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(t.Context(), filepath.Join(dir, "polymux.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Every restart repeats recovery against the restored streaming row.
+	for i := 0; i < 2; i++ {
+		if err := db.Recover(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if got := scalar(t, db, `SELECT count(*) FROM events WHERE thread_id='t-stream'`); got != 1 {
+			t.Fatalf("recovery events %d", got)
+		}
+		if err := HoldStream(t.Context(), db); err != nil {
+			t.Fatal(err)
+		}
+		checks := []struct {
+			q string
+			n int
+		}{
+			{`SELECT count(*) FROM events WHERE thread_id='t-stream'`, 0},
+			{`SELECT count(*) FROM messages WHERE id='m-stream' AND status='streaming' AND json_extract(data,'$.status')='streaming'`, 1},
+			{`SELECT last_seq FROM threads WHERE id='t-stream'`, 1},
+			{`SELECT last_read_seq FROM threads WHERE id='t-stream'`, 1},
+			{`SELECT count(*) FROM messages m JOIN threads t ON t.id=m.thread_id WHERE m.thread_id='t-stream' AND m.seq>t.last_read_seq`, 0},
+		}
+		for _, check := range checks {
+			if got := scalar(t, db, check.q); got != check.n {
+				t.Fatalf("%s: got %d want %d", check.q, got, check.n)
+			}
+		}
+	}
+}
+
 func TestSeedRefuses(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	busy := t.TempDir()
 	if err := os.WriteFile(filepath.Join(busy, "real.txt"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	support := filepath.Join(home, "Library", "Application Support", "Polymux")
+	if err := os.MkdirAll(support, 0700); err != nil {
 		t.Fatal(err)
 	}
-	real := filepath.Join(home, "Library", "Application Support", "Polymux", "verify-fixture-refusal")
-	t.Cleanup(func() { os.RemoveAll(real) })
-	for _, dir := range []string{busy, real} {
-		err := Seed(dir)
-		if !errors.Is(err, ErrRefused) {
+	// The server default (…/Polymux/server) does not exist on a fresh home; refusal must not need it to.
+	for _, dir := range []string{busy, support, filepath.Join(support, "server")} {
+		if err := Seed(dir); !errors.Is(err, ErrRefused) {
 			t.Fatalf("Seed(%s) = %v", dir, err)
 		}
 	}
-	if _, err := os.Stat(real); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("created a path under Application Support")
-	}
-	if _, err := os.Stat(filepath.Join(busy, "polymux.db")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("wrote into a non-empty data dir")
+	for _, dir := range []string{busy, support, filepath.Join(support, "server")} {
+		if _, err := os.Stat(filepath.Join(dir, "polymux.db")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("wrote a database into %s", dir)
+		}
+		if _, err := os.Stat(filepath.Join(dir, marker)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("wrote a marker into %s", dir)
+		}
 	}
 }
 

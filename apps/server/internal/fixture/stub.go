@@ -1,5 +1,6 @@
-//go:build release
+//go:build !verifyfixture
 
+// Package fixture omits the verification data set unless the build passes -tags verifyfixture.
 package fixture
 
 import (
@@ -11,7 +12,7 @@ import (
 	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
 )
 
-// Register adds no flag. Release builds must not advertise --verify-fixture.
+// Register adds no flag. Only verifyfixture builds advertise --verify-fixture.
 func Register(*flag.FlagSet) *bool {
 	off := false
 	return &off
