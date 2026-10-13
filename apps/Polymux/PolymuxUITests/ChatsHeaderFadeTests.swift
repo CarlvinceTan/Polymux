@@ -81,7 +81,7 @@ final class ChatsHeaderFadeTests: XCTestCase {
     /// Alphas are read from the bar's background views, not a fixed string.
     private func assertAlpha(_ fade: XCUIElement) {
         let raw = fade.value as? String ?? ""
-        if raw == "none" { return }
+        XCTAssertNotEqual(raw, "none", "expected navigation background views to inspect")
         let alphas = Self.parsedAlphas(raw)
         XCTAssertFalse(alphas.isEmpty, "expected measured navigation bar background alphas, got \(raw)")
         for alpha in alphas {
@@ -170,7 +170,7 @@ final class ChatsHeaderFadeTests: XCTestCase {
 
     private static func alphaReady(_ raw: String?) -> Bool {
         guard let raw, !raw.isEmpty else { return false }
-        if raw == "none" { return true }
+        if raw == "none" { return false }
         return !parsedAlphas(raw).isEmpty
     }
 

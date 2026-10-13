@@ -357,8 +357,7 @@ struct ShellView: View {
     /// Stable rows in a throwaway cache, so the fixture cannot persist into the user's store.
     private func loadPreview() {
         let directory = FileManager.default.temporaryDirectory
-            .appending(path: "PolymuxHeaderPreview", directoryHint: .isDirectory)
-        try? FileManager.default.removeItem(at: directory)
+            .appending(path: "PolymuxHeaderPreview-\(UUID().uuidString)", directoryHint: .isDirectory)
         guard let cache = try? LocalCache(url: directory.appending(path: "cache.sqlite")) else { return }
         let store = SidebarStore(client: session.client, cache: cache)
         let names = ["Avery", "Blake", "Cameron", "Drew", "Ellis", "Finley", "Gray", "Harper",
