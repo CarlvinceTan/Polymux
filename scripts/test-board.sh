@@ -72,9 +72,9 @@ MC_FFPROBE=/nonexistent/ffprobe PATH=$BP $BU verify fake-unit UI-verified "$V" h
 MC_NOPIL=1 PATH=$BP $BU verify fake-unit UI-verified "$P5" https://github.com/o/r/raw/proof-media/run7 >/dev/null
 check "board: missing ffprobe / Pillow -> loud board_error, no append" '[ "$(NP blocks)" = 1 ] && grep -q "board_error	verify	media-check failed (rc=3): media-check: ffprobe/ffmpeg missing" "$LANES_HOME/events.tsv" && grep -q "board_error	verify	media-check failed (rc=3): media-check: Pillow missing" "$LANES_HOME/events.tsv"'
 rm "$LANES_HOME/BOARD_LIVE"; echo Backlog > "$T/cur"; : > "$BLOG"
-printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard fails\n' > "$T/bf.task"
+printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard fails (attempt 2)\n' > "$T/bf.task"
 PATH=$BP LANE_FORCE_FAIL="laneA laneB" $RL laneA "$T/bf.task" >/dev/null 2>&1
-check "run-lane: no start without work; final failure -> Verification failed only" '! grep -q "board-fails start" "$BLOG" && grep -q "board-fails verify: DRY-RUN .*Verification: .. -> .failed." "$BLOG"'
+check "run-lane: no start without work; final failure -> Verification failed only" '! grep -q "board-fails-attempt-2 start" "$BLOG" && grep -q "board-fails-attempt-2 verify: DRY-RUN .*Verification: .. -> .failed." "$BLOG"'
 printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard works\n' > "$T/bw.task"
 PATH=$BP LANE_DRY=1 LANE_STUB_CMD="sleep 2; grep -q \"board-works start\" \"$BLOG\" && echo early > \"$T/bw.seen\"; $STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
 check "run-lane: start not written before the agent works, written after its first commit" '[ ! -f "$T/bw.seen" ] && grep -q "board-works start: DRY-RUN .*-> .In Progress." "$BLOG"'
@@ -111,6 +111,17 @@ check "shared card: Verification = weakest level (unit-test < UI)" '[ "$(grep -c
 : > "$T/curl.log"; PATH=$BP $BU verify sa1-shared failed; PATH=$BP $BU verify sa2-shared UI-verified
 check "shared card: one unit failed keeps the card at failed even when the other is UI-verified" '[ "$(grep -c "X PATCH.*\"name\":\"failed\".*pages/$SC" "$T/curl.log")" = 2 ] && ! grep -q "UI-verified.*pages/$SC" "$T/curl.log" && grep -q "sa2-shared verify: card $SC shared by 2 units: Verification .failed. (weakest)" "$BLOG"'
 check "shared card: ledger tracks both units" '[ "$(cut -f1,2 "$LANES_HOME/board/card-$SC.tsv" | sort -u | wc -l | tr -d " ")" = 4 ]'
+# drop: an abandoned unit leaves the card's ledger, so 'merged' isn't held forever
+DC=33333333-4444-5555-6666-777777777777; echo $DC | tee "$C/da1-drop" > "$C/da2-drop"; echo Review > "$T/cur"; : > "$T/curl.log"
+PATH=$BP $BU merged da1-drop
+check "drop: merged held while abandoned unit is still on the card" '[ "$(NP pages/$DC)" = 0 ] && grep -q "da1-drop merged: hold: .*da2-drop" "$BLOG"'
+PATH=$BP $BU drop da2-drop "abandoned: test"
+check "drop: abandoned unit removed; held merged written once" '[ ! -f "$C/da2-drop" ] && ! grep -q "^da2-drop" "$LANES_HOME/board/card-$DC.tsv" && [ "$(grep -c "X PATCH.*Completed.*pages/$DC" "$T/curl.log")" = 1 ] && grep -q "da2-drop drop: dropped from card $DC" "$BLOG"'
+# archived task: its unit is dropped automatically when the card is next evaluated
+AC=44444444-5555-6666-7777-888888888888; echo $AC | tee "$C/aa1-arch" > "$C/aa2-arch"; : > "$T/curl.log"
+mkdir -p "$LANES_HOME/queue/archive"; printf 'unit: aa2-arch\nneeds: none\nArchived\n' > "$LANES_HOME/queue/archive/10131500--whatever.task"
+PATH=$BP $BU merged aa1-arch
+check "drop: archived unit auto-dropped, merged written" '[ ! -f "$C/aa2-arch" ] && [ "$(grep -c "X PATCH.*Completed.*pages/$AC" "$T/curl.log")" = 1 ] && grep -q "dropped archived unit aa2-arch" "$BLOG"'
 # unit name keeps its prefix: "# SA9: ..." -> sa9-..., never "-sa9-..."
 rm -f "$LANES_HOME/BOARD_LIVE"; printf 'needs: none\nexpected_min: 5\ncard: 33333333444455556666777777777777\n# SA9: Prefix kept\n' > "$T/pk.task"
 PATH=$BP LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/pk.task" >/dev/null 2>&1
