@@ -71,6 +71,9 @@ struct ChatStoreCacheTests {
         let stream = store.voiceReply(text: "hello")
         #expect(store.voiceCount == 1)
         store.pause()
+        #expect(store.voiceCount == 1)
+        #expect(!store.canEvict)
+        store.stop()
         #expect(store.voiceCount == 0)
         withExtendedLifetime(stream) {}
     }

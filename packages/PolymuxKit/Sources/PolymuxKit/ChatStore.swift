@@ -29,7 +29,7 @@ public final class ChatStore {
         var atBottom: Bool
     }
 
-    /// Eviction skips a chat that is still sending. Pause may drop voices once the send has landed.
+    /// Eviction skips a chat until its sends and voice replies finish.
     var canEvict: Bool {
         !isSending && !isFlushing && enqueuing == 0 && voices.isEmpty
             && !messages.contains { $0.status == "pending" || $0.status == "failed" }
@@ -84,7 +84,6 @@ public final class ChatStore {
     /// Keeps the transcript for a later reselect. In-flight sends keep their stream until they finish.
     public func pause() {
         isPaused = true
-        failVoices(CancellationError())
         trim()
         guard canEvict else { return }
         streamTask?.cancel()
