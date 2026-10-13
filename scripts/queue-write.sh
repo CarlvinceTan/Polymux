@@ -13,8 +13,10 @@
 #                                    when only header lines (needs:, branch:, ...) come before it
 #   queue-write.sh --mv SRC DEST     locked rename (DEST may be a directory)
 #   queue-write.sh --rm FILE...      locked delete
-# A valid brief: line 1 is "# <title>"; it has "needs: <x>" and "expected_min: <minutes>"; no
-# "branch:" line above the title; "after:" refs are pr:<N> or branch-on-main:<branch> (or "none");
+# A valid brief: line 1 is "# <title>"; it has "needs: <x>" and "expected_min: <minutes>"; an
+# optional "wd_nocommit_min: <minutes>" overrides the watchdog's no-commit limit for this brief
+# (a positive whole number of minutes); no "branch:" line above the title;
+# "after:" refs are pr:<N> or branch-on-main:<branch> (or "none");
 # a "pr:" line is <N>, #<N> or a github.com/.../pull/<N> URL; optional "type:" is one of
 # feature|bug|infra|test|docs and optional "area:" lists one or more of pairing|chat|routines|server|
 # ui|lanes (comma or space separated; a "type:"/"area:" value prefix is allowed). Both feed GitHub labels.
@@ -27,7 +29,7 @@ SD=$(cd "$(dirname "$0")" && pwd)
 OPS=${LANES_HOME:-$HOME/ops/lanes}; Q=$OPS/queue
 LOCK=${QUEUE_LOCK:-$OPS/queue.lock}; WAIT=${QUEUE_LOCK_WAIT:-30}
 die() { echo "queue-write: $1" >&2; exit "${2:-1}"; }
-HDR='unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|agent'
+HDR='unit|needs|scope|expected_min|wd_nocommit_min|card|issue|labels|branch|after|pr|priority|type|area|agent'
 
 validate() {  # $1 file, $2 label -> problems on stdout, rc 1 if any
   awk -v L="$2" '
@@ -37,6 +39,9 @@ validate() {  # $1 file, $2 label -> problems on stdout, rc 1 if any
     !t && /^branch:/ { bad("branch: line " NR " comes before the title") }
     /^needs:/ { if ($0 ~ /^needs: *[^ ]/) nd = 1; else bad("needs: is empty (line " NR ")") }
     /^expected_min:/ { ex = 1; if ($0 !~ /^expected_min: *[0-9]+ *$/) bad("expected_min must be whole minutes (line " NR ")") }
+    /^wd_nocommit_min:/ { s = $0; sub(/^wd_nocommit_min: */, "", s); sub(/ +$/, "", s)
+      if (s !~ /^[0-9]+$/ || s + 0 < 1)
+        bad("wd_nocommit_min must be a positive whole number of minutes (line " NR ")") }
     /^after:/ { s = $0; sub(/^after: */, "", s); m = split(s, a, /[ ,]+/); k = 0
       for (i = 1; i <= m; i++) { if (a[i] == "") continue; k++
         if (a[i] == "none") continue

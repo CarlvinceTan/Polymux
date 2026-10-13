@@ -47,12 +47,24 @@ if [ "${1:-}" = "--verify-only" ]; then
 fi
 CHECK=""; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
 LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60; SCOPE=""
-TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "issue: N" (GitHub issue on Project 3; legacy "card:" ids map through board-map.tsv), "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
+TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "issue: N" (GitHub issue on Project 3; legacy "card:" ids map through board-map.tsv), "needs:", "expected_min:", "wd_nocommit_min:" (watchdog no-commit minutes), "scope: a/**,b/*" (allowed files); rest is the brief
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
+  WDN=$(sed -n 's/^wd_nocommit_min: *//p' "$TASK" | head -1 | tr -d ' ')   # optional; queue-write --check validates it at write time
   WANT_AGENT=$(sed -n 's/^agent: *//p' "$TASK" | head -1 | tr -d ' ')   # watchdog retry: run only on this agent (codex|opencode|cursor)
-  TASK=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|agent):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
+  TASK=$(grep -viE '^(unit|needs|scope|expected_min|wd_nocommit_min|card|issue|labels|branch|after|type|area|agent):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
 fi
+case ${WDN:-} in ''|*[!0-9]*|0) [ -n "${WDN:-}" ] && echo "warn: ignoring wd_nocommit_min '$WDN' (want a positive whole number of minutes); using the derived limit" >&2; WDN="";; esac
+# Watchdog no-commit limit for this unit: the brief's "wd_nocommit_min:" when it has one (a brief that
+# legitimately works a long time before its first commit), else max(30, expected_min/2) minutes. Env
+# LANE_WD_NOCOMMIT_MIN overrides the brief, LANE_WD_NOCOMMIT_S (test) the whole limit and
+# LANE_WD_SCALE (test) divides it (simulated clock). 0 disables the limit. Logged at unit start.
+WDM=${LANE_WD_NOCOMMIT_MIN:-${WDN:-$(( EXP / 2 > 30 ? EXP / 2 : 30 ))}}
+if [ -n "${LANE_WD_NOCOMMIT_MIN:-}" ]; then WDSRC="env LANE_WD_NOCOMMIT_MIN"
+elif [ -n "${WDN:-}" ]; then WDSRC="brief wd_nocommit_min"
+else WDSRC="default max(30, expected_min/2)"; fi
+WDSC=${LANE_WD_SCALE:-1}; case $WDSC in ''|*[!0-9]*|0) WDSC=1;; esac
+WDS=${LANE_WD_NOCOMMIT_S:-$(( WDM * 60 / WDSC ))}
 # GitHub labels for the PR (type:/area: headers, else inferred; see brief_labels in lanelib.sh)
 LBF=${TASKF:-$(mktemp)}; [ -n "$TASKF" ] || printf '%s\n' "$TASK" > "$LBF"
 LABELS=$(brief_labels "$LBF" "$(basename "${TASKF:-inline}")"); [ -n "$TASKF" ] || rm -f "$LBF"
@@ -92,7 +104,7 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
     # commit, and simctl/CoreSimulator XPC is refused, so verify.sh (iOS sim build) fails. Re-test
     # before tightening. (--full-auto no longer exists in codex exec.)
     codex) (cd "$2" && "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
-    opencode) (cd "$2" && "$cmd" run "$P") >> "$3" 2>&1;;
+    opencode) local oc=${LANE_OC_CMD:-$cmd}; (cd "$2" && "$oc" run ${OCS:+--session "$OCS"} "$P") >> "$3" 2>&1;;
     *) echo "unknown agent $a" >> "$3"; return 99;;
   esac
 }
@@ -124,12 +136,12 @@ base_title() { echo "$1" | sed -E 's/ \(attempt [0-9]+\)$//'; }
 deferred_hit() {  # $1 base title, $2 slug: print the $OPS/deferred/*.task (parked by policy, e.g. dogfood-first) that is this unit
   local f t st; for f in "$OPS"/deferred/*.task; do [ -f "$f" ] || continue
     st=$(basename "$f" .task | sed -E 's/^[0-9]+-+//; s/-retry(-[0-9]+)?$//')
-    t=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|queue-note):' "$f" | head -1)
+    t=$(grep -viE '^(unit|needs|scope|expected_min|wd_nocommit_min|card|issue|labels|branch|after|type|area|queue-note):' "$f" | head -1)
     { [ "$(base_title "$t")" = "$1" ] || [ "$st" = "$2" ]; } && { echo "$f"; return 0; }; done; return 1; }
 hold_retries() {  # move queued retries of this task to queue-hold/
   local f t bt; bt=$(base_title "$TITLE"); mkdir -p "$OPS/queue-hold"
   for f in "$OPS"/queue/*.task; do [ -f "$f" ] || continue
-    t=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area):' "$f" | head -1)
+    t=$(grep -viE '^(unit|needs|scope|expected_min|wd_nocommit_min|card|issue|labels|branch|after|type|area):' "$f" | head -1)
     [ "$(base_title "$t")" = "$bt" ] && QW --force --mv "$f" "$OPS/queue-hold/" >/dev/null && echo "$(date '+%F %T') $SLUG: held retry $(basename "$f") (runaway guard)" >> "$OPS/logs/dispatch-chain.log"
   done; }
 fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-40 | sed 's/-$//')"
@@ -246,43 +258,51 @@ IDLE_S=${LANE_IDLE_S:-$(( ${LANE_IDLE_MIN:-12} * 60 ))}; RS=${LANE_RETRY_SLEEP:-
 # The agent runs in its own process group (set -m: background job gets pgid = its pid). stop_agent TERMs the
 # whole group, waits up to LANE_KILL_WAIT (10) s, then KILLs it, and confirms nothing in the group survives.
 # No-progress watchdog (Chief): stop a looping unit early and hand it to the OTHER agent once.
-#  - no new commit for LANE_WD_NOCOMMIT_MIN (30) min since the start or the last commit, or
-#  - the same test fails LANE_WD_TESTFAIL_N (3) times in this attempt's log (go "--- FAIL: X", swift "✘ Test X()
-#    failed", XCTest "Test Case '-[C X]' failed", test-lanes/merge-queue "FAIL x", pytest "FAILED x").
+#  - no new commit for this unit's limit since the start or the last commit: the brief's
+#    "wd_nocommit_min:" (WDN) when present, else max(30, expected_min/2) minutes; see WDS above, or
+#  - the same test fails LANE_WD_TESTFAIL_N (3) times in this attempt's log. Markers are anchored at
+#    the line start (optional whitespace) so echoed source/fixture text and Swift Testing suite
+#    summaries ("✘ Test run with N tests failed", "✘ Suite X failed") are never counted as tests:
+#    go "--- FAIL: X", swift "✘ Test X() failed", XCTest "Test Case '-[C X]' failed",
+#    test-lanes/merge-queue "FAIL x", pytest "FAILED x".
 # Then: stop_agent (opencode-aware teardown) and a retry brief with "agent: <other>" (codex <-> opencode;
 # LANE_WD_ALT overrides) and a "## Watchdog" note. 0 disables a limit. Only attempt 1 is re-queued (stop rule).
 WDOG=""; wd_failname() { [ -f "$LOG" ] || return 1; tail -c +"${LOG0:-1}" "$LOG" 2>/dev/null | perl -ne '
-    if (/--- FAIL: (\S+)/) { print "$1\n" } elsif (/✘ Test (\S+?)\(?\)? .*failed/) { print "$1\n" }
-    elsif (/Test Case .-\[\S+ (\S+?)\]. failed/) { print "$1\n" } elsif (/^FAIL +(\S.*?)\s*$/) { print "$1\n" }
-    elsif (/^FAILED (\S+)/) { print "$1\n" }' | sort | uniq -c | sort -rn | awk -v n="$1" '$1>=n{ $1=""; sub(/^ /,""); print; exit}'; }
+    if (/^\s*--- FAIL: (\S+)/) { print "$1\n" }
+    elsif (/Test run with \d+ tests?\b/) { }   # Swift Testing run summary, however it is prefixed
+    elsif (/^\s*✘ Suite \S+ failed/) { }       # suite summary: the failing cases carry the test lines
+    elsif (/^\s*✘ (?:Test|Suite) (\S+?)\(?\)? .*failed/) { print "$1\n" }
+    elsif (/^\s*Test Case .-\[\S+ (\S+?)\]. failed/) { print "$1\n" }
+    elsif (/^\s*FAIL +(\S.*?)\s*$/) { print "$1\n" }
+    elsif (/^\s*FAILED (\S+)/) { print "$1\n" }' | sort | uniq -c | sort -rn | awk -v n="$1" '$1>=n{ $1=""; sub(/^ /,""); print; exit}'; }
 wd_check() {  # sets WDOG to the reason when a limit trips
-  local nc=${LANE_WD_NOCOMMIT_MIN:-30} tf=${LANE_WD_TESTFAIL_N:-3} h t
+  local tf=${LANE_WD_TESTFAIL_N:-3} h t
   h=$(git -C "$WT" rev-parse HEAD 2>/dev/null); [ "$h" != "${WD_HEAD:-}" ] && { WD_HEAD=$h; WD_T=$(date +%s); }
-  [ "${LANE_WD_NOCOMMIT_S:-$((nc * 60))}" -gt 0 ] && [ $(( $(date +%s) - ${WD_T:-$(date +%s)} )) -ge "${LANE_WD_NOCOMMIT_S:-$((nc * 60))}" ] && {
-    WDOG="no new commit for $(( $(date +%s) - WD_T ))s (limit ${LANE_WD_NOCOMMIT_S:-$((nc * 60))}s)"; return 0; }
+  [ "${WDS:-0}" -gt 0 ] && [ $(( $(date +%s) - ${WD_T:-$(date +%s)} )) -ge "$WDS" ] && {
+    WDOG="no new commit for $(( $(date +%s) - WD_T ))s (limit ${WDS}s = ${WDM}m, ${WDSRC})"; return 0; }
   [ "$tf" -gt 0 ] && t=$(wd_failname "$tf") && [ -n "$t" ] && { WDOG="test '$t' failed $tf+ times in this attempt"; return 0; }
   return 1; }
 wd_alt() { [ -n "${LANE_WD_ALT:-}" ] && { echo "$LANE_WD_ALT"; return; }; case $(cfg lane "$L" agent) in opencode) echo codex;; *) echo opencode;; esac; }
 # opencode lanes: "opencode run" attaches to the shared "opencode serve --service", so killing our process group
-# leaves the SESSION running on the server (it keeps calling the model and tools). oc_capture records this
-# attempt's session id (newest session whose directory is our worktree, created since the attempt began) in the
-# log and $UL/oc_session; oc_end exports it next to the log, then ends it with "opencode session delete" (the
-# CLI has no abort; delete stops it on the server). The serve itself is never restarted. LANE_OC_CMD: test hook.
+# leaves the SESSION running on the server (it keeps calling the model and tools). run-lane therefore names the
+# session itself ("run --session <id>" creates it when the id is new), records that exact id in $UL/oc_session
+# at unit start and ends only that id: never "the newest session in the worktree", which can be a human's.
+# If no id was recorded, teardown logs it and aborts nothing rather than guessing. oc_end exports the transcript
+# next to the log, then ends the session with "opencode session delete" (the CLI has no abort; delete stops it on
+# the server). The serve itself is never restarted. LANE_OC_CMD: test hook, the opencode CLI for the run and for
+# its session commands; LANE_OC_ID: fixed session id (tests).
 OCS=""; ocli() { perl -e 'alarm shift; exec @ARGV' "${LANE_OC_TIMEOUT:-20}" "${LANE_OC_CMD:-$(cfg lane "$L" cmd)}" "$@"; }
-oc_capture() { [ -z "$OCS" ] && [ "$(cfg lane "$L" agent 2>/dev/null)" = opencode ] && [ -n "${WT:-}" ] || return 0
-  OCS=$( (cd "$WT" && ocli session list --format json -n 20) 2>/dev/null | python3 -c '
-import json,os,sys
-wt,since=sys.argv[1],int(sys.argv[2])*1000-5000; ds={wt,os.path.realpath(wt)}
-try: ss=json.load(sys.stdin)
-except Exception: sys.exit(0)
-ss=[x for x in ss if isinstance(x,dict) and x.get("directory") in ds and int(x.get("created",0))>=since]
-ss.sort(key=lambda x:-int(x.get("created",0)))
-print(ss[0]["id"] if ss else "")' "$WT" "${T0:-0}")
-  [ -n "$OCS" ] && { echo "opencode session: $OCS" >> "$LOG"; echo "$OCS" > "$UL/oc_session" 2>/dev/null; }; return 0; }
-oc_end() { oc_capture; [ -n "$OCS" ] || return 0
-  ocli session export "$OCS" > "$LOG.oc-$OCS.json" 2>/dev/null
-  if ocli session delete "$OCS" >> "$LOG" 2>&1; then echo "opencode session $OCS ended on the shared serve (transcript: $LOG.oc-$OCS.json)" >> "$LOG"
-  else echo "warn: could not end opencode session $OCS on the shared serve" >> "$LOG"; fi
+oc_id() { [ "$(cfg lane "$L" agent 2>/dev/null)" = opencode ] || return 0
+  OCS=${LANE_OC_ID:-$(python3 -c 'import secrets,string; print("ses_"+"".join(secrets.choice(string.ascii_letters+string.digits) for _ in range(26)))' 2>/dev/null)}
+  [ -n "$OCS" ] || { echo "warn: no opencode session id available; this unit's session cannot be ended by id" >> "$LOG"; return 0; }
+  echo "$OCS" > "$UL/oc_session" 2>/dev/null || OCS=""
+  [ -n "$OCS" ] && echo "opencode session: $OCS (named by run-lane, recorded for teardown)" >> "$LOG"; return 0; }
+oc_end() { [ "$(cfg lane "$L" agent 2>/dev/null)" = opencode ] || return 0
+  local id; id=$(cat "$UL/oc_session" 2>/dev/null)
+  [ -n "$id" ] || { echo "opencode teardown: no session id was recorded for this unit; ending no session (ids are never guessed)" >> "$LOG"; return 0; }
+  ocli session export "$id" > "$LOG.oc-$id.json" 2>/dev/null
+  if ocli session delete "$id" >> "$LOG" 2>&1; then echo "opencode session $id ended on the shared serve (transcript: $LOG.oc-$id.json)" >> "$LOG"
+  else echo "warn: could not end opencode session $id on the shared serve" >> "$LOG"; fi
   rm -f "$UL/oc_session"; OCS=""; }
 stop_agent() { local k; oc_end; kill -TERM -- -"$AP" 2>/dev/null
   for k in $(seq 1 $(( ${LANE_KILL_WAIT:-10} * 10 ))); do pgrep -g "$AP" >/dev/null 2>&1 || return 0; sleep 0.1; done
@@ -313,9 +333,9 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   fi
   [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash "$SD/wt-setup.sh") >> "$LOG" 2>&1
   START=$(git -C "$WT" rev-parse HEAD)   # branch head at unit start: size, trailer and no-commit checks measure only this run's work
-  OCS=""; WDOG=""; WD_HEAD=""; WD_T=""; LOG0=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 )); set -m; run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; set +m; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
+  echo "wd: no-commit limit ${WDM}m (${WDS}s, ${WDSRC}); same test failing ${LANE_WD_TESTFAIL_N:-3}+ times also stops this unit" >> "$LOG"
+  OCS=""; WDOG=""; WD_HEAD=""; WD_T=""; oc_id; LOG0=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 )); set -m; run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; set +m; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
   while kill -0 $AP 2>/dev/null; do sleep "${LANE_POLL:-30}"   # liveness = new commit/push/change, not log mtime
-    oc_capture
     wd_check && { ev watchdog "$L" "$WDOG; stopping, retry on $(wd_alt)"; echo "watchdog: $WDOG" >> "$LOG"; stop_agent; break; }
     S=$(git -C "$WT" rev-parse HEAD; git -C "$WT" ls-remote origin "$B" 2>/dev/null; git -C "$WT" status --porcelain | shasum)
     [ "$S" != "$SIG" ] && { SIG=$S; LAST=$(date +%s); started; }
@@ -381,7 +401,7 @@ BT=$(base_title "$TITLE"); AT=$(echo "$TITLE" | sed -nE 's/.* \(attempt ([0-9]+)
 if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to place on a free lane
   QD="$OPS/queue"; mkdir -p "$QD"; DUP=""
   for f in "$QD"/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have re-queued it
-    [ "$(base_title "$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
+    [ "$(base_title "$(grep -viE '^(unit|needs|scope|expected_min|wd_nocommit_min|card|issue|labels|branch|after|type|area):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
   for f in "$QD"/*.task "$OPS"/deferred/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have written the retry
     t=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)
     case $f in "$OPS"/deferred/*) echo "$t" | grep -qE ' \(attempt [0-9]+\)$' || continue;; esac   # deferred/: only retries, not the parked brief
@@ -389,7 +409,7 @@ if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to 
   DEF=$(deferred_hit "$BT" "$SLUG") && QD="$OPS/deferred"   # deferred by policy: park the retry beside it, never back in queue/
   if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)-$SLUG-retry.task"
     QB=$(mktemp); { echo "$BT (attempt 2)"; echo "needs: ${NEEDS:-none}"; echo "expected_min: $EXP"   # title first (queue-write rule)
-      [ -n "$TASKF" ] && grep -iE '^(unit|scope|card|issue|labels|after|type|area):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
+      [ -n "$TASKF" ] && grep -iE '^(unit|scope|card|issue|labels|wd_nocommit_min|after|type|area):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
       [ -n "$WDOG" ] && echo "agent: $(wd_alt)"
       echo "$TASK" | tail -n +2
       [ -n "$WDOG" ] && printf '\n## Watchdog (attempt 1 on %s/%s stopped)\n%s. The previous agent looped; take a different approach.\nLast log lines:\n```\n%s\n```\n' "$L" "$(cfg lane "$L" agent)" "$WDOG" "$(tail -n 20 "$LOG" | sed 's/```//g')"; } > "$QB"
