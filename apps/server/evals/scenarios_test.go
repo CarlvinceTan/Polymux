@@ -308,9 +308,8 @@ func TestX2PersistedToolResult(t *testing.T) {
 }
 
 func TestX4ProviderErrors(t *testing.T) {
-	// Coupled to PiG ai.IsRetryableAssistantError: message text must match retryable
-	// patterns ("429" / "rate.?limit") vs non-retryable ("bad request"). Retry-After: 0
-	// is pinned in the emulator so the retry fits the scenario deadline.
+	// 429 is retried by the provider transport. The emulator pins Retry-After: 0 so the
+	// retry fits the scenario deadline. 400 is not retried.
 	h429 := Start(t, Options{ID: "X4", Steps: []Step{
 		Fixed(nil, ErrorReply(429, "rate limited 429")),
 		Fixed(nil, TextReply("after retry")),

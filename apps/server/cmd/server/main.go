@@ -142,6 +142,9 @@ func run() error {
 		return err
 	}
 	defer closeStorage()
+	if err := agentruntime.EnableRetry(); err != nil {
+		return err
+	}
 	runtime, err := agentruntime.NewDurable(ctx, *dir, baseURL, model, key, agentruntime.Client{Headers: config.Headers, Session: config.Session}, storage)
 	if err != nil {
 		return err

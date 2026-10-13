@@ -50,12 +50,13 @@ func (d Definition) SystemPrompt() string {
 }
 
 type Delta struct {
-	Text   string
-	Tool   string
-	Args   string
-	Kind   string
-	ToolID string
-	Failed bool
+	Text    string
+	Tool    string
+	Args    string
+	Kind    string
+	ToolID  string
+	Failed  bool
+	Attempt int
 }
 type Result struct {
 	Text  string
@@ -328,6 +329,12 @@ func (s *pigSession) Send(ctx context.Context, m contract.Message, emit func(Del
 		case agent.ToolExecutionEndEvent:
 			d.Kind = "tool.done"
 			d.ToolID, d.Tool, d.Failed = e.ToolCallID, e.ToolName, e.IsError
+		case agent.AutoRetryStartEvent:
+			// One notice per attempt. The matching end closes that same cycle.
+			d.Kind = "run.retrying"
+			d.Attempt = e.Attempt
+		case agent.AutoRetryEndEvent:
+			return
 		default:
 			return
 		}
