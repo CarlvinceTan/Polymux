@@ -13,7 +13,7 @@ SLUG_REPO=$(repo_slug "$REPO"); HOST=$(hostname -s)
 ev() { printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$1" "${2:-}" "${3:-}" >> "$EV"; }
 cfg() { python3 "$SD/lanes.py" "$@"; }
 publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own branch proof-media/<id>
-  local wt=$1 id=$2 idx c err ref="proof-media/$2" n=0; idx=$(mktemp)
+  local wt=$1 id=$2 idx c err ref="proof-media/$2-$(date +%Y%m%d%H%M%S)-$$" n=0; idx=$(mktemp)   # unique per run; never force
   for f in "$wt"/.build/proof/*.png "$wt"/.build/proof/*.mp4; do [ -f "$f" ] && n=$((n+1)); done
   [ $n = 0 ] && { echo "_no media captured_"; return; }
   err=$( cd "$wt" && export GIT_INDEX_FILE=$idx && git read-tree --empty &&
@@ -31,9 +31,12 @@ if [ "${1:-}" = "--verify-only" ]; then
   BR=$2; ID="verify-${BR//\//-}"; WT="$WTR/$ID"; BL=$(branch_lock_dir "$BR")
   lock_take "$BL" || { echo "branch '$BR' already has a writer (pid $(lock_holder "$BL")); not verifying"; exit 3; }
   trap 'lock_drop "$BL"' EXIT; ev running verify "$BR"
-  git -C "$REPO" fetch -q origin "$BR" && { [ -d "$WT" ] || git -C "$REPO" worktree add -q --detach "$WT" FETCH_HEAD; }
-  git -C "$WT" checkout -q --detach FETCH_HEAD
-  (cd "$WT" && bash "$SD/wt-setup.sh" && bash "$SD/verify.sh") > "$OPS/logs/$ID.log" 2>&1; rc=$?
+  git -C "$REPO" fetch -q origin "$BR" || { echo "git fetch origin $BR failed"; ev failed verify "fetch failed"; exit 1; }
+  SHA=$(git -C "$REPO" rev-parse FETCH_HEAD)   # FETCH_HEAD is per-worktree: resolve it here
+  [ -d "$WT" ] || git -C "$REPO" worktree add -q --detach "$WT" "$SHA" || { ev failed verify "worktree add failed"; exit 1; }
+  git -C "$WT" checkout -q --detach "$SHA" || { ev failed verify "checkout failed"; exit 1; }
+  (cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
+    if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else bash "$SD/verify.sh"; fi) > "$OPS/logs/$ID.log" 2>&1; rc=$?   # LANE_VERIFY_CMD: test hook
   BODY="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID" 2>>"$OPS/logs/$ID.log")"
   gh pr comment "$BR" -R "$SLUG_REPO" --body "Mac proof ($HOST):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
