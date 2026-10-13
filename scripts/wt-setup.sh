@@ -18,11 +18,16 @@ if [ -z "$T" ]; then
 r=[x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']]; print(r[-1]['identifier'])")
   T=$(xcrun simctl create "$TPL" "$DEVICE" "$RT")
 fi
-# Warm the template once (first boot builds dyld/data caches) so clones boot fast. Marker = done.
-WARM="$HOME/ops/lanes/.sim-warm-$T"
-if [ ! -f "$WARM" ]; then
+# Warm the template once (first boot builds dyld/data caches) so clones boot fast.
+# Markers under $LANES_HOME: .sim-warm-<udid> = done; .sim-warm-fail-<udid> counts failed attempts.
+# After SIM_WARM_MAX (default 2) failures we stop retrying (clones still work, just boot slower).
+OPS=${LANES_HOME:-$HOME/ops/lanes}; mkdir -p "$OPS"; WARM="$OPS/.sim-warm-$T"; WFAIL="$OPS/.sim-warm-fail-$T"
+WN=$(cat "$WFAIL" 2>/dev/null || echo 0)
+if [ ! -f "$WARM" ] && [ "$WN" -lt "${SIM_WARM_MAX:-2}" ]; then
   xcrun simctl boot "$T" >/dev/null 2>&1 || true
-  perl -e 'alarm shift; exec @ARGV' 600 xcrun simctl bootstatus "$T" -b >/dev/null 2>&1 && sleep 60 && touch "$WARM"
+  if perl -e 'alarm shift; exec @ARGV' "${SIM_WARM_TIMEOUT:-600}" xcrun simctl bootstatus "$T" -b >/dev/null 2>&1; then
+    sleep "${SIM_WARM_SETTLE:-60}"; touch "$WARM"; rm -f "$WFAIL"
+  else echo $((WN+1)) > "$WFAIL"; echo "wt-setup: template warm failed (attempt $((WN+1)) of ${SIM_WARM_MAX:-2})" >&2; fi
   xcrun simctl shutdown "$T" >/dev/null 2>&1 || true
 fi
 SIM="polymux-$WT"; U=$(udid_of "$SIM")

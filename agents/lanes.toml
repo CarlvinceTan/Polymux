@@ -6,7 +6,6 @@
 # Secrets are NEVER stored here: `key` is a vault entry title read at run time.
 # Any lane field may have a per-host override `field@<hostname -s>` (e.g. key@cvmini).
 
-max_units = 2           # task units at once, one per lane; the merge lane's verify takes the other max_builds slot
 max_builds = 2          # concurrent xcodebuild slots (verify.sh drops to 1 while ~/ops/pr-verify builds)
 lock_dir = "~/ops/lanes/locks"
 sim_device = "iPhone 17"
