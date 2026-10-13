@@ -408,6 +408,108 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 		}
 		return Result{}, err
 	}
+	return s.outcome(ctx, settled)
+}
+
+// Resume continues a turn whose tool result is already durable. A placed submission
+// is the crash window; otherwise a new generation replays the stored context.
+func (s *durableSession) Resume(ctx context.Context, emit func(Delta) error) (Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emitMu.Lock()
+	s.emit = emit
+	s.emitMu.Unlock()
+	defer func() {
+		s.emitMu.Lock()
+		s.emit = nil
+		s.emitMu.Unlock()
+	}()
+	if s.runtime == nil {
+		return Result{}, errors.New("no turn to resume")
+	}
+	stop := s.stream(ctx, emit)
+	defer stop()
+	if submission, ok := s.pending(ctx); ok {
+		settled, err := submission.Wait(ctx)
+		if err != nil {
+			return Result{}, err
+		}
+		return s.outcome(ctx, settled)
+	}
+	return s.replay(ctx)
+}
+
+func (s *durableSession) pending(ctx context.Context) (durable.Submission, bool) {
+	inspection, err := s.runtime.harness.Inspect(ctx)
+	if err != nil {
+		return nil, false
+	}
+	id := s.conversation.Id()
+	for _, record := range inspection.Submissions {
+		if record.ConversationId != id || record.Type != durable.SubmissionTypeInput {
+			continue
+		}
+		submission, err := s.runtime.harness.Submission(ctx, record.Id)
+		if err != nil || submission == nil {
+			continue
+		}
+		return submission, true
+	}
+	return nil, false
+}
+
+func (s *durableSession) replay(ctx context.Context) (Result, error) {
+	conversation := s.conversation.Id()
+	value, err := s.conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
+		return durable.CreateTask(tx, harness.GenerationTask, harness.GenerationInput{}, durable.TaskOptions{
+			Ownership:      durable.TaskOwnership{Kind: durable.TaskOwnedByConversation},
+			ConversationId: &conversation,
+		})
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	taskID, ok := value.(durable.TaskId)
+	if !ok {
+		return Result{}, errors.New("no turn to resume")
+	}
+	settled, err := s.runtime.harness.WaitForTask(ctx, taskID)
+	if err != nil {
+		return Result{}, err
+	}
+	if settled.State.Outcome == nil || settled.State.Outcome.Status != durable.OutcomeCompleted {
+		return Result{}, errors.New("resume did not finish")
+	}
+	view, err := s.conversation.Context(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	text := ""
+	usage := contract.Usage{}
+	for _, message := range view.Messages {
+		assistant, ok := message.(ai.AssistantMessage)
+		if !ok {
+			continue
+		}
+		current := ""
+		for _, block := range assistant.Content {
+			if content, ok := block.(ai.TextContent); ok {
+				current += content.Text
+			}
+		}
+		if current == "" {
+			continue
+		}
+		text = current
+		usage = contract.Usage{InputTokens: int64(assistant.Usage.Input), OutputTokens: int64(assistant.Usage.Output)}
+	}
+	if text == "" {
+		return Result{}, errors.New("resume did not finish")
+	}
+	return Result{Text: text, Usage: usage}, nil
+}
+
+func (s *durableSession) outcome(ctx context.Context, settled durable.SettledSubmissionRecord) (Result, error) {
 	result := Result{}
 	if settled.Answer != nil {
 		text, usage, err := s.answer(ctx, *settled.Answer)

@@ -905,8 +905,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.TaskID != "" {
 		run.TaskID = &work.TaskID
 	}
-	// Capture before flipping to running; approval resume injects a continuation turn.
+	// Capture before flipping to running. Approval resume injects a turn; crash resume replays the saved tool result.
 	resuming := run.Status == "waiting_input"
+	continuing := run.Status == "resuming"
 	run.Status, run.Activity, run.Summary, run.StartedAt, run.FinishedAt = "running", "preparing", "Preparing reply", &now, nil
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		run.SourceMessageID = &user.ID
@@ -1199,13 +1200,32 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		// Durable work outlives Send's wait context until the session is aborted.
 		stopAbort := context.AfterFunc(runCtx, func() {
 			defer close(aborted)
+			// Server shutdown must not abort: an abort handler can replace the saved tool result.
+			if ctx.Err() != nil {
+				return
+			}
 			abortCtx, end := context.WithTimeout(context.WithoutCancel(runCtx), time.Second)
 			defer end()
 			if e := sess.Abort(abortCtx); e != nil && !errors.Is(e, context.Canceled) {
 				s.config.Log.Warn("abort stopped session", "error", e)
 			}
 		})
-		result, err = sess.Send(runCtx, user, func(delta agentruntime.Delta) error {
+		turn := sess.Send
+		if continuing {
+			resumed, ok := sess.(interface {
+				Resume(context.Context, func(agentruntime.Delta) error) (agentruntime.Result, error)
+			})
+			if !ok {
+				turn = func(context.Context, contract.Message, func(agentruntime.Delta) error) (agentruntime.Result, error) {
+					return agentruntime.Result{}, errors.New("session cannot resume a saved tool result")
+				}
+			} else {
+				turn = func(ctx context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
+					return resumed.Resume(ctx, emit)
+				}
+			}
+		}
+		result, err = turn(runCtx, user, func(delta agentruntime.Delta) error {
 			messageMu.Lock()
 			defer messageMu.Unlock()
 			if e := runCtx.Err(); e != nil {
@@ -1411,6 +1431,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	} else if errors.Is(err, context.Canceled) {
 		// keep cancel handling below
 	}
+	// Leave a saved tool result running so the next process can resume it once.
+	if err != nil && ctx.Err() != nil && run.Attempt <= 1 && s.Store.ResumeReady(writeCtx, run) {
+		messageMu.Unlock()
+		return contract.Message{}
+	}
 	if err == nil {
 		if result.Text != "" && result.Text != content.String() {
 			found := false
@@ -1486,6 +1511,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		}
 		if ctx.Err() != nil {
 			code, message, run.Status, run.Summary = "interrupted", "The server stopped during this reply. Review before retrying.", "interrupted", "Execution interrupted"
+			if run.Attempt > 1 {
+				message = "The server restarted again during resume. Review before retrying."
+			}
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = "timeout"
