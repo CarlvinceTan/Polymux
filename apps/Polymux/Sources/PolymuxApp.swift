@@ -36,15 +36,16 @@ struct PolymuxApp: App {
             WindowRoot()
         }
         #if os(macOS)
+        .defaultLaunchBehavior(.presented)
         .defaultSize(width: 1060, height: 760)
         .commands {
             CommandGroup(replacing: .sidebar) {}
         }
         #endif
     }
-
 }
 
+// Keep conditional content inside a concrete view so macOS creates the initial window.
 private struct WindowRoot: View {
     var body: some View {
         #if DEBUG
