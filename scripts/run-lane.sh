@@ -40,7 +40,7 @@ if [ "${1:-}" = "--verify-only" ]; then
   [ -d "$WT" ] || git -C "$REPO" worktree add -q --detach "$WT" "$SHA" || { ev failed verify "worktree add failed"; exit 1; }
   git -C "$WT" checkout -q --detach "$SHA" || { ev failed verify "checkout failed"; exit 1; }
   (cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
-    if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else bash "$SD/verify.sh"; fi) > "$OPS/logs/$ID.log" 2>&1; rc=$?   # LANE_VERIFY_CMD: test hook
+    if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=full bash "$SD/verify.sh"; fi) > "$OPS/logs/$ID.log" 2>&1; rc=$?   # LANE_VERIFY_CMD: test hook
   BODY="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID" 2>>"$OPS/logs/$ID.log")"
   gh_write pr comment "$BR" -R "$SLUG_REPO" --body "Mac proof ($HOST):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
@@ -295,7 +295,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
     git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
-  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
+  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
     MISS=$(sed -n 's/^verify: INFRA missing toolchain: *//p' "$LOG" | tail -1)
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" infra "$L" "missing toolchain: ${MISS:-?} (task: $SLUG)" "$LOG" >> "$OPS/failures.tsv"
