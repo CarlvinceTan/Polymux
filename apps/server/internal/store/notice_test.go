@@ -299,6 +299,10 @@ func TestNoticeTriggerRules(t *testing.T) {
 func TestNoticeMigrationPendingPush(t *testing.T) {
 	s := runStore(t)
 	ctx := t.Context()
+	var schema string
+	if err := s.DB.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE name='notices'`).Scan(&schema); err != nil || !strings.Contains(schema, "notice_key TEXT NOT NULL UNIQUE") || strings.Contains(schema, "message_id TEXT NOT NULL UNIQUE") {
+		t.Fatalf("fresh schema: %s %v", schema, err)
+	}
 	text := "Reply"
 	m := contract.Message{ID: "legacy", ThreadID: "a", Role: "assistant", Status: "done", CreatedAt: Now(), Parts: []contract.Part{{Kind: "text", Text: &text}}}
 	if _, err := s.Append(ctx, contract.Event{ConversationID: "a", Type: "message.done"}, &m); err != nil {
