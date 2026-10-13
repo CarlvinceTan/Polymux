@@ -24,6 +24,7 @@ final class ReadinessTests: XCTestCase {
             app.launchArguments = ["--verify-approval"] + (theme == "dark" ? ["--approval-dark"] : [])
             app.launch()
             #if os(macOS)
+            app.activate()
             XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), "Approval launch opens a window")
             #endif
             capture(app, theme: theme, state: "launch")
@@ -74,6 +75,7 @@ final class ReadinessTests: XCTestCase {
         }
         app.launch()
         #if os(macOS)
+        app.activate()
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), "Sidebar launch opens a window")
         #endif
         timed("foreground") { app.wait(for: .runningForeground, timeout: 1) }
