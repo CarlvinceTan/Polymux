@@ -1,6 +1,7 @@
 #!/bin/bash
 # run-lane.sh <lane> "<task>"|<task-file> [--branch B] [--base origin/main]
 # run-lane.sh --verify-only <branch>     (Mac proof for cloud-agent PRs)
+# run-lane.sh --check <lane> <task-file>  (would it start? exit 0, else its refusal code; no side effects)
 # Worktree -> headless agent -> our own verify.sh -> push + PR with proof.
 # On a first failure the brief is re-queued for lane-guard to place on a free lane; a failed
 # attempt 2+ writes ~/ops/lanes/failures.tsv + NEEDS_CODY. No daemon, no DB.
@@ -44,6 +45,7 @@ if [ "${1:-}" = "--verify-only" ]; then
   gh_write pr comment "$BR" -R "$SLUG_REPO" --body "Mac proof ($HOST):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
 fi
+CHECK=""; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
 LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60; SCOPE=""
 TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "issue: N" (GitHub issue on Project 3; legacy "card:" ids map through board-map.tsv), "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
@@ -59,7 +61,6 @@ cfg usable "$LANE" || { echo "refusing: lane '$LANE' is disabled, expired or unk
 cfg mainkey "$LANE" && { echo "refusing: lane '$LANE' key/account points at the main account"; exit 5; }
 QW() { bash "$SD/queue-write.sh" "$@"; }   # every queue/queue-hold write goes through the locked helper
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
-bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
 TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32 | sed 's/-*$//')   # '# SA1: x' -> sa1-x (no leading '-')
 ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
@@ -93,31 +94,16 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
     *) echo "unknown agent $a" >> "$3"; return 99;;
   esac
 }
-# Stop rule: a brief that already failed twice goes to Cody, never straight back to an agent.
-grep -qF "	$TITLE	" "$OPS/failures.tsv" 2>/dev/null && { echo "refusing: '$TITLE' already failed twice (see $OPS/failures.tsv); fix the brief"; exit 2; }
-G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight refused: $G"; exit 5; }
-# One writer per unit and per branch.
-UL="$OPS/units/$SLUG.lock"; BLS=""
-# Lane cap (max_concurrent): a run = a held unit lock with a LIVE pid on this lane (the lock's lane file, else its
-# latest events.tsv row), i.e. the unit locks lane-guard counts, minus dead ones. A killed/crashed run's lock has a
-# dead pid and never holds a slot. Count + unit-lock take happen under a per-lane mutex, so two starts can't both pass.
-lane_live() { local d p l n=0; for d in "$OPS"/units/*.lock; do [ -d "$d" ] || continue; p=$(lock_holder "$d")
-    { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || continue
-    l=$(cat "$d/lane" 2>/dev/null); [ -n "$l" ] || l=$(awk -F'\t' -v u="$(basename "$d" .lock)" '{s=$2; sub(/^[0-9]+-/,"",s); gsub(/^-+|-+$/,"",s)} s==u{l=$4} END{print l}' "$EV" 2>/dev/null)
-    [ "$l" = "$1" ] && n=$((n+1)); done; echo $n; }
-MC=$(cfg maxconc "$LANE"); CAPL="$OPS/lanes/$LANE.cap.lock"
-if [ "$MC" != 0 ]; then
-  for k in $(seq 1 100); do lock_take "$CAPL" && break; sleep 0.1; done
-  [ "$(lock_holder "$CAPL")" = $$ ] || { echo "refusing: lane '$LANE' cap mutex busy ($CAPL, pid $(lock_holder "$CAPL"))"; exit 5; }
-  N=$(lane_live "$LANE"); [ "$N" -lt "$MC" ] || { lock_drop "$CAPL"; echo "refusing: lane '$LANE' already has $N running (max_concurrent $MC)"; exit 5; }
-fi
-lock_take "$UL" || { lock_drop "$CAPL" 2>/dev/null; echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
-echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
 # Continuous dispatch: whenever a lane becomes free, for any reason (success, failure, failover to
 # another lane, blocked, infra error), ask lane-guard at once to refill it, so no lane idles until the
-# 10-min launchd tick (now only a backstop): 'lane-guard --dispatch --free-lane <lane>' when its --help
+# 10-min launchd tick (now only a backstop). Also on a refusal (exit 2/3/4/5), but never on a kill (TERM/INT: a stop must not restart work): 'lane-guard --dispatch --free-lane <lane>' when its --help
 # lists --free-lane, else plain '--dispatch'. Background, non-fatal, never changes our exit code;
-# LANE_NO_CHAIN=1 disables it, and SIGINT/SIGTERM (a stop) does not chain.
+# LANE_NO_CHAIN=1 disables it; $OPS/PAUSE stops it. The detached refill waits LANE_CHAIN_DEBOUNCE_S
+# (3 s) first, so a burst of exits coalesces (lane-guard also queues one re-run while its dispatch.lock is held).
+# Storm guard: every refusal appends "<epoch> <slug> <rc>" to $OPS/refusals.tsv (cleared when a unit
+# takes its lock); LANE_STORM_N (3) refusals in a row within LANE_STORM_WIN_S (60 s) -> no refill, logged
+# to dispatch-chain.log + NEEDS_CODY (the 600 s tick still runs; lane-guard honours the same file).
+# A kill -9 can't be trapped: the 600 s tick is the backstop for that.
 # Runaway guards limit retrying the SAME failing task, never refilling the lane: when this task failed
 # fast (< LANE_CHAIN_MIN_S, default 120 s) or failed for the 2nd+ time in a row ($OPS/chain-fails/<slug>,
 # reset by its success), its queued retries (queue/*.task with the same title, any "(attempt N)")
@@ -164,15 +150,60 @@ breaker() {  # $1 task key of a fast failure; trips PAUSE on N distinct fast-fai
 free_lane() {  # $1 lane now free; non-blocking
   { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
   local fl=""; { "$LANE_GUARD" --help 2>&1 </dev/null || true; } | out_has -- '--free-lane' && fl="--free-lane $1"
-  nohup bash -c '. "$1"; for k in $(seq 1 100); do lock_take "$2" && break; [ $k = 100 ] && { echo "$(date "+%F %T") $4: refill of lane $3 skipped: $2 busy for ~10 s (pid $(lock_holder "$2"))"; exit 0; }; sleep 0.1; done
-    trap "lock_drop \"$2\"" EXIT; shift 4; "$@"' _ \
-    "$SD/lanelib.sh" "$OPS/dispatch-chain.lock" "$1" "$SLUG" "$LANE_GUARD" --dispatch $fl >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null &
+  nohup bash -c '. "$1"; sleep "$5"; for k in $(seq 1 100); do lock_take "$2" && break; [ $k = 100 ] && { echo "$(date "+%F %T") $4: refill of lane $3 skipped: $2 busy for ~10 s (pid $(lock_holder "$2"))"; exit 0; }; sleep 0.1; done
+    trap "lock_drop \"$2\"" EXIT; shift 5; "$@"' _ \
+    "$SD/lanelib.sh" "$OPS/dispatch-chain.lock" "$1" "$SLUG" "${LANE_CHAIN_DEBOUNCE_S:-3}" "$LANE_GUARD" --dispatch $fl >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null &
   echo "$(date '+%F %T') $SLUG: lane $1 free -> dispatch${fl:+ $fl}" >> "$OPS/logs/dispatch-chain.log"; return 0; }
-next_dispatch() { [ -n "$SIGNALED" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (signal)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
+next_dispatch() { [ -n "$SIGNALED" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (killed by signal: a stop never restarts work; the 600 s tick is the backstop)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
   [ "$1" = 10 ] && { echo "$(date '+%F %T') $SLUG rc=10: not chaining (infra: missing toolchain; every card would hit it)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
   fail_guard "$1"
   [ -f "$OPS/PAUSE" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (PAUSE set)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
   free_lane "$FREED"; }
+refusal() {  # $1 rc: refused before claiming the unit; still refill the lane unless refusals are storming
+  [ -n "$CHECK" ] && return 0
+  [ -n "$SIGNALED" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (killed by signal before the claim; a stop never restarts work)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
+  local now n RF="$OPS/refusals.tsv"; now=$(date +%s)
+  for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
+  printf '%s\t%s\t%s\n' "$now" "$SLUG" "$1" >> "$RF"
+  awk -F'\t' -v c=$(( now - ${LANE_STORM_WIN_S:-60} )) '$1>=c' "$RF" > "$RF.tmp" && mv "$RF.tmp" "$RF"   # trim to the window on every write
+  n=$(wc -l < "$RF" | tr -d ' '); lock_drop "$OPS/chain-state.lock"
+  if [ "$n" -ge "${LANE_STORM_N:-3}" ]; then
+    echo "$(date '+%F %T') $SLUG rc=$1: STORM: $n refusals in a row within ${LANE_STORM_WIN_S:-60}s; not refilling (600 s tick is the backstop)" >> "$OPS/logs/dispatch-chain.log"
+    echo "$(date '+%F %T') $ID: dispatch storm: $n units refused in a row within ${LANE_STORM_WIN_S:-60}s (last: '$TITLE' rc=$1); see $RF" >> "$OPS/NEEDS_CODY"; return 0; fi
+  [ -f "$OPS/PAUSE" ] && { echo "$(date '+%F %T') $SLUG rc=$1: refused; not chaining (PAUSE set)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
+  echo "$(date '+%F %T') $SLUG rc=$1: refused; refilling lane $LANE" >> "$OPS/logs/dispatch-chain.log"; free_lane "$LANE"; }
+# Lane cap (max_concurrent): a run = a held unit lock with a LIVE pid on this lane (the lock's lane file, else its
+# latest events.tsv row), i.e. the unit locks lane-guard counts, minus dead ones. A killed/crashed run's lock has a
+# dead pid and never holds a slot. Count + unit-lock take happen under a per-lane mutex, so two starts can't both pass.
+lane_live() { local d p l n=0; for d in "$OPS"/units/*.lock; do [ -d "$d" ] || continue; p=$(lock_holder "$d")
+    { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || continue
+    l=$(cat "$d/lane" 2>/dev/null); [ -n "$l" ] || l=$(awk -F'\t' -v u="$(basename "$d" .lock)" '{s=$2; sub(/^[0-9]+-/,"",s); gsub(/^-+|-+$/,"",s)} s==u{l=$4} END{print l}' "$EV" 2>/dev/null)
+    [ "$l" = "$1" ] && n=$((n+1)); done; echo $n; }
+# --check: run only the refusal rules (lane usable/main key above, dispatch guard, stop rule, unit lock,
+# lane max_concurrent cap) and exit 0 = would start,
+# else the same refusal code; no claim, no events, no intake row, no chain. lane-guard --dispatch uses it.
+if [ -n "$CHECK" ]; then DISPATCH_INTAKE=/dev/null bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" >/dev/null || { echo "refusing: dispatch-guard"; exit 4; }
+else trap 'rc=$?; refusal $rc; exit $rc' EXIT; trap 'SIGNALED=1; exit 143' TERM; trap 'SIGNALED=1; exit 130' INT
+  bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4; fi
+# Stop rule: a brief that already failed twice goes to Cody, never straight back to an agent.
+grep -qF "	$TITLE	" "$OPS/failures.tsv" 2>/dev/null && { echo "refusing: '$TITLE' already failed twice (see $OPS/failures.tsv); fix the brief"; exit 2; }
+UL="$OPS/units/$SLUG.lock"; BLS=""
+MC=$(cfg maxconc "$LANE"); CAPL="$OPS/lanes/$LANE.cap.lock"
+if [ -n "$CHECK" ]; then h=$(lock_holder "$UL"); [ -n "$h" ] && kill -0 "$h" 2>/dev/null && { echo "unit '$SLUG' already has a writer (pid $h)"; exit 3; }
+  if [ "$MC" != 0 ]; then N=$(lane_live "$LANE"); [ "$N" -lt "$MC" ] || { echo "refusing: lane '$LANE' already has $N running (max_concurrent $MC)"; exit 5; }; fi
+  echo "runnable: $SLUG"; exit 0; fi
+G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight refused: $G"; exit 5; }
+# One writer per unit and per branch.
+# Cap: count + unit-lock take under the per-lane mutex, so two starts can't both pass (same rule as --check).
+if [ "$MC" != 0 ]; then
+  for k in $(seq 1 100); do lock_take "$CAPL" && break; sleep 0.1; done
+  [ "$(lock_holder "$CAPL")" = $$ ] || { echo "refusing: lane '$LANE' cap mutex busy ($CAPL, pid $(lock_holder "$CAPL"))"; exit 5; }
+  N=$(lane_live "$LANE"); [ "$N" -lt "$MC" ] || { lock_drop "$CAPL"; echo "refusing: lane '$LANE' already has $N running (max_concurrent $MC)"; exit 5; }
+fi
+lock_take "$UL" || { lock_drop "$CAPL" 2>/dev/null; echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
+echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
+for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
+rm -f "$OPS/refusals.tsv"; lock_drop "$OPS/chain-state.lock"   # a unit started: the refusal streak is broken
 trap 'rc=$?; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; exit 130' INT
