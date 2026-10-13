@@ -228,6 +228,12 @@ func noticeOutcome(t *testing.T, status, body string) {
 		if _, _, err := s.CreateApproval(t.Context(), Approval{ID: "gate", RunID: run.ID, AgentID: "a", ThreadID: "a", Tool: "exec", Key: "gate"}); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := s.DecideApproval(t.Context(), "gate", ApprovalApproved); err != nil {
+			t.Fatal(err)
+		}
+		if _, claimed, err := s.ClaimApproval(t.Context(), "gate"); err != nil || !claimed {
+			t.Fatalf("claim approval: %v %v", claimed, err)
+		}
 		run.Status = "completed"
 	}
 	run.Error = &contract.Error{Message: "Tool crashed\nDetails"}
