@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory() as p:
 PY
 for mode in release debug; do
   flags=(); [ "$mode" != debug ] || flags=(-D DEBUG)
-  swiftc "${flags[@]}" "$ROOT/apps/Polymux/Sources/ServerAddress.swift" \
+  swiftc ${flags[@]+"${flags[@]}"} "$ROOT/apps/Polymux/Sources/ServerAddress.swift" \
     "$ROOT/scripts/ServerAddressTest.swift" -o "$T/address"
   "$T/address"
 done
