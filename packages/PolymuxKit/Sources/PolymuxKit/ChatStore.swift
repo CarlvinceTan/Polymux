@@ -1,13 +1,27 @@
+import Dispatch
 import Foundation
 import Observation
 
+public struct ScrollAnchor: Equatable, Sendable {
+    public var messageID: String
+    public var atBottom: Bool
+
+    public init(messageID: String, atBottom: Bool) {
+        self.messageID = messageID
+        self.atBottom = atBottom
+    }
+}
+
 @MainActor @Observable
 public final class ChatStore {
+    public static var createdCount = 0
     public let activity: ActivityStore
     public private(set) var runs: [Run] = []
     public let threadID: String
     public private(set) var messages: [Message] = []
     public private(set) var isConnected = false
+    public private(set) var isPaused = false
+    public private(set) var scrollAnchor: ScrollAnchor?
     public var isVisible = true
     public private(set) var isSending = false
     public private(set) var error: String?
@@ -121,9 +135,16 @@ public final class ChatStore {
         streamTask = Task { [weak self] in await self?.connect() }
     }
 
-    public func stop() {
+    /// Leave the chat without dropping messages or the scroll anchor.
+    public func pause() {
         streamTask?.cancel()
         streamTask = nil
+        isPaused = true
+    }
+
+    public func stop() {
+        pause()
+        isPaused = false
         isConnected = false
         for reply in voices.values { reply.continuation.finish(throwing: CancellationError()) }
         voices.removeAll()
@@ -405,6 +426,91 @@ public final class ChatStore {
             }
             voices[token] = reply
         }
+    }
+
+    private func withCache<T: Sendable>(_ body: @Sendable (LocalCache) throws -> T) async throws -> T {
+        let cache = cache
+        return try await withoutActuallyEscaping(body) { body in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let result = Result { () throws -> T in
+                        try CacheAudit.strict {
+                            #if DEBUG
+                            dispatchPrecondition(condition: .notOnQueue(.main))
+                            #endif
+                            return try body(cache)
+                        }
+                    }
+                    continuation.resume(with: result)
+                }
+            }
+        }
+    }
+
+    /// One disk read, never on the main thread. Later switches reuse the in-memory transcript.
+    private static func snapshot(cache: LocalCache, threadID: String) -> (messages: [Message], runs: [Run]) {
+        let loaded = try? CacheAudit.hop {
+            try CacheAudit.strict { () throws -> (messages: [Message], runs: [Run]) in
+                #if DEBUG
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                #endif
+                let runs = (try? cache.runs(threadID: threadID)) ?? []
+                let messages = (try? cache.messages(threadID: threadID, limit: 100)) ?? []
+                return (messages, runs)
+            }
+        }
+        return loaded ?? ([], [])
+    }
+}
+
+/// Keeps the last few chats resident so a reselect paints the transcript it already has.
+@MainActor
+public final class ChatStoreCache {
+    public static let capacity = 8
+    public private(set) var activeID: String?
+    private var stores: [String: ChatStore] = [:]
+    private var order: [String] = []
+    private let client: APIClient
+    private let cache: LocalCache
+    private weak var sidebar: SidebarStore?
+
+    public init(client: APIClient, cache: LocalCache, sidebar: SidebarStore?) {
+        self.client = client
+        self.cache = cache
+        self.sidebar = sidebar
+    }
+
+    public var count: Int { stores.count }
+
+    public func contains(_ threadID: String) -> Bool { stores[threadID] != nil }
+
+    public func store(for threadID: String) -> ChatStore {
+        if let existing = stores[threadID] {
+            touch(threadID)
+            return existing
+        }
+        let created = ChatStore(client: client, cache: cache, threadID: threadID, sidebar: sidebar)
+        stores[threadID] = created
+        order.append(threadID)
+        while stores.count > Self.capacity, let oldest = order.first {
+            order.removeFirst()
+            stores.removeValue(forKey: oldest)?.stop()
+        }
+        return created
+    }
+
+    public func activate(_ threadID: String?) {
+        activeID = threadID
+        for (id, store) in stores where id != threadID {
+            store.pause()
+        }
+        guard let threadID else { return }
+        _ = store(for: threadID)
+    }
+
+    private func touch(_ threadID: String) {
+        order.removeAll { $0 == threadID }
+        order.append(threadID)
     }
 }
 

@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Observation
 
@@ -83,11 +84,11 @@ public final class SidebarStore {
         revision &+= 1
         epoch &+= 1
         acceptedAgents[agent.id] = agent
-        merge(agent, into: &agents)
+        Self.merge(agent, into: &agents)
         if !threads.contains(where: { $0.id == agent.id }) {
             let thread = Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
             acceptedThreads[thread.id] = thread
-            merge(thread, into: &threads)
+            Self.merge(thread, into: &threads)
         }
         isConnected = true
         error = nil
@@ -179,12 +180,12 @@ public final class SidebarStore {
         try await cacheActor.save(agents: agents, threads: threads, pins: pins, edits: edits)
     }
 
-    private func merge(_ agent: Agent, into agents: inout [Agent]) {
+    private nonisolated static func merge(_ agent: Agent, into agents: inout [Agent]) {
         if let index = agents.firstIndex(where: { $0.id == agent.id }) { agents[index] = agent }
         else { agents.append(agent) }
     }
 
-    private func merge(_ thread: Thread, into threads: inout [Thread]) {
+    private nonisolated static func merge(_ thread: Thread, into threads: inout [Thread]) {
         guard let index = threads.firstIndex(where: { $0.id == thread.id }) else { threads.append(thread); return }
         var accepted = thread
         let previous = threads[index]
@@ -557,5 +558,17 @@ public final class SidebarStore {
         let clock = ContinuousClock()
         let start = clock.now
         while start.duration(to: clock.now) < duration {}
+    }
+
+    private func offMain<T: Sendable>(_ body: @escaping @Sendable (LocalCache) throws -> T) throws -> T {
+        let cache = cache
+        return try CacheAudit.hop {
+            try CacheAudit.strict {
+                #if DEBUG
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                #endif
+                return try body(cache)
+            }
+        }
     }
 }
