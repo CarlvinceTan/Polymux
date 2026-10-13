@@ -253,6 +253,8 @@ func (s *Server) Close() error {
 	})
 	return s.closeErr
 }
+func (s *Server) Handler() http.Handler { return s.config.Devices.Require(s) }
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.mux.ServeHTTP(w, r)

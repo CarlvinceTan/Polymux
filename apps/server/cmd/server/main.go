@@ -128,6 +128,9 @@ func run() error {
 		return err
 	}
 	defer pairings.Close()
+	if _, err := pairings.Local(ctx, *dir); err != nil {
+		return err
+	}
 	devices := device.New(pairings)
 	defer devices.Close()
 	deviceSocket, err := net.Listen("tcp", *deviceListen)
@@ -213,7 +216,7 @@ func run() error {
 			return err
 		}
 	}
-	httpServer := &http.Server{Addr: *listen, Handler: api, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	httpServer := &http.Server{Addr: *listen, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
