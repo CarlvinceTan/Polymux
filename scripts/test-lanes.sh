@@ -8,7 +8,7 @@ PASS=0; FAILS=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAILS=$((FAILS+1)); echo "FAIL $1"; fi; }
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/repo"; cd "$T/repo"
 git config user.name "Lane Test"; git config user.email lane@test.invalid
-mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup,board-update}.sh "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
+mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup,board-update,queue-write}.sh "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
 cat > agents/lanes.toml <<'TOML'
 max_builds = 1
 lock_dir = "~/ops/lanes/locks"
@@ -26,7 +26,7 @@ export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" 
 export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
 export LANE_BREAKER_N=99   # global breaker off except in its own test (19e); many cases fail fast on purpose
-task() { printf 'needs: none\nexpected_min: 5\n%s\n' "$1" > "$T/$2.task"; echo "$T/$2.task"; }
+task() { printf '# %s\nneeds: none\nexpected_min: 5\n' "$1" > "$T/$2.task"; echo "$T/$2.task"; }
 STUB_OK='echo $RANDOM >> f.txt && git add f.txt && git commit -qm "stub change" -m "Lane: $LANE/$AGENT"'
 RL="bash scripts/run-lane.sh"
 # 1 happy path (dry): commit with trailer, lane identity in committer, locks released
@@ -38,7 +38,7 @@ check "unit + branch locks released" '! ls -d "$LANES_HOME"/units/*.lock "$LANES
 # 2 first failure -> brief back to queue/ as attempt 2 (no in-process failover); attempt 2 fails -> NEEDS_CODY
 OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Always fails' t2)" 2>&1); RC=$?
 RQ=$(ls "$LANES_HOME"/queue/*-always-fails-retry.task 2>/dev/null | head -1)
-check "first failure: exit 1, re-queued as attempt 2, laneB not tried, no NEEDS_CODY" '[ $RC = 1 ] && echo "$OUT" | grep -q "REQUEUED after: laneA" && grep -qx "Always fails (attempt 2)" "$RQ" && grep -qx "needs: none" "$RQ" && ! grep -q "always-fails	running	laneB" "$LANES_HOME/events.tsv" && [ ! -f "$LANES_HOME/NEEDS_CODY" ]'
+check "first failure: exit 1, re-queued as attempt 2, laneB not tried, no NEEDS_CODY" '[ $RC = 1 ] && echo "$OUT" | grep -q "REQUEUED after: laneA" && grep -qx "# Always fails (attempt 2)" "$RQ" && [ "$(head -1 "$RQ")" = "# Always fails (attempt 2)" ] && grep -qx "needs: none" "$RQ" && ! grep -q "always-fails	running	laneB" "$LANES_HOME/events.tsv" && [ ! -f "$LANES_HOME/NEEDS_CODY" ]'
 mv "$RQ" "$T/t2b.task"; OUT=$(LANE_FORCE_FAIL="laneA laneB" $RL laneB "$T/t2b.task" 2>&1); RC=$?
 check "attempt 2 fails -> exit 1, NEEDS_CODY + failures.tsv, nothing re-queued" '[ $RC = 1 ] && echo "$OUT" | grep -q "FAILED after: laneB" && grep -q "Always fails" "$LANES_HOME/NEEDS_CODY" && grep -q "Always fails (attempt 2)" "$LANES_HOME/failures.tsv" && ! ls "$LANES_HOME"/queue/*.task >/dev/null 2>&1'
 # 3 stop rule
@@ -201,7 +201,7 @@ export GLOG="$T/g19"
 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD='sleep 5' $RL laneA "$(task 'Chain term' t19)" >/dev/null 2>&1 & P=$!
 for k in $(seq 1 50); do [ -d "$LANES_HOME/units/chain-term.lock" ] && break; sleep 0.1; done; kill -TERM $P; wait $P
 check "SIGTERM: no dispatch" 'grep -q "chain-term rc=143: not chaining" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
-mkdir -p "$LANES_HOME/queue"; printf 'needs: none\nChain short fail (attempt 2)\n' > "$LANES_HOME/queue/r1.task"; printf 'needs: none\nOther card\n' > "$LANES_HOME/queue/r2.task"
+mkdir -p "$LANES_HOME/queue"; printf '# Chain short fail (attempt 2)\nneeds: none\n' > "$LANES_HOME/queue/r1.task"; printf '# Other card\nneeds: none\n' > "$LANES_HOME/queue/r2.task"
 OUT=$(LANE_GUARD="$FGF" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain short fail' t19b)" 2>&1); waitfor "$GLOG" "free-lane laneA"
 check "short failure: lane still refilled, same task's retry held, other card kept" 'grep -q "^--dispatch --free-lane laneA" "$GLOG" && [ -f "$LANES_HOME/queue-hold/r1.task" ] && [ -f "$LANES_HOME/queue/r2.task" ]'
 rm -f "$LANES_HOME"/queue/*.task; for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
@@ -210,7 +210,7 @@ LANE_CHAIN_MIN_S=0 LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(t
 for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
 R3=$(ls "$LANES_HOME"/queue/*-chain-fail-one-retry.task 2>/dev/null | head -1)
 check "1st (long) failure: retry stays queued, lane refilled" '[ -n "$R3" ] && [ "$(ndisp "$GLOG")" = 1 ]'
-cp "$R3" "$T/t19d.task"; mkdir -p "$LANES_HOME/queue"; printf 'needs: none\nChain fail one (attempt 3)\n' > "$LANES_HOME/queue/r3.task"; rm -f "$R3"
+cp "$R3" "$T/t19d.task"; mkdir -p "$LANES_HOME/queue"; printf '# Chain fail one (attempt 3)\nneeds: none\n' > "$LANES_HOME/queue/r3.task"; rm -f "$R3"
 LANE_CHAIN_MIN_S=0 LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$T/t19d.task" > "$T/o19d" 2>&1; sleep 1; [ -n "${TL_DEBUG:-}" ] && { cat "$T/o19d" "$T/t19d.task"; ls "$LANES_HOME/chain-fails"; }
 for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
 check "2nd failure of the same task: its retries held, lane still refilled (no global streak)" '[ "$(ndisp "$GLOG")" = 2 ] && [ -f "$LANES_HOME/queue-hold/r3.task" ] && [ "$(cat "$LANES_HOME/chain-fails/chain-fail-one")" = 2 ]'
@@ -230,6 +230,41 @@ export GLOG="$T/g19f"; mkdir -p "$LANES_HOME/dispatch-chain.lock"; echo $$ > "$L
 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain busy' t19f)" >/dev/null 2>&1
 for k in $(seq 1 150); do grep -q "chain-busy: refill of lane laneA skipped" "$CL" && break; sleep 0.1; done; rm -rf "$LANES_HOME/dispatch-chain.lock"
 check "chain lock busy ~10 s: refill skipped and logged, no dispatch" 'grep -q "chain-busy: refill of lane laneA skipped: .*dispatch-chain.lock busy" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
+# 21 queue-write.sh: validation, atomic locked writes, run-lane requeue shape
+QWS="bash scripts/queue-write.sh"; QD="$LANES_HOME/queue"; mkdir -p "$QD"; rm -f "$QD"/*.task
+printf 'needs: xcode\nexpected_min: 60\nbranch: x/y\n# Late title\n' > "$T/bad1.task"
+OUT=$($QWS "$T/bad1.task" 2>&1); RC=$?
+check "queue-write rejects title-not-first + branch-before-title, writes nothing" '[ $RC = 2 ] && grep -q "line 1 must be a" <<< "$OUT" && grep -q "branch: line 3 comes before the title" <<< "$OUT" && grep -q "rejected" <<< "$OUT" && ! ls "$QD"/*.task >/dev/null 2>&1'
+OUT=$(printf '# T\nexpected_min: soon\nafter: pr:12 pr:abc branch-on-main:\npr: twelve\n' | $QWS - 2>&1); RC=$?
+check "queue-write rejects missing needs, bad expected_min, bad after:/pr: refs" '[ $RC = 2 ] && grep -q "missing needs" <<< "$OUT" && grep -q "expected_min must be whole minutes" <<< "$OUT" && grep -q "\"pr:abc\"" <<< "$OUT" && grep -q "\"branch-on-main:\"" <<< "$OUT" && grep -q "pr: ref \"twelve\"" <<< "$OUT" && ! grep -q "pr:12\"" <<< "$OUT"'
+printf '# Good brief\nneeds: none\nexpected_min: 30\nbranch: feat/x\nafter: pr:12 branch-on-main:agent/a-b\npr: #12\n\nDo the thing.\n' > "$T/good.task"
+OUT=$($QWS --name good.task "$T/good.task" 2>&1); RC=$?
+check "queue-write accepts a good brief, atomically, no temp left" '[ $RC = 0 ] && cmp -s "$T/good.task" "$QD/good.task" && ! ls -a "$QD" | grep -q "^\.queue-write" && [ "$(grep -c . <<< "$OUT")" = 1 ]'
+OUT=$($QWS --name good.task "$T/good.task" 2>&1); RC=$?
+check "queue-write never overwrites an existing brief without --force" '[ $RC = 4 ] && cmp -s "$T/good.task" "$QD/good.task"'
+rm -f "$QD"/*.task
+for mode in flock mkdir; do BAD=0
+  for i in $(seq 1 6); do rm -f "$QD"/*.task
+    for k in 1 2 3 4 5 6 7 8; do printf '# Racer %s\nneeds: none\nexpected_min: 5\n%s\n' "$k" "$(head -c 3000 /dev/zero | tr '\0' "$k")" > "$T/race$k.task"; done
+    for k in 1 2 3 4 5 6 7 8; do ( [ $mode = mkdir ] && export QUEUE_LOCK_MKDIR=1; $QWS --name same.task "$T/race$k.task" >/dev/null 2>&1; $QWS - < "$T/race$k.task" >/dev/null 2>&1 ) & done; wait
+    N=$(ls "$QD"/*.task | wc -l | tr -d ' '); W=0; for k in 1 2 3 4 5 6 7 8; do cmp -s "$QD/same.task" "$T/race$k.task" && W=$((W+1)); done
+    OKALL=1; for f in "$QD"/*-racer-*.task; do M=0; for k in 1 2 3 4 5 6 7 8; do cmp -s "$f" "$T/race$k.task" && M=1; done; [ $M = 1 ] || OKALL=0; done
+    { [ "$N" = 9 ] && [ $W = 1 ] && [ $OKALL = 1 ] && ! ls -a "$QD" | grep -q "^\.queue-write"; } || BAD=$((BAD+1)); done
+  check "queue-write ($mode lock): 8 concurrent writers, nothing clobbered or torn" '[ $BAD = 0 ]'
+done
+rm -f "$QD"/*.task; rm -rf "$LANES_HOME/queue.lock.d"
+if command -v flock >/dev/null 2>&1; then ( flock 9; sleep 3 ) 9>>"$LANES_HOME/queue.lock" & HP=$!; sleep 0.5
+  OUT=$(QUEUE_LOCK_WAIT=1 $QWS "$T/good.task" 2>&1); RC=$?; wait $HP
+  check "queue-write waits for the queue lock and gives up cleanly (exit 3)" '[ $RC = 3 ] && grep -q "busy" <<< "$OUT" && ! ls "$QD"/*.task >/dev/null 2>&1'
+fi
+printf 'needs: xcode\nexpected_min: 60\nbranch: goal/x\n# Fix me (attempt 2)\n\nbody\n' > "$QD/fixme.task"; printf 'no title at all\nneeds: none\n' > "$QD/human.task"
+OUT=$($QWS --fix "$QD/fixme.task" "$QD/human.task" 2>&1); RC=$?
+check "queue-write --fix moves the title up, leaves a non-obvious brief alone" '[ $RC = 2 ] && [ "$(head -1 "$QD/fixme.task")" = "# Fix me (attempt 2)" ] && $QWS --check "$QD/fixme.task" && grep -q "not fixed (needs a human): .*human.task" <<< "$OUT" && [ "$(head -1 "$QD/human.task")" = "no title at all" ]'
+rm -f "$QD"/*.task
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL=laneA $RL laneA "$(task 'Requeue shape' t21)" --branch test/rq-shape 2>&1)
+RQ=$(ls "$QD"/*-requeue-shape-retry.task 2>/dev/null | head -1)
+check "run-lane requeue goes through queue-write: title first, branch after it, valid" '[ -n "$RQ" ] && [ "$(head -1 "$RQ")" = "# Requeue shape (attempt 2)" ] && [ "$(grep -c "^branch: test/rq-shape$" "$RQ")" = 1 ] && $QWS --check "$RQ"'
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done; rm -f "$QD"/*.task
 # 9 lanes.py per-host override
 printf '[l]\nkey = "neutral"\nkey@hostx = "special"\n' > "$T/o.toml"
 check "lanes.py host override" '[ "$(LANES_TOML=$T/o.toml LANES_HOST=hostx python3 scripts/lanes.py lane l key)" = special ] && [ "$(LANES_TOML=$T/o.toml LANES_HOST=y python3 scripts/lanes.py lane l key)" = neutral ]'
@@ -251,6 +286,24 @@ G3="$T/ghbin3"; mkdir -p "$G3"; : > "$T/pc.n"
 printf '#!/bin/bash\ncase "$1 $2" in\n"pr create") echo x >> "%s/pc.n"; [ $(wc -l < "%s/pc.n") -ge 3 ] && { echo https://github.com/o/r/pull/102; exit 0; }; exit 1;;\nesac\nexit 0\n' "$T" "$T" > "$G3/gh"; chmod +x "$G3/gh"; : > "$T/runs"
 OUT=$(PATH="$G3:$PATH" LANE_NO_CHAIN=1 LANE_RETRY_SLEEP=0 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD='echo r >> "$HOME/../runs"; '"$STUB_OK" $RL laneA "$(task 'Pr retry' p4)" --branch test/pr-retry 2>&1); RC=$?
 check "gh pr create fails twice then succeeds; agent ran once" '[ $RC = 0 ] && echo "$OUT" | grep -q pull/102 && [ "$(wc -l < "$T/pc.n" | tr -d " ")" = 3 ] && [ "$(wc -l < "$T/runs" | tr -d " ")" = 1 ]'
+# 23 wt-setup warms the sim template once; failed warms are capped; markers live under LANES_HOME
+WS="$T/warmbin"; mkdir -p "$WS"; : > "$T/warm.log"
+cat > "$WS/xcrun" <<XC
+#!/bin/bash
+echo "\$*" >> "$T/warm.log"
+case "\$2" in
+  list) [ "\$3" = devices ] && echo '{"devices":{"r":[{"name":"polymux-template","udid":"TPL1","isAvailable":true}]}}';;
+  bootstatus) [ -f "$T/warmfail" ] && exit 1; exit 0;;
+  clone) echo CLONE1;;
+esac; exit 0
+XC
+chmod +x "$WS/xcrun"; git worktree add -q --detach "$T/wsA" main
+WSR() { (cd "$T/wsA" && PATH="$WS:$PATH" SIM_WARM_SETTLE=0 SIM_WARM_TIMEOUT=5 bash scripts/wt-setup.sh) >/dev/null 2>&1; }
+touch "$T/warmfail"; WSR; WSR; WSR
+check "warm failures capped at 2 attempts, counted under LANES_HOME" '[ "$(grep -c "simctl bootstatus" "$T/warm.log")" = 2 ] && [ "$(cat "$LANES_HOME/.sim-warm-fail-TPL1")" = 2 ] && [ ! -e "$LANES_HOME/.sim-warm-TPL1" ]'
+rm -f "$T/warmfail" "$LANES_HOME/.sim-warm-fail-TPL1"; : > "$T/warm.log"; WSR; WSR
+check "successful warm runs once, then the marker skips it" '[ "$(grep -c "simctl bootstatus" "$T/warm.log")" = 1 ] && [ -f "$LANES_HOME/.sim-warm-TPL1" ] && [ ! -e "$LANES_HOME/.sim-warm-fail-TPL1" ]'
+git worktree remove --force "$T/wsA"
 # 16 board-update.sh (Notion board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"

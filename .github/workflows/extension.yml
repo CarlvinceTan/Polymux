@@ -57,9 +57,6 @@ jobs:
         run: node scripts/release/validate-browser-compatibility.mjs --base="$BASE_REVISION"
 
       - name: Package extension
-        env:
-          POLYMUX_SUPABASE_URL: ${{ secrets.POLYMUX_SUPABASE_URL }}
-          POLYMUX_SUPABASE_ANON_KEY: ${{ secrets.POLYMUX_SUPABASE_ANON_KEY }}
         run: scripts/release/package-chrome-extension.sh dist/polymux-agent-surface.zip
 
       - uses: google-github-actions/auth@v3
