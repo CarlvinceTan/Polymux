@@ -55,6 +55,17 @@ struct ShellView: View {
                     chatLink(thread)
                 }
             }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let notice = session.sidebar.notice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                }
+            }
+            .accessibilityIdentifier("chats.list")
             #if os(macOS)
             .listStyle(.sidebar)
             .tint(Color(white: colorScheme == .dark ? 0.24 : 0.87))
@@ -94,7 +105,10 @@ struct ShellView: View {
                             .frame(width: 64, height: 64)
                             .glassEffect(.regular.interactive(), in: Circle())
                             Spacer(minLength: 0)
-                            Button("New chat", systemImage: "plus") { adding = true }
+                            Button("New chat", systemImage: "plus") {
+                                session.sidebar.clearNotice()
+                                adding = true
+                            }
                                 .labelStyle(.iconOnly).buttonStyle(.plain)
                                 .frame(width: 64, height: 64)
                                 .glassEffect(.regular.interactive(), in: Circle())
@@ -131,7 +145,10 @@ struct ShellView: View {
                 if sidebar.stage == .expanded && visibility != .detailOnly {
                     ToolbarSpacer(.flexible, placement: .primaryAction)
                     ToolbarItemGroup(placement: .primaryAction) {
-                        Button("New chat", systemImage: "plus") { adding = true }
+                        Button("New chat", systemImage: "plus") {
+                            session.sidebar.clearNotice()
+                            adding = true
+                        }
                         filterMenu
                     }
                     ToolbarSpacer(.fixed, placement: .primaryAction)
@@ -181,18 +198,29 @@ struct ShellView: View {
             }
             .toolbar(removing: .sidebarToggle)
         } detail: {
-            if let thread = session.sidebar.threads.first(where: { $0.id == selection }),
+            if let thread = session.sidebar.displayed(selection),
                let agent = participants(thread).first {
                 ChatPane(agent: agent, thread: thread, session: session, drops: $dropped)
-                    .id(thread.id)
+                    .id(selection)
+            } else if let notice = session.sidebar.notice {
+                ContentUnavailableView(notice, systemImage: "exclamationmark.bubble")
             } else {
                 ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
                                        description: Text("Choose an agent to start talking."))
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .background {
+            Text("Application status")
+                .font(.system(size: 1)).opacity(0.01)
+                .accessibilityIdentifier("app.status")
+                .accessibilityValue("connected=\(session.sidebar.isConnected ? 1 : 0), cache=\(session.sidebar.error == nil && !session.sidebar.threads.isEmpty ? "warm" : "cold")")
+        }
         .onChange(of: selection, initial: true) { _, value in
             Notifications.shared.visible(scenePhase == .active ? value : nil, window: windowID)
+            if let value, session.sidebar.threads.contains(where: { $0.id == value }) {
+                session.sidebar.clearNotice()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             Notifications.shared.visible(phase == .active ? selection : nil, window: windowID)
@@ -275,7 +303,7 @@ struct ShellView: View {
                     await session.avatars.flush(client: session.client)
                 }
                 #if os(macOS)
-                if selection == nil { selection = Notifications.shared.destination ?? session.sidebar.threads.first(where: { $0.agentID == "assistant" && !$0.isGroup })?.id ?? conversations.first?.id }
+                if selection == nil, session.sidebar.notice == nil { selection = Notifications.shared.destination ?? session.sidebar.threads.first(where: { $0.agentID == "assistant" && !$0.isGroup })?.id ?? conversations.first?.id }
                 #endif
                 try? await Task.sleep(for: .seconds(3))
             }
@@ -367,6 +395,7 @@ struct ShellView: View {
                          activity: session.sidebar.activity, connected: session.sidebar.isConnected)
             }
         }
+        .accessibilityIdentifier("sidebar.row.\(thread.id)")
         #if os(macOS)
         .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
         .overlay {

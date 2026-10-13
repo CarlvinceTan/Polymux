@@ -9,10 +9,10 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/mattn/go-sqlite3 v1.14.32
+	github.com/miekg/dns v1.1.27
 	golang.org/x/crypto v0.55.0
 	golang.org/x/image v0.45.0
 	golang.org/x/net v0.58.0
-	golang.org/x/oauth2 v0.37.0
 )
 
 require (
@@ -51,7 +51,6 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
-	github.com/miekg/dns v1.1.27 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
@@ -59,6 +58,7 @@ require (
 	github.com/yuin/goldmark v1.8.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/mod v0.40.0 // indirect
+	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect

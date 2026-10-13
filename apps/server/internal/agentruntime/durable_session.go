@@ -100,7 +100,7 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	if err != nil {
 		return nil, err
 	}
-	cwd := filepath.Join(r.dir, d.Agent.ID)
+	cwd := d.workingDir(filepath.Join(r.dir, d.Agent.ID))
 	if err := os.MkdirAll(cwd, 0700); err != nil {
 		return nil, err
 	}
@@ -316,6 +316,7 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 			},
 		}},
 		harness.Hook(harness.GenerationTask, &harness.GenerationHooks{
+			BeforeRequest: s.steerRequest,
 			// Abort marks the generation so the scheduler ends it as unanswered. The error
 			// stops finishToolRound from starting a successor request in the same turn.
 			AfterTools: func(ctx context.Context, _ durable.EntryId, _ []durable.EntryId, _ harness.HookApi) error {
@@ -327,6 +328,45 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 			},
 		}),
 	}
+}
+
+type steerKey struct{}
+
+func WithSteers(ctx context.Context, drain func(context.Context, func([]contract.Message) error) error) context.Context {
+	return context.WithValue(ctx, steerKey{}, drain)
+}
+
+func (s *durableSession) steerRequest(ctx context.Context, request harness.GenerationRequest, api harness.HookApi) (*harness.GenerationRequest, error) {
+	restored, ok := s.turnContext(api.ConversationId(), ctx)
+	if !ok {
+		return nil, ErrTurnState
+	}
+	drain, _ := restored.Value(steerKey{}).(func(context.Context, func([]contract.Message) error) error)
+	if drain == nil {
+		return nil, nil
+	}
+	err := drain(restored, func(messages []contract.Message) error {
+		added := []ai.Message{}
+		_, err := s.conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
+			for _, message := range messages {
+				content, err := s.content(message)
+				if err != nil {
+					return nil, err
+				}
+				user := ai.UserMessage{Content: content, Timestamp: time.Now().UnixMilli()}
+				if _, err := durable.TxAppendEntry(tx, durable.UserEntry, api.ConversationId(), durable.TypedEntryDraft[durable.Never]{Model: []ai.Message{user}}); err != nil {
+					return nil, err
+				}
+				added = append(added, user)
+			}
+			return nil, nil
+		})
+		if err == nil {
+			request.Messages = append(request.Messages, added...)
+		}
+		return err
+	})
+	return &request, err
 }
 
 var errApprovalPause = errors.New("waiting for approval")
@@ -401,6 +441,11 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 	if err != nil {
 		return Result{}, err
 	}
+	if emit != nil {
+		if err := emit(Delta{Kind: "submission", ToolID: strconv.FormatInt(int64(submission.Id()), 10)}); err != nil {
+			return Result{}, err
+		}
+	}
 	settled, err := submission.Wait(ctx)
 	if err != nil {
 		if s.park.Swap(false) {
@@ -408,6 +453,107 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 		}
 		return Result{}, err
 	}
+	return s.outcome(ctx, settled)
+}
+
+// Resume continues one submission. A placed submission is the crash window; any other
+// queued message stays queued. Otherwise a new generation replays the stored context.
+func (s *durableSession) Resume(ctx context.Context, submissionID int64, emit func(Delta) error) (Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.emitMu.Lock()
+	s.emit = emit
+	s.emitMu.Unlock()
+	defer func() {
+		s.emitMu.Lock()
+		s.emit = nil
+		s.emitMu.Unlock()
+	}()
+	if s.runtime == nil {
+		return Result{}, errors.New("no turn to resume")
+	}
+	stop := s.stream(ctx, emit)
+	defer stop()
+	if submission, ok := s.owned(ctx, submissionID); ok {
+		settled, err := submission.Wait(ctx)
+		if err != nil {
+			return Result{}, err
+		}
+		return s.outcome(ctx, settled)
+	}
+	return s.replay(ctx)
+}
+
+func (s *durableSession) owned(ctx context.Context, id int64) (durable.Submission, bool) {
+	if id == 0 || s.runtime == nil {
+		return nil, false
+	}
+	submission, err := s.runtime.harness.Submission(ctx, durable.SubmissionId(id))
+	if err != nil || submission == nil {
+		return nil, false
+	}
+	record, err := submission.Status(ctx)
+	if err != nil || record.ConversationId != s.conversation.Id() || record.Type != durable.SubmissionTypeInput {
+		return nil, false
+	}
+	if record.Status != durable.SubmissionQueued && record.Status != durable.SubmissionPlaced {
+		return nil, false
+	}
+	return submission, true
+}
+
+func (s *durableSession) replay(ctx context.Context) (Result, error) {
+	conversation := s.conversation.Id()
+	value, err := s.conversation.Commit(ctx, func(tx durable.Tx) (any, error) {
+		return durable.CreateTask(tx, harness.GenerationTask, harness.GenerationInput{}, durable.TaskOptions{
+			Ownership:      durable.TaskOwnership{Kind: durable.TaskOwnedByConversation},
+			ConversationId: &conversation,
+		})
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	taskID, ok := value.(durable.TaskId)
+	if !ok {
+		return Result{}, errors.New("no turn to resume")
+	}
+	settled, err := s.runtime.harness.WaitForTask(ctx, taskID)
+	if err != nil {
+		return Result{}, err
+	}
+	if settled.State.Outcome == nil || settled.State.Outcome.Status != durable.OutcomeCompleted {
+		return Result{}, errors.New("resume did not finish")
+	}
+	view, err := s.conversation.Context(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	text := ""
+	usage := contract.Usage{}
+	for _, message := range view.Messages {
+		assistant, ok := message.(ai.AssistantMessage)
+		if !ok {
+			continue
+		}
+		current := ""
+		for _, block := range assistant.Content {
+			if content, ok := block.(ai.TextContent); ok {
+				current += content.Text
+			}
+		}
+		if current == "" {
+			continue
+		}
+		text = current
+		usage = contract.Usage{InputTokens: int64(assistant.Usage.Input), OutputTokens: int64(assistant.Usage.Output)}
+	}
+	if text == "" {
+		return Result{}, errors.New("resume did not finish")
+	}
+	return Result{Text: text, Usage: usage}, nil
+}
+
+func (s *durableSession) outcome(ctx context.Context, settled durable.SettledSubmissionRecord) (Result, error) {
 	result := Result{}
 	if settled.Answer != nil {
 		text, usage, err := s.answer(ctx, *settled.Answer)

@@ -1,16 +1,5 @@
 export const channels = {
   devicePairing: "polymux:devices:pairing",
-  accountGet: "polymux:account:get",
-  accountSignInWithPassword: "polymux:account:sign-in-with-password",
-  accountSignUp: "polymux:account:sign-up",
-  accountResendConfirmation: "polymux:account:resend-confirmation",
-  accountRequestPasswordReset: "polymux:account:request-password-reset",
-  accountUpdatePassword: "polymux:account:update-password",
-  accountSignInWithOAuth: "polymux:account:sign-in-with-oauth",
-  accountSwitch: "polymux:account:switch",
-  accountSignOut: "polymux:account:sign-out",
-  /** Pushed by the main process whenever the signed-in account changes. */
-  accountChanged: "polymux:account:changed",
   phoneStatus: "polymux:phone:status",
   phoneConnect: "polymux:phone:connect",
   phonePairAndroid: "polymux:phone:pair-android",

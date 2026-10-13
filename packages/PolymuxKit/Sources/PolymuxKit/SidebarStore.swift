@@ -3,6 +3,150 @@ import Observation
 
 @MainActor @Observable
 public final class SidebarStore {
+    public private(set) var notice: String?
+    public private(set) var aliases: [String: String] = [:]
+    @ObservationIgnored private var stagedThreads: [String: Thread] = [:]
+    @ObservationIgnored private var stagedAgents: [String: Agent] = [:]
+    @ObservationIgnored private var resolvers: [String: [CheckedContinuation<String?, Never>]] = [:]
+    @ObservationIgnored private var agentChats: Set<String> = []
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
+
+    public func displayed(_ id: String?) -> Thread? {
+        threads.first { $0.id == id || $0.id == aliases[id ?? ""] }
+    }
+
+    /// Waits for a local id to reconcile with its server id. Waiters are continuations resumed by
+    /// `replaceStaged` and `dropStaged`, so nothing polls and a resolved id returns at once.
+    public func resolved(_ id: String) async -> String? {
+        guard id.hasPrefix("local-") else { return id }
+        if let alias = aliases[id] { return alias }
+        guard stagedThreads[id] != nil else { return nil }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if let alias = aliases[id] {
+                    continuation.resume(returning: alias)
+                } else if stagedThreads[id] == nil || Task.isCancelled {
+                    continuation.resume(returning: nil)
+                } else {
+                    resolvers[id, default: []].append(continuation)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.resumeResolvers(id, with: nil) }
+        }
+    }
+
+    private func resumeResolvers(_ id: String, with value: String?) {
+        for continuation in resolvers.removeValue(forKey: id) ?? [] {
+            continuation.resume(returning: value)
+        }
+    }
+
+    func reveal(_ thread: Thread) {
+        clearNotice()
+        revision &+= 1
+        stagedThreads[thread.id] = thread
+        acceptedThreads[thread.id] = thread
+        merge(thread, into: &threads)
+    }
+
+    func reveal(_ agent: Agent) {
+        clearNotice()
+        revision &+= 1
+        stagedAgents[agent.id] = agent
+        acceptedAgents[agent.id] = agent
+        merge(agent, into: &agents)
+        if !threads.contains(where: { $0.id == agent.id }) {
+            let thread = Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
+            stagedThreads[thread.id] = thread
+            agentChats.insert(agent.id)
+            acceptedThreads[thread.id] = thread
+            merge(thread, into: &threads)
+        }
+    }
+
+
+    public func clearNotice() {
+        noticeTask?.cancel()
+        noticeTask = nil
+        notice = nil
+    }
+
+    func dropStaged(thread id: String, notice message: String) {
+        guard stagedThreads.removeValue(forKey: id) != nil else { return }
+        revision &+= 1
+        acceptedThreads[id] = nil
+        threads.removeAll { $0.id == id }
+        resumeResolvers(id, with: nil)
+        notice = message
+        noticeTask?.cancel()
+        noticeTask = Task {
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            clearNotice()
+        }
+
+    }
+
+    func dropStaged(agent id: String, notice message: String) {
+        guard stagedAgents.removeValue(forKey: id) != nil else { return }
+        revision &+= 1
+        acceptedAgents[id] = nil
+        agents.removeAll { $0.id == id }
+        if agentChats.remove(id) != nil {
+            stagedThreads[id] = nil
+            acceptedThreads[id] = nil
+            threads.removeAll { $0.id == id }
+            resumeResolvers(id, with: nil)
+        }
+        notice = message
+        noticeTask?.cancel()
+        noticeTask = Task {
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            clearNotice()
+        }
+
+    }
+
+    func replaceStaged(_ thread: Thread, local id: String) async {
+        aliases[id] = thread.id
+        resumeResolvers(id, with: thread.id)
+        revision &+= 1
+        stagedThreads[id] = nil
+        let dropLocal = id != thread.id
+        if dropLocal {
+            acceptedThreads[id] = nil
+            threads.removeAll { $0.id == id }
+        }
+        acceptedThreads[thread.id] = thread
+        merge(thread, into: &threads)
+        clearNotice()
+        await accept(thread)
+    }
+
+    func replaceStaged(_ agent: Agent, local id: String) async {
+        revision &+= 1
+        stagedAgents[id] = nil
+        acceptedAgents[id] = nil
+        agents.removeAll { $0.id == id }
+        if agentChats.remove(id) != nil {
+            stagedThreads[id] = nil
+            acceptedThreads[id] = nil
+            threads.removeAll { $0.id == id }
+            resumeResolvers(id, with: agent.id)
+        }
+        acceptedAgents[agent.id] = agent
+        merge(agent, into: &agents)
+        if !threads.contains(where: { $0.id == agent.id }) {
+            let thread = Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
+            acceptedThreads[thread.id] = thread
+            merge(thread, into: &threads)
+        }
+        clearNotice()
+        await accept(agent)
+    }
+
     public let activity = ActivityStore()
     public let commits = ProfileCommit()
     public private(set) var agents: [Agent] = []
@@ -238,6 +382,8 @@ public final class SidebarStore {
                 try await cacheActor.call { try $0.reconcile(thread) }
             }
             self.threads = try await cacheActor.call { try $0.threads() }
+            for agent in stagedAgents.values { merge(agent, into: &self.agents) }
+            for thread in stagedThreads.values { merge(thread, into: &self.threads) }
             remember()
             activity.retain(Set(self.threads.map(\.id)))
             for thread in self.threads { activity.reconcile(thread) }
@@ -272,9 +418,7 @@ public final class SidebarStore {
                     continue
                 }
                 do {
-                    try await client.send(threadID: queued.threadID, request: queued.request)
-                    let id = queued.request.id
-                    try await cacheActor.call { try $0.acknowledge(id: id) }
+                    try await cacheActor.deliver(client: client, threadID: queued.threadID, request: queued.request)
                 } catch {
                     let id = queued.request.id
                     if try await cacheActor.call({ try $0.accepted(id: id) }) {

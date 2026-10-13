@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -303,4 +304,57 @@ func mustMessages(t *testing.T, s *Store, thread string) []contract.Message {
 		t.Fatal(err)
 	}
 	return messages
+}
+
+func TestSTPersistedSteer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "steer.db")
+	s, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Register(t.Context(), []contract.Agent{{ID: "a", Name: "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	send := func(id string) {
+		t.Helper()
+		request := contract.SendRequest{ID: id, Text: id, AttachmentIDs: []string{}}
+		if _, _, err := s.Send(t.Context(), "a", request, []contract.Part{{Kind: "text", Text: &request.Text}}, "a"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("first")
+	if _, err := s.Job(t.Context(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.Run(t.Context(), NewRun("first", "a", "a", "message").ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = "running"
+	if err := s.RunEvent(t.Context(), "run.update", &run, nil); err != nil {
+		t.Fatal(err)
+	}
+	send("ALPHA_ST")
+	send("ALPHA_ST") // A retry must not duplicate the pending message.
+	s.Close()
+	s, err = Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	failed := errors.New("history unavailable")
+	if err := s.DrainSteers(t.Context(), run.ID, func([]contract.Message) error { return failed }); !errors.Is(err, failed) {
+		t.Fatal(err)
+	}
+	persist := func(messages []contract.Message) error {
+		if len(messages) != 1 || Text(messages[0]) != "ALPHA_ST" {
+			t.Fatalf("messages=%v", messages)
+		}
+		return nil
+	}
+	for range 2 {
+		if err := s.DrainSteers(t.Context(), run.ID, persist); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

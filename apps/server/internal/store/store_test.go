@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -21,6 +22,49 @@ func openTest(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func TestOpenEscapes(t *testing.T) {
+	for _, name := range []string{"data#part?tail", "data?part#tail"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			root := t.TempDir()
+			path := filepath.Join(root, name, "polymux.db")
+			s, err := Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if _, err := s.DB.ExecContext(ctx, `INSERT INTO agents(id,data) VALUES(?,?)`, "persisted", `{}`); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err = Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			var data string
+			if err := s.DB.QueryRowContext(ctx, `SELECT data FROM agents WHERE id=?`, "persisted").Scan(&data); err != nil {
+				t.Fatal(err)
+			}
+			if data != `{}` {
+				t.Fatalf("row data = %q, want {}", data)
+			}
+			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+				t.Fatalf("expected database file at %s: %v", path, err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != name || !entries[0].IsDir() {
+				t.Fatalf("unexpected sibling paths: %v", entries)
+			}
+		})
+	}
 }
 
 func TestDurableReplay(t *testing.T) {

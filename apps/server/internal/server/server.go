@@ -36,6 +36,7 @@ type Factory interface {
 	Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error)
 }
 type Config struct {
+	MergeLane   string
 	DataDir     string
 	Model       string
 	Definitions []agentruntime.Definition
@@ -48,10 +49,10 @@ type Config struct {
 	BackgroundTimeout time.Duration
 }
 type Server struct {
-	drive      *oneDrive
 	Store      *store.Store
 	memory     *memory.Store
 	settings   *settings.Store
+	worktrees  *agentruntime.Worktrees
 	config     Config
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -99,11 +100,11 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(c.DataDir, "attachments"), 0700); err != nil {
 		return nil, err
 	}
-	preferences, err := settings.Open(filepath.Join(c.DataDir, "settings.json"))
-	if err != nil {
-		return nil, err
+	// Refresh tokens from the removed OneDrive connector must not survive startup.
+	if err := os.RemoveAll(filepath.Join(c.DataDir, "connections", "onedrive")); err != nil {
+		return nil, fmt.Errorf("remove onedrive directory: %w", err)
 	}
-	drive, err := openDrive(c.DataDir)
+	preferences, err := settings.Open(filepath.Join(c.DataDir, "settings.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +157,11 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 		}
 		if current, ok := configured[d.Agent.ID]; ok {
 			d.ExtraTools = current.ExtraTools
+			// The configured default (for example POLYMUX_CODING_REPO) applies
+			// until a stored workspace replaces it.
+			if d.Workspace == "" {
+				d.Workspace = current.Workspace
+			}
 		}
 		if d.Agent.Avatar == nil {
 			avatar := defaultAvatar()
@@ -182,7 +188,7 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	v := &Server{drive: drive, Store: s, settings: preferences, memory: memory.New(filepath.Join(c.DataDir, "memory")), config: c, ctx: ctx, cancel: cancel, actors: map[string]*actor{}, groups: map[string]*groupActor{}, presence: map[string]int{}, deletes: map[string]*deletion{}, voices: map[string]*voiceWork{}, voiceSeen: map[string]bool{}, mux: http.NewServeMux(), slots: make(chan struct{}, 4)}
+	v := &Server{Store: s, settings: preferences, memory: memory.New(filepath.Join(c.DataDir, "memory")), worktrees: agentruntime.NewWorktrees(filepath.Join(c.DataDir, "worktrees")), config: c, ctx: ctx, cancel: cancel, actors: map[string]*actor{}, groups: map[string]*groupActor{}, presence: map[string]int{}, deletes: map[string]*deletion{}, voices: map[string]*voiceWork{}, voiceSeen: map[string]bool{}, mux: http.NewServeMux(), slots: make(chan struct{}, 4)}
 	for _, d := range definitions {
 		actorCtx, stop := context.WithCancel(ctx)
 		a := &actor{id: d.Agent.ID, definition: d, stop: stop, done: make(chan struct{})}
@@ -247,13 +253,14 @@ func (s *Server) Close() error {
 	})
 	return s.closeErr
 }
+func (s *Server) Handler() http.Handler { return s.config.Devices.Require(s) }
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.mux.ServeHTTP(w, r)
 }
 
 func (s *Server) routes() {
-	s.driveRoutes()
 	s.mux.HandleFunc("POST /triggers/{id}/events", s.ingestEvent)
 	s.mux.HandleFunc("GET /notifications", s.notices)
 	s.mux.HandleFunc("PUT /notifications/device", s.registerPush)
@@ -375,8 +382,16 @@ func (s *Server) agentProfile(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, profile, err)
 }
 
+// updateAgentRequest patches an agent's profile. It carries the workspace field
+// the generated wire contract does not have yet; the schema and its Swift
+// client gain it with the repo picker.
+type updateAgentRequest struct {
+	contract.UpdateAgentRequest
+	Workspace *string `json:"workspace,omitempty"`
+}
+
 func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
-	var request contract.UpdateAgentRequest
+	var request updateAgentRequest
 	if !decode(w, r, &request) {
 		return
 	}
@@ -386,6 +401,14 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if request.Name == "" || len(request.Name) > 128 || len(request.Role) > 256 || len(request.Prompt) > 64000 {
 		fail(w, 400, "invalid_agent", "Enter an agent name and keep its profile within the size limit.")
 		return
+	}
+	if request.Workspace != nil {
+		workspace := strings.TrimSpace(*request.Workspace)
+		if workspace != "" && (len(workspace) > 4096 || !filepath.IsAbs(workspace)) {
+			fail(w, 400, "invalid_workspace", "Enter the absolute path of a git repository on the server Mac.")
+			return
+		}
+		request.Workspace = &workspace
 	}
 	s.actorsMu.RLock()
 	defer s.actorsMu.RUnlock()
@@ -405,6 +428,9 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	d.Agent.Role = request.Role
 	d.Agent.Active = false
 	d.Prompt = request.Prompt
+	if request.Workspace != nil {
+		d.Workspace = *request.Workspace
+	}
 	data, err := json.Marshal(d)
 	if err != nil {
 		s.respond(w, nil, err)
@@ -415,7 +441,7 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, err)
 		return
 	}
-	if a.definition.Prompt != d.Prompt || a.definition.Agent.Name != d.Agent.Name || a.definition.Agent.Role != d.Agent.Role {
+	if a.definition.Prompt != d.Prompt || a.definition.Agent.Name != d.Agent.Name || a.definition.Agent.Role != d.Agent.Role || a.definition.Workspace != d.Workspace {
 		a.revision++
 	}
 	a.definition = d
@@ -905,8 +931,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.TaskID != "" {
 		run.TaskID = &work.TaskID
 	}
-	// Capture before flipping to running; approval resume injects a continuation turn.
+	// Capture before flipping to running. Approval resume injects a turn; crash resume replays the saved tool result.
 	resuming := run.Status == "waiting_input"
+	continuing := run.Status == "resuming"
 	run.Status, run.Activity, run.Summary, run.StartedAt, run.FinishedAt = "running", "preparing", "Preparing reply", &now, nil
 	if work.Trigger == "message" || work.Trigger == "handoff" {
 		run.SourceMessageID = &user.ID
@@ -914,8 +941,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger != "review" {
 		run.MessageID = pointer("reply:" + run.ID)
 	}
-	state := &turnState{run: run, work: work, store: s.Store, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
-	runCtx = context.WithValue(runCtx, turnKey{}, state)
+	state := &turnState{run: run, work: work, store: s.Store, mergeLane: s.config.MergeLane, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
+	runCtx = agentruntime.WithSteers(context.WithValue(runCtx, turnKey{}, state), func(ctx context.Context, persist func([]contract.Message) error) error {
+		return s.Store.DrainSteers(ctx, run.ID, persist)
+	})
 	if resuming {
 		text := "An approval decision is ready. Continue the task. If a consequential tool was approved, re-issue that exact call with the same arguments; if it was denied, do not retry or work around it."
 		user = contract.Message{ID: user.ID + ":approval", ThreadID: user.ThreadID, Role: "user", Parts: []contract.Part{{Kind: "text", Text: &text}}, CreatedAt: store.Now()}
@@ -1090,6 +1119,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 						&htmlTool{store: s.Store, dir: filepath.Join(s.config.DataDir, "attachments")})
 				}
 			}
+			if err == nil && !isolated && !d.Intro && d.Workspace != "" {
+				// Prepare the conversation's checkout before a session opens; a
+				// failure ends the turn with its own explanation.
+				d.Worktree, err = s.worktrees.Ensure(runCtx, d.Workspace, d.Agent.ID, agentruntime.WorkspaceThread(d))
+			}
 			if err == nil {
 				// Durable runs tools on its own task line, so restore this turn's state for
 				// them. The runtime asks only for the conversation it opened.
@@ -1126,6 +1160,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		})
 	}
 	var result agentruntime.Result
+	var submissionID int64
 	var content strings.Builder
 	var pending strings.Builder
 	var lastFlush time.Time
@@ -1199,15 +1234,53 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		// Durable work outlives Send's wait context until the session is aborted.
 		stopAbort := context.AfterFunc(runCtx, func() {
 			defer close(aborted)
+			// Only a resumable tool result may skip abort. Other runs still abort so shutdown settles them.
+			if ctx.Err() != nil {
+				check, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+				stored, loadErr := s.Store.Run(check, run.ID)
+				ready := loadErr == nil && stored.Attempt <= 1 && s.Store.ResumeReady(check, stored)
+				stop()
+				if ready {
+					return
+				}
+			}
 			abortCtx, end := context.WithTimeout(context.WithoutCancel(runCtx), time.Second)
 			defer end()
 			if e := sess.Abort(abortCtx); e != nil && !errors.Is(e, context.Canceled) {
 				s.config.Log.Warn("abort stopped session", "error", e)
 			}
 		})
-		result, err = sess.Send(runCtx, user, func(delta agentruntime.Delta) error {
+		turn := sess.Send
+		if continuing {
+			if submissionID == 0 {
+				if id, ok := s.Store.Submission(writeCtx, run.ID); ok {
+					submissionID = id
+				}
+			}
+			resumed, ok := sess.(interface {
+				Resume(context.Context, int64, func(agentruntime.Delta) error) (agentruntime.Result, error)
+			})
+			if !ok {
+				turn = func(context.Context, contract.Message, func(agentruntime.Delta) error) (agentruntime.Result, error) {
+					return agentruntime.Result{}, errors.New("session cannot resume a saved tool result")
+				}
+			} else {
+				turn = func(ctx context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
+					return resumed.Resume(ctx, submissionID, emit)
+				}
+			}
+		}
+		result, err = turn(runCtx, user, func(delta agentruntime.Delta) error {
 			messageMu.Lock()
 			defer messageMu.Unlock()
+			if delta.Kind == "submission" {
+				id, convErr := strconv.ParseInt(delta.ToolID, 10, 64)
+				if convErr != nil {
+					return convErr
+				}
+				submissionID = id
+				return s.Store.SaveSubmission(writeCtx, run.ID, id)
+			}
 			if e := runCtx.Err(); e != nil {
 				return e
 			}
@@ -1411,6 +1484,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	} else if errors.Is(err, context.Canceled) {
 		// keep cancel handling below
 	}
+	// Leave a saved tool result running so the next process can resume it once.
+	if err != nil && ctx.Err() != nil && run.Attempt <= 1 && s.Store.ResumeReady(writeCtx, run) {
+		messageMu.Unlock()
+		return contract.Message{}
+	}
 	if err == nil {
 		if result.Text != "" && result.Text != content.String() {
 			found := false
@@ -1484,8 +1562,16 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		if errors.Is(err, store.ErrMembers) {
 			code, message, run.Status, run.Summary = "membership", "Agent is no longer a member of this chat.", "cancelled", "Member removed"
 		}
+		var repoErr *agentruntime.RepoError
+		if errors.As(err, &repoErr) {
+			code, message = "workspace", repoErr.Error()
+			run.Status, run.Summary = "failed", "Repository unavailable"
+		}
 		if ctx.Err() != nil {
 			code, message, run.Status, run.Summary = "interrupted", "The server stopped during this reply. Review before retrying.", "interrupted", "Execution interrupted"
+			if run.Attempt > 1 {
+				message = "The server restarted again during resume. Review before retrying."
+			}
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = "timeout"
@@ -1530,6 +1616,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		finalized = true
 	}
 	messageMu.Unlock()
+	if finalized && !isolated && d.Workspace != "" && work.Trigger != "created" {
+		go s.diffCard(d, run)
+	}
 	if finalized && endsChildren(run.Status) {
 		s.cancelTree(writeCtx, run.ID)
 	}
