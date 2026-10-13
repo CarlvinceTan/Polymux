@@ -108,6 +108,9 @@ func prStatus(ctx context.Context, dir, thread string) (string, bool) {
 		checks = "checks failing"
 	}
 	state := strings.ToLower(pr.State)
+	if pr.State == "MERGED" {
+		state = "Merged"
+	}
 	if pr.IsDraft {
 		state += " · draft"
 	}
@@ -127,9 +130,13 @@ func (s *Server) diffCard(d agentruntime.Definition, run contract.Run) {
 
 func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *contract.Message, body string, interval time.Duration) {
 	dir := s.worktrees.Path(d.Agent.ID, agentruntime.WorkspaceThread(d))
+	action := mergeAction(ctx, dir, agentruntime.WorkspaceThread(d))
 	for {
 		status, pending := prStatus(ctx, dir, agentruntime.WorkspaceThread(d))
-		source := body + "<p>" + html.EscapeString(status) + "</p>"
+		if !strings.Contains(status, " · open") {
+			action = ""
+		}
+		source := body + "<p>" + html.EscapeString(status) + "</p>" + action
 		id := ID()
 		path := filepath.Join(s.config.DataDir, "attachments", id)
 		if os.WriteFile(path, []byte(source), 0600) != nil {
@@ -143,7 +150,7 @@ func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *
 			os.Remove(path)
 			return
 		}
-		if !pending {
+		if !pending && !strings.Contains(status, " · open") {
 			return
 		}
 		timer := time.NewTimer(interval)
@@ -154,4 +161,19 @@ func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *
 		case <-timer.C:
 		}
 	}
+}
+
+func mergeAction(ctx context.Context, dir, thread string) string {
+	data, err := repoOutput(ctx, dir, "gh", "pr", "view", "polymux/"+thread, "--json", "number,state,isDraft,headRefOid")
+	var pr struct {
+		Number            int
+		State, HeadRefOid string
+		IsDraft           bool
+	}
+	if err != nil || json.Unmarshal(data, &pr) != nil || pr.Number < 1 || pr.State != "OPEN" || pr.IsDraft || !mergeSHA.MatchString(pr.HeadRefOid) {
+		return ""
+	}
+	intent, _ := json.Marshal(mergeArgs{PR: pr.Number, HeadSHA: pr.HeadRefOid})
+	message, _ := json.Marshal("merge #" + strconv.Itoa(pr.Number) + " using merge_pr with " + string(intent))
+	return `<lg-button onclick='polymuxSend(` + html.EscapeString(string(message)) + `)'>Merge</lg-button>`
 }

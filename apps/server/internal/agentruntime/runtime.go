@@ -23,6 +23,9 @@ import (
 	"github.com/MichaelKinsy/PiG/mcp"
 )
 
+// WorkspaceTool supplies the server-owned approval tool without an import cycle.
+var WorkspaceTool func(string) agent.AgentTool
+
 type Definition struct {
 	Devices []Device       `json:"devices,omitempty"`
 	Agent   contract.Agent `json:"agent"`
@@ -218,6 +221,9 @@ func (r *Runtime) Open(ctx context.Context, d Definition, path string) (Session,
 		}
 		tools = append(tools, paired...)
 		tools = append(tools, d.ExtraTools...)
+		if d.Workspace != "" && WorkspaceTool != nil {
+			tools = append(tools, WorkspaceTool(cwd))
+		}
 	}
 	names := slices.Clone(d.Tools)
 	for _, tool := range tools {

@@ -41,6 +41,7 @@ var builtinClass = map[string]ToolClass{
 	"write":          ToolReversible,
 	"edit":           ToolReversible,
 	"bash":           ToolConsequential,
+	"merge_pr":       ToolConsequential,
 	// Peer tools are intentionally ungated internal orchestration: waking a peer
 	// or handing off a group turn queues work elsewhere, but is not itself an
 	// external side effect that requires a user approval gate.
@@ -66,6 +67,9 @@ var consequentialHints = []string{
 // then the builtin table, then name heuristics. Undeclared ExtraTools and
 // unknown external tools fail closed as consequential.
 func classifyTool(name string, declared ToolClass, known, external bool) ToolClass {
+	if name == "merge_pr" {
+		return ToolConsequential
+	}
 	if declared != "" {
 		return declared
 	}
