@@ -8,6 +8,8 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
     static var local: Bool { enabled && UserDefaults.standard.string(forKey: "PolymuxServer") == nil }
     static let ids = ["t-chief", "t-aria", "t-milo", "t-nova", "t-long", "t-stream", "t-approval",
                       "grp-trip", "t-media", "t-activity", "t-fern", "grp-empty"]
+    // Unread state matches the server fixture: t-aria 3, t-milo 1, t-nova 12, the rest read.
+    static let unread: [String: Int64] = ["t-aria": 3, "t-milo": 1, "t-nova": 12]
     static let agents = ["Chief", "Aria", "Milo", "Nova", "Approval", "Fern"].map {
         Agent(id: "t-" + $0.lowercased(), name: $0, active: true)
     }
@@ -22,8 +24,8 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
         case "t-activity": members = ["t-chief", "t-milo"]
         default: members = [id]
         }
-        return PolymuxKit.Thread(id: id, agentID: members[0], title: direct == nil ? id : "",
-                                 agentIDs: members)
+        return PolymuxKit.Thread(id: id, agentID: members[0], unreadCount: unread[id] ?? 0,
+                                 title: direct == nil ? id : "", agentIDs: members)
     }
     static func session() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
