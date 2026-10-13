@@ -23,11 +23,5 @@
         }
       ]
     }
-  ],
-  "rewrites": [
-    {
-      "source": "/share/:id",
-      "destination": "/share/index.html"
-    }
   ]
 }
