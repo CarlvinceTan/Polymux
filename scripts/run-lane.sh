@@ -64,7 +64,10 @@ for L in $(cfg order "$LANE"); do
   N=$((N+1)); [ $N -gt 2 ] && break
   B=$BRANCH; [ $N -gt 1 ] && B="$BRANCH-$L"; WT="$HOME/code/wt/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
   TRIED="$TRIED $L"; ev running "$L" "$WT"
-  [ -d "$WT" ] || git -C "$REPO" worktree add -q -b "$B" "$WT" "$BASE" >> "$LOG" 2>&1
+  if [ ! -d "$WT" ]; then  # reuse an existing (unpushed) branch, else create it from BASE
+    if git -C "$REPO" show-ref -q "refs/heads/$B"; then git -C "$REPO" worktree add -q "$WT" "$B"
+    else git -C "$REPO" worktree add -q -b "$B" "$WT" "$BASE"; fi >> "$LOG" 2>&1 || { ev failed "$L" "worktree add failed"; continue; }
+  fi
   (cd "$WT" && bash "$REPO/scripts/wt-setup.sh") >> "$LOG" 2>&1
   [ -n "${LANE_PREV:-}" ] && sleep "${LANE_STAGGER:-20}"   # stagger agent launches (keychain race)
   LANE_PREV=$L
