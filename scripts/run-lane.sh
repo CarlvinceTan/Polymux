@@ -204,9 +204,9 @@ lock_take "$UL" || { lock_drop "$CAPL" 2>/dev/null; echo "unit '$SLUG' already h
 echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
 for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
 rm -f "$OPS/refusals.tsv"; lock_drop "$OPS/chain-state.lock"   # a unit started: the refusal streak is broken
-trap 'rc=$?; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
-trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; exit 143' TERM
-trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; exit 130' INT
+trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
+trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
+trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
 BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""
@@ -283,6 +283,9 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
        [ $(( $(date +%s) - T0 )) -gt $IDLE_S ]; then IDLE=1
       echo "fast-fail: no commit or file change after ${IDLE_S}s" >> "$LOG"; stop_agent; break; fi
   done; wait $AP; rc=$?; started
+  # Whatever the outcome, end the session: the agent's group, then anything still running in the worktree
+  # (a shared "opencode serve" spawns MCP servers and tools outside our group). A dead attempt must not keep running.
+  pgrep -g "$AP" >/dev/null 2>&1 && stop_agent; reap_wt "$WT" "$LOG"; AP=""
   [ -n "$IDLE" ] && { ev failed "$L" "no commit (fast-fail: idle ${IDLE_S}s)"; continue; }
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
   [ -n "$(git -C "$WT" log --oneline "$START"..HEAD)" ] || { echo "agent made no commit" >> "$LOG"; ev failed "$L" "no commit"; continue; }
