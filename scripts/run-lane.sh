@@ -50,6 +50,9 @@ TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "card:" (Notion card
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
   TASK=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
 fi
+# Lane gate FIRST: a disabled (lane1 = main Cursor account), expired or unknown lane never runs; no claim, worktree or vault read.
+cfg usable "$LANE" || { echo "refusing: lane '$LANE' is disabled, expired or unknown in agents/lanes.toml"; exit 5; }
+cfg mainkey "$LANE" && { echo "refusing: lane '$LANE' key/account points at the main account"; exit 5; }
 QW() { bash "$SD/queue-write.sh" "$@"; }   # every queue/queue-hold write goes through the locked helper
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
@@ -61,16 +64,22 @@ Rules: work only in this worktree. Keep the change small and scoped.${SCOPE:+ On
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
-needs a test change (or a 'No-test-reason: ...' line in the commit). Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $START..HEAD' (this run's start commit $START; plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for $((IDLE_S / 60)) minutes is stopped. If you cannot make verify.sh pass, say why and stop."; }
+needs a test change (or a 'No-test-reason: ...' line in the commit). Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $START..HEAD' (this run's start commit $START; plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for $((IDLE_S / 60)) minutes is stopped. Never open a browser, a browser profile or any Grok Bot session. If you cannot make verify.sh pass, say why and stop."; }
 run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer name.
-  local a cmd P; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd); P=$(prompt "$1")
+  cfg usable "$1" || { echo "refusing: lane $1 not usable" >>"$3"; return 95; }   # belt and braces
+  unset CURSOR_API_KEY   # never inherit the main account key into any agent child
+  local a cmd P H; a=$(cfg lane "$1" agent); cmd=$(cfg lane "$1" cmd); P=$(prompt "$1")
+  H=$(cfg lane "$1" home); if [ -n "$H" ]; then [ "$H" = "$HOME" ] && { echo "refusing: lane home is the real HOME" >>"$3"; return 96; }; mkdir -p "$H"; fi
   export GIT_COMMITTER_NAME="$(git -C "$2" config user.name || echo agent) ($1/$a)"
   case " ${LANE_FORCE_FAIL:-} " in *" $1 "*) echo "forced failure (LANE_FORCE_FAIL test)" >> "$3"; return 97;; esac
-  [ -n "${LANE_STUB_CMD:-}" ] && { (cd "$2" && LANE="$1" AGENT="$a" PROMPT="$P" bash -c "$LANE_STUB_CMD") >> "$3" 2>&1; return; }  # test hook
+  [ -n "${LANE_STUB_CMD:-}" ] && { (cd "$2" && HOME="${H:-$HOME}" LANE="$1" AGENT="$a" PROMPT="$P" bash -c "$LANE_STUB_CMD") >> "$3" 2>&1; return; }  # test hook
   case $a in
-    cursor) local K; K=$(vault get "$(cfg lane "$1" key)" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
+    cursor) local K KT; KT=$(cfg lane "$1" key)
+      [ -n "$KT" ] || { echo "refusing: cursor lane $1 has no key" >>"$3"; return 98; }
+      { python3 "$SD/lanes.py" forbidden "$KT" || cfg mainkey "$1"; } && { echo "refusing: lane $1 key is a main-account key" >>"$3"; return 98; }
+      K=$(vault get "$KT" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       # Key only in this child's environment: never argv (ps), never exported, keychain untouched.
-      (cd "$2" && CURSOR_API_KEY="$K" "$cmd" -p --force --trust --workspace "$2" --output-format text "$P") >> "$3" 2>&1;;
+      (cd "$2" && HOME="${H:-$HOME}" CURSOR_API_KEY="$K" "$cmd" -p --force --trust --workspace "$2" --output-format text "$P") >> "$3" 2>&1;;
     # No workspace-write sandbox (tested 13 Oct, codex 0.162 seatbelt, network on, .git common dir +
     # ~/ops/lanes as writable roots): .git stays read-only inside the sandbox, so the agent can't
     # commit, and simctl/CoreSimulator XPC is refused, so verify.sh (iOS sim build) fails. Re-test
@@ -85,7 +94,21 @@ grep -qF "	$TITLE	" "$OPS/failures.tsv" 2>/dev/null && { echo "refusing: '$TITLE
 G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight refused: $G"; exit 5; }
 # One writer per unit and per branch.
 UL="$OPS/units/$SLUG.lock"; BLS=""
-lock_take "$UL" || { echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
+# Lane cap (max_concurrent): a run = a held unit lock with a LIVE pid on this lane (the lock's lane file, else its
+# latest events.tsv row), i.e. the unit locks lane-guard counts, minus dead ones. A killed/crashed run's lock has a
+# dead pid and never holds a slot. Count + unit-lock take happen under a per-lane mutex, so two starts can't both pass.
+lane_live() { local d p l n=0; for d in "$OPS"/units/*.lock; do [ -d "$d" ] || continue; p=$(lock_holder "$d")
+    { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || continue
+    l=$(cat "$d/lane" 2>/dev/null); [ -n "$l" ] || l=$(awk -F'\t' -v u="$(basename "$d" .lock)" '{s=$2; sub(/^[0-9]+-/,"",s); gsub(/^-+|-+$/,"",s)} s==u{l=$4} END{print l}' "$EV" 2>/dev/null)
+    [ "$l" = "$1" ] && n=$((n+1)); done; echo $n; }
+MC=$(cfg maxconc "$LANE"); CAPL="$OPS/lanes/$LANE.cap.lock"
+if [ "$MC" != 0 ]; then
+  for k in $(seq 1 100); do lock_take "$CAPL" && break; sleep 0.1; done
+  [ "$(lock_holder "$CAPL")" = $$ ] || { echo "refusing: lane '$LANE' cap mutex busy ($CAPL, pid $(lock_holder "$CAPL"))"; exit 5; }
+  N=$(lane_live "$LANE"); [ "$N" -lt "$MC" ] || { lock_drop "$CAPL"; echo "refusing: lane '$LANE' already has $N running (max_concurrent $MC)"; exit 5; }
+fi
+lock_take "$UL" || { lock_drop "$CAPL" 2>/dev/null; echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
+echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
 # Continuous dispatch: whenever a lane becomes free, for any reason (success, failure, failover to
 # another lane, blocked, infra error), ask lane-guard at once to refill it, so no lane idles until the
 # 10-min launchd tick (now only a backstop): 'lane-guard --dispatch --free-lane <lane>' when its --help
