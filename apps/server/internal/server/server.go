@@ -36,6 +36,7 @@ type Factory interface {
 	Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error)
 }
 type Config struct {
+	MergeLane   string
 	DataDir     string
 	Model       string
 	Definitions []agentruntime.Definition
@@ -938,7 +939,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger != "review" {
 		run.MessageID = pointer("reply:" + run.ID)
 	}
-	state := &turnState{run: run, work: work, store: s.Store, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
+	state := &turnState{run: run, work: work, store: s.Store, mergeLane: s.config.MergeLane, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
 	runCtx = context.WithValue(runCtx, turnKey{}, state)
 	if resuming {
 		text := "An approval decision is ready. Continue the task. If a consequential tool was approved, re-issue that exact call with the same arguments; if it was denied, do not retry or work around it."

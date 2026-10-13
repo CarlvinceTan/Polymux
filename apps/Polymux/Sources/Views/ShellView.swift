@@ -58,6 +58,7 @@ struct ShellView: View {
                         .padding(.vertical, 8)
                 }
             }
+            .accessibilityIdentifier("chats.list")
             #if os(macOS)
             .listStyle(.sidebar)
             .tint(Color(white: colorScheme == .dark ? 0.24 : 0.87))
@@ -202,6 +203,12 @@ struct ShellView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .background {
+            Text("Application status")
+                .font(.system(size: 1)).opacity(0.01)
+                .accessibilityIdentifier("app.status")
+                .accessibilityValue("connected=\(session.sidebar.isConnected ? 1 : 0), cache=\(session.sidebar.error == nil && !session.sidebar.threads.isEmpty ? "warm" : "cold")")
+        }
         .onChange(of: selection, initial: true) { _, value in
             Notifications.shared.visible(scenePhase == .active ? value : nil, window: windowID)
             if let value, session.sidebar.threads.contains(where: { $0.id == value }) {
@@ -381,6 +388,7 @@ struct ShellView: View {
                          activity: session.sidebar.activity, connected: session.sidebar.isConnected)
             }
         }
+        .accessibilityIdentifier("sidebar.row.\(thread.id)")
         #if os(macOS)
         .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
         .overlay {
