@@ -35,7 +35,7 @@ step() {  # step NAME cmd...
   local n=$1; shift; local t=$SECONDS
   perl -e 'alarm shift; exec @ARGV' 2400 "$@" > "$L/$n.log" 2>&1; local rc=$?
   local res=PASS; [ $rc -ne 0 ] && { res=FAIL; FAIL=1; }
-  local tests=$(grep -Eo "Executed [0-9]+ tests?, with [0-9]+ failures?" "$L/$n.log" | tail -1)
+  local tests=$({ grep -Eo "Executed [0-9]+ tests?, with [0-9]+ failures?" "$L/$n.log"; grep -Eo "Test run with [0-9]+ tests.*(passed|failed)" "$L/$n.log"; } | tr "\n" ";")
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
 python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "fetch_cua failed"; FAIL=1; }
@@ -45,11 +45,13 @@ acquire; echo "verify: slot $SLOT"
 step packages swift test --scratch-path .build/swiftpm --cache-path .build/SPM-cache
 step macos-build xcodebuild build -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination platform=macOS "${XC[@]}"
-step macos-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+# App scheme gains a test action later (UI tests); until then build it and rely on package tests.
+ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme && ACT=test
+[ $ACT = test ] && step macos-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1
-step ios-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
-  -destination "id=$SIM_UDID" -resultBundlePath "$R/ios.xcresult" "${XC[@]}"
+step ios-$ACT xcodebuild $ACT -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+  -destination "id=$SIM_UDID" $([ $ACT = test ] && echo -resultBundlePath "$R/ios.xcresult") "${XC[@]}"
 rm -rf "$SLOT"; SLOT=""   # heavy work done; media capture doesn't need the slot
 # Media: iOS sim screenshots + short video, macOS screenshot, XCUITest attachments.
 APP=$(find "$DD/Build/Products" -path "*iphonesimulator/*.app" -maxdepth 3 | head -1)
