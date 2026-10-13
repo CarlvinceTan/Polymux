@@ -413,9 +413,7 @@ public final class SidebarStore {
                     continue
                 }
                 do {
-                    try await client.send(threadID: queued.threadID, request: queued.request)
-                    let id = queued.request.id
-                    try await cacheActor.call { try $0.acknowledge(id: id) }
+                    try await cacheActor.deliver(client: client, threadID: queued.threadID, request: queued.request)
                 } catch {
                     let id = queued.request.id
                     if try await cacheActor.call({ try $0.accepted(id: id) }) {

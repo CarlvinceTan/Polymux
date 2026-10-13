@@ -387,8 +387,7 @@ public final class ChatStore {
                     try await cacheActor.call { try $0.setStatus(id: request.id, status: "pending") }
                     if let message = try await cacheActor.call({ try $0.messages(threadID: threadID) }).first(where: { $0.id == request.id }) { update(message) }
                     try await sidebar?.syncEdit(threadID)
-                    try await client.send(threadID: threadID, request: request)
-                    try await cacheActor.call { try $0.acknowledge(id: request.id) }
+                    try await cacheActor.deliver(client: client, threadID: threadID, request: request)
                     if let message = try await cacheActor.call({ try $0.messages(threadID: threadID) }).first(where: { $0.id == request.id }) { update(message) }
                     error = nil
                 } catch {

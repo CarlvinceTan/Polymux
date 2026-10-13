@@ -195,6 +195,23 @@ struct InstantUINewChat {
         #expect(rig.sidebar.aliases[local] == "server-group")
     }
 
+    @Test func overlappingDeliveriesSendOnce() async throws {
+        let rig = try await Rig(holdSend: true)
+        defer { rig.close() }
+        let request = SendRequest(id: UUID().uuidString, text: "Hello", attachmentIDs: [])
+        _ = try await rig.sidebar.cacheActor.call { try $0.enqueue(threadID: "arlo", request: request, attachments: []) }
+        let first = Task { try await rig.sidebar.cacheActor.deliver(client: rig.client, threadID: "arlo", request: request) }
+        await rig.probe.waitUntilSent()
+        let second = Task { try await rig.sidebar.cacheActor.deliver(client: rig.client, threadID: "arlo", request: request) }
+        await rig.probe.releaseSend()
+        try await first.value
+        try await second.value
+        // A flusher may also arrive with a stale outbox snapshot after acknowledgement.
+        try await rig.sidebar.cacheActor.deliver(client: rig.client, threadID: "arlo", request: request)
+        #expect(await rig.probe.sentPaths == ["/threads/arlo/messages"])
+        #expect(try await rig.sidebar.cacheActor.call { try $0.pending(threadID: "arlo").isEmpty })
+    }
+
     @Test func resolvedWakesWithNilWhenCreateFails() async throws {
         let rig = try await Rig()
         defer { rig.close() }
@@ -253,7 +270,7 @@ private struct Rig {
     let arlo = Agent(id: "arlo", name: "Arlo")
     let milo = Agent(id: "milo", name: "Milo")
 
-    init(seedThreads: Bool = true, failCreates: Bool = true) async throws {
+    init(seedThreads: Bool = true, failCreates: Bool = true, holdSend: Bool = false) async throws {
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("polymux-instant-\(UUID())")
         let threads = seedThreads ? [
             Thread(id: arlo.id, agentID: arlo.id, title: arlo.name, agentIDs: [arlo.id]),
@@ -266,7 +283,7 @@ private struct Rig {
             try cache.save(agents: agents, threads: threads)
             return cache
         }.value
-        let created = FailProbe(agents: [arlo, milo], threads: threads, failCreates: failCreates)
+        let created = FailProbe(agents: [arlo, milo], threads: threads, failCreates: failCreates, holdSend: holdSend)
         probe = created
         let host = InstantProtocol.routes.add { try await created.handle($0) }
         client = Rig.client(host: host)
@@ -293,11 +310,25 @@ private actor FailProbe {
     private let agents: [Agent]
     private let threads: [PolymuxKit.Thread]
     private let failCreates: Bool
+    private let holdSend: Bool
+    private var sendWaiters: [CheckedContinuation<Void, Never>] = []
+    private var heldSend: CheckedContinuation<Void, Never>?
 
-    init(agents: [Agent], threads: [PolymuxKit.Thread], failCreates: Bool) {
+    init(agents: [Agent], threads: [PolymuxKit.Thread], failCreates: Bool, holdSend: Bool) {
         self.agents = agents
         self.threads = threads
         self.failCreates = failCreates
+        self.holdSend = holdSend
+    }
+
+    func waitUntilSent() async {
+        guard sentPaths.isEmpty else { return }
+        await withCheckedContinuation { sendWaiters.append($0) }
+    }
+
+    func releaseSend() {
+        heldSend?.resume()
+        heldSend = nil
     }
 
     func waitUntilEntered() async {
@@ -322,6 +353,9 @@ private actor FailProbe {
         }
         if request.httpMethod == "POST", path.hasSuffix("/messages") {
             sentPaths.append(path)
+            for waiter in sendWaiters { waiter.resume() }
+            sendWaiters.removeAll()
+            if holdSend, sentPaths.count == 1 { await withCheckedContinuation { heldSend = $0 } }
             return (200, Data("{}".utf8))
         }
         if request.httpMethod == "GET", path == "/threads" {
