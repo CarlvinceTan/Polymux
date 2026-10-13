@@ -43,4 +43,5 @@ done
 rc=0; out=$(GUI_RUN_FORCE_EXEC=1 bash "$ROOT/scripts/gui-run.sh" sh -c "echo hi; exit 7") || rc=$?
 [ "$rc" = 7 ] && [ "$out" = hi ] || { echo "FAIL: gui-run.sh rc=$rc out=$out"; exit 1; }
 grep -q "step macos-test bash \"\$ROOT/scripts/gui-run.sh\" xcodebuild test" "$ROOT/scripts/verify.sh" || { echo "FAIL: macos-test not run via gui-run.sh"; exit 1; }
+bash "$ROOT/scripts/test-gui-run.sh"
 echo 'PASS: runner timeout, readiness cap, real failures, Release and Debug addresses, gui-run'
