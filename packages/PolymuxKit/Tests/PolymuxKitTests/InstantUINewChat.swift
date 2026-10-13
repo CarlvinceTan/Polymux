@@ -178,7 +178,8 @@ struct InstantUINewChat {
         #expect(store.threadID == "server-group")
         #expect(store.messages.first?.threadID == "server-group")
         #expect(store.messages.first?.text == "Hello")
-        #expect(await rig.probe.sentPaths == ["/threads/server-group/messages"])
+        let sentPaths = await rig.probe.sentPaths
+        #expect(sentPaths == ["/threads/server-group/messages"], "Actual sent paths: \(sentPaths); store error: \(store.error ?? "none")")
         #expect(try await rig.sidebar.cacheActor.call { try $0.pending(threadID: local).isEmpty })
     }
 
