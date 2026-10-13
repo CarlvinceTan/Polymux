@@ -55,3 +55,16 @@ Historical sanity query (not current positive-control proof):
 `/usr/bin/log show --start "2026-10-13 21:42:20" --end "2026-10-13 21:42:25" --predicate 'composedMessage CONTAINS "LocalNetwork" AND process != "log"' --style compact` returned the three previously recorded UserEventAgent attribution lines. The store is readable.
 
 Full verification started at `2026-10-13 23:30:40` with `VERIFY_TARGETS=full bash /Users/carlvincetan/code/proj/Polymux/scripts/verify.sh`; output `.build/localnet/verify-before.out`. Result pending.
+
+## Upstream merge scope
+
+`git fetch origin main` succeeded; fetched main is `8b204d0`.
+`git diff --stat HEAD...origin/main` reports:
+
+```text
+10 files changed, 336 insertions(+), 9 deletions(-)
+```
+
+Those 345 upstream changed lines alone exceed the run's 300-line cap.
+The requested merge is pending clarification of the permitted Size-reason
+exception; no upstream files have been removed or rewritten to fit the cap.
