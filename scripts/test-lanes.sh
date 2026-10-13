@@ -103,10 +103,16 @@ check "empty-pid lock within grace is not taken" '! (. scripts/lanelib.sh; lock_
 touch -t 202001010000 "$E"
 check "empty-pid lock past grace is reclaimed" '(. scripts/lanelib.sh; lock_take "$E") && [ -s "$E/pid" ]'
 check "_mtime/_age are numeric" '(. scripts/lanelib.sh; [ "$(_age "$E")" -ge 0 ] 2>/dev/null)'
-# 17 failover never calls lane-guard --dispatch (it pops the queue)
-printf '#!/bin/sh\necho "$*" >> "%s/guard.calls"\n' "$T" > "$T/guard"; chmod +x "$T/guard"
-OUT=$(LANE_GUARD="$T/guard" LANE_FORCE_FAIL=laneA LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Failover guard' t8)" 2>&1)
-check "failover ran laneB with preflight only, no --dispatch" 'echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "^--preflight" "$T/guard.calls" && ! grep -q -- "--dispatch" "$T/guard.calls"'
+# fake lane-guard: logs every call to $GLOG.all; for --dispatch logs "<args> lock=yes|no" (a unit lock
+# still held at call time) to $GLOG; GSLEEP=n makes --dispatch sleep n s, log "done" and exit 1.
+mkguard() { printf '#!/bin/sh\n# %s\necho "$*" >> "$GLOG.all"\n[ "$1" = --dispatch ] || exit 0\nl=no; ls -d "$LANES_HOME"/units/*.lock >/dev/null 2>&1 && l=yes\necho "$* lock=$l" >> "$GLOG"\n[ -n "${GSLEEP:-}" ] && { sleep "$GSLEEP"; echo done >> "$GLOG"; exit 1; }\nexit 0\n' "$2" > "$1"; chmod +x "$1"; }
+waitfor() { local k; for k in $(seq 1 50); do grep -q -- "$2" "$1" 2>/dev/null && return 0; sleep 0.1; done; return 1; }   # ~5 s
+ndisp() { cat "$1" 2>/dev/null | grep -c -- '^--dispatch'; }
+FG="$T/fake-guard"; mkguard "$FG" "plain"; FGF="$T/fake-guard-fl"; mkguard "$FGF" "supports --free-lane"; CL="$LANES_HOME/logs/dispatch-chain.log"
+# 17 failover: no --dispatch while the unit runs, exactly one at its end
+export GLOG="$T/g17"
+OUT=$(LANE_GUARD="$FG" LANE_FORCE_FAIL=laneA LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Failover guard' t8)" 2>&1); waitfor "$GLOG" dispatch
+check "failover ran laneB with preflight, no --dispatch before unit end, one at end" 'echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "^--preflight" "$GLOG.all" && [ "$(ndisp "$GLOG")" = 1 ] && ! grep -q "lock=yes" "$GLOG"'
 # 8 cleanup dry run: dirty and unpushed kept, merged removable, nothing deleted
 git worktree add -q -b c/dirty "$HOME/code/wt/dirty" main && echo x > "$HOME/code/wt/dirty/README"
 git worktree add -q -b c/unpushed "$HOME/code/wt/unpushed" main && (cd "$HOME/code/wt/unpushed" && echo y > u && git add u && git commit -qm u)
@@ -122,14 +128,32 @@ check "cleanup would remove merged" 'echo "$OUT" | grep -q "remove: $HOME/code/w
 check "cleanup dry run deleted nothing" '[ -d "$HOME/code/wt/merged" ] && echo "$OUT" | grep -q "dry run"'
 PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1
 check "--apply prunes old proof branch, keeps recent" '! git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null && [ "$(git ls-remote origin "refs/heads/proof-media/verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
-# 16 continuous dispatch: unit end fires lane-guard --dispatch once, in the background, non-fatal
-FG="$T/fake-guard"; printf '#!/bin/sh\necho "$*" >> "%s/guard.log"\n[ "$1" = --dispatch ] && exit 7\nexit 0\n' "$T" > "$FG"; chmod +x "$FG"
-OUT=$(LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain next' t16)" 2>&1); RC=$?; sleep 1
-check "unit end dispatches next exactly once" '[ "$(grep -c -- "^--dispatch" "$T/guard.log")" = 1 ]'
-check "failing dispatch is non-fatal" '[ $RC = 0 ]'
-check "dispatch runs after unit lock dropped" '[ ! -d "$LANES_HOME/units/chain-next.lock" ]'
-OUT=$(LANE_NO_CHAIN=1 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain off' t17)" 2>&1); sleep 1
-check "LANE_NO_CHAIN disables dispatch" '[ "$(grep -c -- "^--dispatch" "$T/guard.log")" = 1 ]'
+# 18 continuous dispatch: once, after the unit lock is released, background, non-fatal
+export GLOG="$T/g18"; rm -f "$LANES_HOME/chain-fails"
+OUT=$(LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain next' t16)" 2>&1); waitfor "$GLOG" dispatch
+check "unit end dispatches next exactly once" '[ "$(ndisp "$GLOG")" = 1 ]'
+check "dispatch called after unit lock release" 'grep -q "lock=no" "$GLOG" && ! grep -q "lock=yes" "$GLOG"'
+export GLOG="$T/g18b"
+OUT=$(GSLEEP=2 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain slow' t16b)" 2>&1); RC=$?; [ -f "$GLOG" ] && grep -q done "$GLOG"; DONE_AT_RETURN=$?
+check "non-fatal: slow failing guard, run-lane returns at once with 0" '[ $RC = 0 ] && [ $DONE_AT_RETURN != 0 ] && waitfor "$GLOG" done'
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done   # chained call holds this lock until the guard exits
+export GLOG="$T/g18c"
+OUT=$(LANE_GUARD="$FGF" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain freelane' t16c)" 2>&1); waitfor "$GLOG" dispatch
+check "freed lane passed as --free-lane when lane-guard supports it" 'grep -q "^--dispatch --free-lane laneA lock=no" "$GLOG"'
+export GLOG="$T/g18d"
+OUT=$(LANE_NO_CHAIN=1 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain off' t17)" 2>&1)
+check "LANE_NO_CHAIN disables dispatch" '[ "$(ndisp "$GLOG")" = 0 ]'
+# 19 no chain on SIGTERM, on a short failure, or after 2 failed ends in a row
+export GLOG="$T/g19"
+LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD='sleep 5' $RL laneA "$(task 'Chain term' t19)" >/dev/null 2>&1 & P=$!
+for k in $(seq 1 50); do [ -d "$LANES_HOME/units/chain-term.lock" ] && break; sleep 0.1; done; kill -TERM $P; wait $P
+check "SIGTERM: no dispatch" 'grep -q "chain-term rc=143: not chaining" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
+OUT=$(LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain short fail' t19b)" 2>&1)
+check "failed unit shorter than LANE_CHAIN_MIN_S: no dispatch" 'grep -q "chain-short-fail rc=1: not chaining" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
+rm -f "$LANES_HOME/chain-fails"; export GLOG="$T/g19c"
+LANE_CHAIN_MIN_S=0 LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain fail one' t19c)" >/dev/null 2>&1; waitfor "$GLOG" dispatch
+LANE_CHAIN_MIN_S=0 LANE_GUARD="$FG" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain fail two' t19d)" >/dev/null 2>&1
+check "2nd failed end in a row stops chaining" '[ "$(ndisp "$GLOG")" = 1 ] && grep -q "chain-fail-two rc=1: not chaining" "$CL" && [ "$(cat "$LANES_HOME/chain-fails")" = 2 ]'
 # 9 lanes.py per-host override
 printf '[l]\nkey = "neutral"\nkey@hostx = "special"\n' > "$T/o.toml"
 check "lanes.py host override" '[ "$(LANES_TOML=$T/o.toml LANES_HOST=hostx python3 scripts/lanes.py lane l key)" = special ] && [ "$(LANES_TOML=$T/o.toml LANES_HOST=y python3 scripts/lanes.py lane l key)" = neutral ]'
