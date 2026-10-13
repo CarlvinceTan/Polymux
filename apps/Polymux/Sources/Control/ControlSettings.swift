@@ -3,6 +3,7 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 import PolymuxControl
+import PolymuxKit
 
 struct ControlSettings: View {
     let server: URL?
@@ -12,6 +13,7 @@ struct ControlSettings: View {
     @State private var commands = false
     @State private var grantPermissions = false
     @State private var forget = false
+    @State private var backgroundToggle = OptimisticToggle(isOn: ControlCoordinator.shared.background)
 
     private var ticket: PairTicket? {
         guard let server else { return nil }
@@ -43,7 +45,13 @@ struct ControlSettings: View {
                 if control.approved.contains("commands") {
                     Toggle("Commands and files", isOn: Binding(get: { control.settings.commands }, set: { control.update(commands: $0) }))
                 }
-                Toggle("Keep control in background", isOn: Binding(get: { control.background }, set: { value in Task { await control.setBackground(value) } }))
+                let choice = backgroundToggle.binding { enabled in
+                    await control.setBackground(enabled)
+                    guard control.background == enabled else {
+                        throw ToggleFailure(control.issue ?? "Couldn’t change background control. Check Login Items in System Settings.")
+                    }
+                }
+                Toggle("Keep control in background", isOn: choice.isOn)
                 if control.approvalNeeded {
                     Button("Approve in Login Items") { SMAppService.openSystemSettingsLoginItems() }
                 }
@@ -76,7 +84,12 @@ struct ControlSettings: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            if let issue = control.issue { Text(issue).font(.footnote).foregroundStyle(.red) }
+            if let issue = toggleIssue(backgroundToggle.message, control.issue) {
+                Text(issue).font(.footnote).foregroundStyle(.red)
+            }
+        }
+        .onChange(of: control.background, initial: true) { _, enabled in
+            backgroundToggle.adopt(enabled)
         }
         .confirmationDialog("Allow app observation and control?", isPresented: $grantPermissions) {
             Button("Request permissions") { control.requestPermissions() }

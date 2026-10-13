@@ -139,6 +139,7 @@ struct ConnectionView: View {
     let settings: SettingsStore?
     let onClose: () -> Void
     @State private var draft = ""
+    @State private var notificationToggle = OptimisticToggle(isOn: Notifications.shared.enabled)
     @FocusState private var serverFocused: Bool
 
     var body: some View {
@@ -184,13 +185,21 @@ struct ConnectionView: View {
                     }
                 }
                 Section("Notifications") {
-                    Toggle("Allow notifications", isOn: Binding(get: { Notifications.shared.enabled },
-                        set: { enabled in Task { await Notifications.shared.allow(enabled) } }))
-                    if let issue = Notifications.shared.issue {
+                    let choice = notificationToggle.binding { enabled in
+                        await Notifications.shared.allow(enabled)
+                        guard Notifications.shared.enabled == enabled else {
+                            throw ToggleFailure(Notifications.shared.issue ?? "Couldn’t update notification permission.")
+                        }
+                    }
+                    Toggle("Allow notifications", isOn: choice.isOn)
+                    if let issue = toggleIssue(notificationToggle.message, Notifications.shared.issue) {
                         Text(issue).font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 .panelRow()
+                .onChange(of: Notifications.shared.enabled, initial: true) { _, enabled in
+                    notificationToggle.adopt(enabled)
+                }
                 #if os(macOS)
                 ControlSettings(server: ServerAddress.parse(address))
                 #endif

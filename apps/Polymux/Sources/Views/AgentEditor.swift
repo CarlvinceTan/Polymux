@@ -17,7 +17,8 @@ struct AgentEditor: View {
     @State private var promptHeight: CGFloat = 72
     @State private var reviews: Proactivity?
     @State private var routines: [Routine] = []
-    @State private var scheduleBusy = false
+    @State private var reviewToggle = OptimisticToggle(isOn: false)
+    @State private var routineRemoval = OptimisticRemoval()
 
     init(agent: Agent, session: AppSession) {
         self.agent = agent
@@ -127,11 +128,26 @@ struct AgentEditor: View {
 
     // What this agent does on its own: its review cadence and the routines it scheduled.
     @ViewBuilder private var scheduleSection: some View {
+        let choice = reviewToggle.binding(
+            apply: { enabled in
+                reviews = Proactivity(enabled: enabled, intervalSeconds: reviews?.intervalSeconds ?? 14400,
+                                      nextAt: reviews?.nextAt)
+            },
+            commit: { enabled in
+                do {
+                    _ = try await session.client.setProactivity(
+                        agentID: agent.id,
+                        settings: Proactivity(enabled: enabled, intervalSeconds: reviews?.intervalSeconds ?? 14400))
+                } catch {
+                    throw ToggleFailure("Couldn’t update background reviews.")
+                }
+            })
         Section {
-            Toggle("Background reviews", isOn: Binding(
-                get: { reviews?.enabled ?? false },
-                set: { enabled in Task { await setReviews(enabled) } }))
-                .disabled(reviews == nil || scheduleBusy)
+            Toggle("Background reviews", isOn: choice.isOn)
+                .disabled(reviews == nil)
+            if let message = reviewToggle.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            }
             ForEach(routines, id: \.id) { routine in
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -140,13 +156,15 @@ struct AgentEditor: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
-                    Button("Cancel", role: .destructive) { Task { await cancel(routine) } }
+                    Button("Cancel", role: .destructive) { cancel(routine) }
                         .buttonStyle(.plain)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .disabled(scheduleBusy)
                         .accessibilityLabel("Cancel \(routine.prompt)")
                 }
+            }
+            if let message = routineRemoval.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
             }
             if routines.isEmpty && reviews == nil {
                 Text("Nothing scheduled yet.").foregroundStyle(.secondary)
@@ -155,6 +173,10 @@ struct AgentEditor: View {
             Text("Schedule")
         }
         .panelRow()
+        .onChange(of: reviews?.enabled, initial: true) { _, enabled in
+            guard let enabled else { return }
+            reviewToggle.adopt(enabled)
+        }
     }
 
     private func nextFire(_ routine: Routine) -> String {
@@ -162,22 +184,21 @@ struct AgentEditor: View {
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
-    private func setReviews(_ enabled: Bool) async {
-        guard !scheduleBusy else { return }
-        scheduleBusy = true
-        defer { scheduleBusy = false }
-        let current = reviews
-        reviews = try? await session.client.setProactivity(
-            agentID: agent.id,
-            settings: Proactivity(enabled: enabled, intervalSeconds: current?.intervalSeconds ?? 14400))
-    }
-
-    private func cancel(_ routine: Routine) async {
-        guard !scheduleBusy else { return }
-        scheduleBusy = true
-        defer { scheduleBusy = false }
-        _ = try? await session.client.deleteRoutine(agentID: agent.id, routineID: routine.id)
-        routines = (try? await session.client.routines(agentID: agent.id)) ?? routines
+    private func cancel(_ routine: Routine) {
+        guard let index = routines.firstIndex(where: { $0.id == routine.id }) else { return }
+        let removed = routines[index]
+        routineRemoval.remove(removed.id, apply: {
+            routines.removeAll { $0.id == removed.id }
+        }, restore: {
+            guard !routines.contains(where: { $0.id == removed.id }) else { return }
+            routines.insert(removed, at: min(index, routines.count))
+        }, commit: {
+            do {
+                _ = try await session.client.deleteRoutine(agentID: agent.id, routineID: removed.id)
+            } catch {
+                throw ToggleFailure("Couldn’t cancel this routine.")
+            }
+        })
     }
 
     private var roleEditor: some View {
