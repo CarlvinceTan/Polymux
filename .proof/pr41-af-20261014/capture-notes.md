@@ -24,12 +24,30 @@ The six images are exported XCUITest attachments from `att-ready/manifest.json`,
 renamed from `focus-<theme>-<state>` to `ios-<theme>-<state>.png`.
 All twelve images were visually inspected. Sidebar readiness images are excluded.
 
-Release timing remains incomplete. `build-config.txt` records the actual build
-commands, Debug product paths, and Debug scheme actions from this run. The only
-permitted build entrypoint supplies no Release override; changing the scheme to
-Release would remove the DEBUG fixture needed by the existing readiness tests.
-No Release trace or measured 16/50 ms result is claimed. `onAppear` remains an
-insertion proxy, not a measured compositor frame; feedback/rollback budgets are
-16 ms and the state budget is 50 ms. Package budget tests are separate evidence.
+Release timing remains incomplete after attempt 3b at `e20a913`.
+The proof-only `release-harness.patch` changes the scheme's LaunchAction to
+Release, enables only the existing approval fixture with `APPROVAL_PROOF`, and
+exports the existing `ApprovalClock` spans after the rollback appearance callback.
+It leaves the TestAction in Debug and does not change timing calculations or UI.
+Apply it with `git apply .proof/pr41-af-20261014/release-harness.patch`, build only
+with the required verify.sh, then launch the Release product as documented in
+`release-attempt.txt`. Reverse the patch after capture. It is not a shipped change.
+
+The macOS Release build succeeded with `-O -whole-module-optimization` and the
+signed app launched. Input was blocked: the staged driver reported Accessibility
+false; native Computer Use twice returned `Sky Computer Use native pipe startup
+failed`. No button tap was dispatched and no trace CSV was produced. The process
+was stopped and the source/scheme overlay was restored. `release-attempt.txt`
+records the command results, including GitHub's HTTP 401 blocking the PR edit.
+The previous build-config.txt remains historical Debug capture provenance.
+
+No measured 16/50 ms result is claimed for ApprovalFeedback, ApprovalState, or
+ApprovalRollback. `onAppear` remains an insertion proxy, not a compositor frame;
+feedback/rollback budgets are 16 ms and the state budget is 50 ms. Rollback starts
+at observed request failure, not at the original tap; the five-second forced
+transport failure must not be folded into the rollback rendering budget.
+iOS readiness remains Debug; no iOS Release timing is claimed. The twelve existing
+FocusCard captures are unchanged. `pr-body-addendum.md` is the proposed verification
+addition; it was not uploaded because GitHub authentication failed.
 
 See `verify-summary.md` for the exact passing table from the full verification.

@@ -1,19 +1,19 @@
 ## verify.sh: PASS
-commit `6695ebd` on cvmini, 2026-10-14 00:31:48 +08, worktree lane3-df7-fix-pr-41-af-at-a739839-real
+commit `0480b8d` on cvmini, 2026-10-14 02:24:24 +08, worktree lane3-df7-fix-pr-41-af-at-e20a913-rele
 targets: full
 level: **UI-verified**, ready (chats.list + 12 sidebar rows + waits): yes
 
 | step | result | tests | time |
 |---|---|---|---|
 | test-integrity | PASS | - | 0s |
-| affected-tests | PASS | - | 1s |
-| go-vet | PASS | - | 1s |
-| go-test | PASS | - | 58s |
-| fixture-off | PASS | - | 2s |
-| packages | PASS | 193 passed, 0 failed | 22s |
-| macos-build | PASS | - | 24s |
-| ios-test | PASS | 2 passed, 0 failed | 85s |
-| ios-ready | PASS | 2 passed, 0 failed | 45s |
+| affected-tests | PASS | - | 2s |
+| go-vet | PASS | - | 2s |
+| go-test | PASS | - | 59s |
+| fixture-off | PASS | - | 1s |
+| packages | PASS | 193 passed, 0 failed | 8s |
+| macos-build | PASS | - | 13s |
+| ios-test | PASS | 2 passed, 0 failed | 54s |
+| ios-ready | PASS | 2 passed, 0 failed | 32s |
 
-media: ready-13E0E5E2-FE4D-4C12-9B42-BB959C0EA697.png ready-358EBCE6-738C-48DE-9AEB-3571510EBEDE.png ready-57913082-0B44-4CF0-82BB-263E42FBAD3D.png ready-5AF6469E-F453-4D81-845D-5A7FFB39832D.png ready-6A838D87-FF54-4F5E-A34A-B5BDFDA5269C.png ready-970213B8-0F0C-495B-A26F-F6A44812F945.png ready-CAC3EFCA-6ABC-4411-A004-49BEE80FBEB1.png ready-DFDE9FF8-088A-438A-BA72-7976F368B50B.png 
-evidence: /Users/carlvincetan/verify-evidence/lane3-df7-fix-pr-41-af-at-a739839-real/20261014-003148-6695ebd
+media: ready-1A597F89-9D3C-4382-A399-35EB0F7A330A.png ready-6A2DD0A4-D15D-4CCE-8708-2F1E4A839095.png ready-6A4F8290-ACE1-4AE1-97BC-D7A36860894D.png ready-752FC66E-722A-4F7C-B89C-65DB4858A226.png ready-7A0DA1EC-FB3C-4B53-8444-A3F747A1FC46.png ready-7C2C3F08-6936-460F-BAB5-32FA4F7E318A.png ready-CC0414EE-E74B-4E96-AFCD-E485DF3556E2.png ready-E6C45851-4DBF-4405-B847-BFEBF6D34215.png
+evidence: /Users/carlvincetan/code/wt/lane3-df7-fix-pr-41-af-at-e20a913-rele/.build/lanehome/verify-evidence/lane3-df7-fix-pr-41-af-at-e20a913-rele/20261014-022424-0480b8d
