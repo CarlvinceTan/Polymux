@@ -457,7 +457,7 @@ OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Sta
 check "clean stale worktree holding the branch is removed, run proceeds" '[ $RC = 0 ] && [ ! -d "$T/stalewt1" ] && grep -q "removed stale worktree $T/stalewt1" "$LANES_HOME"/logs/*stale-clean-laneA.log'
 mkbr test/stale2; git worktree add -q "$T/stalewt2" test/stale2; echo wip > "$T/stalewt2/wip.txt"
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale dirty' s2)" --branch test/stale2 2>&1); RC=$?
-check "dirty stale worktree stays attached with its changes kept, run refuses" '[ $RC = 1 ] && [ "$(cat "$T/stalewt2/wip.txt")" = wip ] && [ "$(git -C "$T/stalewt2" branch --show-current)" = test/stale2 ] && grep -q "dirty worktree $T/stalewt2; leaving it" "$LANES_HOME"/logs/*stale-dirty-laneA.log'
+check "dirty stale worktree is detached with its changes kept, run proceeds" '[ $RC = 0 ] && [ "$(cat "$T/stalewt2/wip.txt")" = wip ] && ! git -C "$T/stalewt2" symbolic-ref -q HEAD && grep -q "detached stale dirty worktree $T/stalewt2 (held test/stale2; changes kept)" "$LANES_HOME"/logs/*stale-dirty-laneA.log'
 git worktree remove --force "$T/stalewt2"
 mkbr test/stale3; git worktree add -q "$T/stalewt3" test/stale3; (cd "$T/stalewt3" && exec sleep 60) & SP=$!; for k in $(seq 1 100); do lsof -d cwd -Fn 2>/dev/null | grep -q "^n$T/stalewt3$" && break; sleep 0.1; done   # wait until the live cwd is visible (load)
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale live' s3)" --branch test/stale3 2>&1); RC=$?
@@ -567,7 +567,7 @@ for name in happy-path always-fails oc-fastfail oc-killed wd-disabled; do
 done
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; sleep 300' $RL laneA "$(task 'Free watchdog' uf1)" 2>&1); RC=$?
 check "unit-free: clean watchdog exit detaches" '[ $RC = 1 ] && ! git -C "$LANES_WT/laneA-free-watchdog" symbolic-ref -q HEAD'
-check "unit-free: dirty watchdog tree stays attached and logs its file count once" 'git -C "$LANES_WT/laneA-wd-nocommit" symbolic-ref -q HEAD && [ -f "$LANES_WT/laneA-wd-nocommit/w.txt" ] && [ "$(grep -c "unit-free: wd-nocommit .*dirty=1; kept" "$LANES_HOME"/logs/*wd-nocommit-laneA.log)" = 1 ] && grep -q "wt_dirty.*wd-nocommit.*dirty=1" "$LANES_HOME/events.tsv"'
+check "unit-free: dirty watchdog tree exits detached with its change kept, counted once" '! git -C "$LANES_WT/laneA-wd-nocommit" symbolic-ref -q HEAD && [ -f "$LANES_WT/laneA-wd-nocommit/w.txt" ] && [ "$(grep -c "unit-free: wd-nocommit .*dirty=1; detached (changes kept)" "$LANES_HOME"/logs/*wd-nocommit-laneA.log)" = 1 ] && grep -q "wt_dirty.*wd-nocommit.*dirty=1" "$LANES_HOME/events.tsv"'
 UF_STUB='mkdir -p .build/verify.lock "$HOME/ops/lanes/locks/active" "$HOME/ops/lanes/locks/slot1"; echo 999999 > .build/verify.lock/pid; echo 999999 > "$HOME/ops/lanes/locks/slot1/pid"; pwd > "$HOME/ops/lanes/locks/slot1/wt"; touch .build/verify-active "$HOME/ops/lanes/locks/active/polymux-$(basename "$PWD")"; mkdir -p "$HOME/ops/lanes/cards"; basename "$PWD" > "$HOME/ops/lanes/cards/free-markers.wt"; '
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$UF_STUB$STUB_OK" $RL laneA "$(task 'Free markers' uf2)" 2>&1); RC=$?
 check "unit-free: clears verify markers, card.wt and dead build locks" '[ $RC = 0 ] && [ ! -e "$LANES_WT/laneA-free-markers/.build/verify-active" ] && [ ! -e "$LANES_WT/laneA-free-markers/.build/verify.lock" ] && [ ! -e "$HOME/ops/lanes/locks/slot1" ] && [ ! -e "$HOME/ops/lanes/locks/active/polymux-laneA-free-markers" ] && [ ! -e "$LANES_HOME/cards/free-markers.wt" ]'
@@ -582,6 +582,19 @@ mkdir -p "$HOME/ops/lanes/locks/slot2"; echo $$ > "$HOME/ops/lanes/locks/slot2/p
 bash -c '. scripts/lanelib.sh; OPS=$LANES_HOME ID=test unit_free "$1" free-markers "$HOME/ops/lanes/locks" "$2"' _ "$LANES_WT/laneA-free-markers" "$T/free.log"
 check "unit-free: preserves a build lock held by another live pid" '[ "$(cat "$HOME/ops/lanes/locks/slot2/pid")" = $$ ]'
 rm -rf "$HOME/ops/lanes/locks/slot2"
+# 33 cross-lane retry: a dirty unit exits on the opencode lane (laneA); the queued retry runs on the codex
+# lane (laneB), checks the branch out there, and laneA's worktree keeps every change, detached.
+rm -f "$LANES_HOME"/queue/*.task
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo wip > wip.txt; exit 3' $RL laneA "$(task 'Retry dirty' rd1)" --branch test/retrydirty 2>&1); RC=$?
+RQ=$(ls "$LANES_HOME"/queue/*-retry-dirty-retry.task 2>/dev/null | head -1)
+check "dirty unit exits on laneA: tree detached, change kept, branch freed, retry queued" '[ $RC = 1 ] && [ -n "$RQ" ] && [ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD && grep -q "unit-free: retry-dirty wt=.*dirty=1; detached (changes kept)" "$LANES_HOME"/logs/*retry-dirty-laneA.log && grep -qx "branch: test/retrydirty" "$RQ"'
+# A killed old attempt leaves the same dirty tree still holding the branch: the retry must free it on its own.
+git -C "$LANES_WT/laneA-retry-dirty" checkout -q test/retrydirty
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneB "$RQ" 2>&1); RC=$?
+WTL=$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep "/laneB-retry-dirty" | head -1)
+check "retry on laneB detaches laneA's dirty tree, checks the branch out and commits there" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "detached stale dirty worktree $LANES_WT/laneA-retry-dirty (held test/retrydirty; changes kept)" "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log && [ -n "$WTL" ] && [ "$(git -C "$WTL" rev-parse HEAD)" = "$(git rev-parse test/retrydirty)" ]'
+check "laneA's worktree still holds its change, detached" '[ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD'
+rm -f "$LANES_HOME"/queue/*.task
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"

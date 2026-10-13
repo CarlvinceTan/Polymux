@@ -41,19 +41,19 @@ lock_clear() {
   if [ "$(lock_holder "$1")" = "$$" ] || lock_take "$1"; then lock_drop "$1"; fi
   return 0
 }
-# unit_free WT CARD LOCKS LOG: preserve dirty trees and any live verifier.
+# unit_free WT CARD LOCKS LOG: free the branch, never discard changes, never touch a live verifier.
+# A dirty tree is detached exactly like a clean one: --detach keeps the working tree, so the branch is
+# free for a retry on another lane while every change stays on disk.
 unit_free() {
-  local wt=$1 card=$2 locks=$3 log=$4 status count d p
+  local wt=$1 card=$2 locks=$3 log=$4 status count d p pre=""
   status=$(git -C "$wt" status --porcelain -uall 2>/dev/null) || return 1
   if [ -n "$status" ]; then
-    count=$(printf '%s\n' "$status" | wc -l | tr -d ' ')
-    echo "unit-free: $card wt=$wt dirty=$count; kept" >> "$log"
+    count=$(printf '%s\n' "$status" | wc -l | tr -d ' '); pre="dirty=$count; "
     printf '%s\t%s\twt_dirty\t%s\t%s dirty=%s\n' "$(date '+%F %T')" "$ID" "$card" "$wt" "$count" >> "$OPS/events.tsv"
-    return 0
   fi
   p=$(lock_holder "$wt/.build/verify.lock")
   if [ -n "$p" ] && [ "$p" != "$$" ] && kill -0 "$p" 2>/dev/null; then
-    echo "unit-free: $card wt=$wt live verifier pid=$p; kept" >> "$log"; return 0
+    echo "unit-free: $card wt=$wt ${pre}live verifier pid=$p; kept" >> "$log"; return 0
   fi
   git -C "$wt" checkout -q --detach >> "$log" 2>&1 || return 1
   rm -f "$wt/.build/verify-active" "$locks/active/polymux-$(basename "$wt")"
@@ -62,7 +62,8 @@ unit_free() {
   for d in "$locks"/slot*; do
     [ "$(cat "$d/wt" 2>/dev/null)" = "$wt" ] && lock_clear "$d"
   done
-  echo "unit-free: $card wt=$wt detached" >> "$log"
+  if [ -n "$pre" ]; then echo "unit-free: $card wt=$wt ${pre}detached (changes kept)" >> "$log"
+  else echo "unit-free: $card wt=$wt detached" >> "$log"; fi
   return 0
 }
 # Lane scripts changed between BASE and HEAD in the current repo?

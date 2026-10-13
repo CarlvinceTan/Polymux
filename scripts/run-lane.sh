@@ -225,9 +225,9 @@ git -C "$REPO" fetch -q origin; TRIED=""
 # free_branch BRANCH WT: another worktree holding refs/heads/BRANCH makes `git worktree add` fail. If no live
 # process has its cwd in it (lsof; missing/failing lsof = in use, fail closed) and lanelib in_use (cleanup.sh's
 # rule: live verify lock / fresh marker, build slot, live unit lock, pgrep) says free, it is stale (.build/proof is
-# archived to $OPS/proof-archive first): a clean one is removed, a dirty one is
-# left attached. A local branch that has diverged from origin/BRANCH is kept as
-# cody-stale/<branch>-<sha7> and the local branch is moved to origin/BRANCH.
+# archived to $OPS/proof-archive first): a clean one is removed, a dirty one is detached
+# with its changes kept so the branch is free for this attempt. A local branch that has diverged from
+# origin/BRANCH is kept as cody-stale/<branch>-<sha7> and the local branch is moved to origin/BRANCH.
 free_branch() {
   local b=$1 me=$2 p="" cur="" sha
   while IFS= read -r line; do case $line in "worktree "*) cur=${line#worktree };; "branch refs/heads/$b") p=$cur;; esac; done \
@@ -240,7 +240,9 @@ free_branch() {
     elif [ -z "$(git -C "$p" status --porcelain 2>/dev/null)" ]; then
       [ -d "$p/.build/proof" ] && mkdir -p "$OPS/proof-archive" && cp -R "$p/.build/proof" "$OPS/proof-archive/$(basename "$p")-$(date +%Y%m%d%H%M%S)" 2>/dev/null   # keep evidence (ignored files go with the tree)
       git -C "$REPO" worktree remove "$p" >> "$LOG" 2>&1 && echo "removed stale worktree $p (held $b)" >> "$LOG"
-    else echo "branch $b is checked out in dirty worktree $p; leaving it" >> "$LOG"; fi
+    elif git -C "$p" checkout -q --detach >> "$LOG" 2>&1; then   # dirty: detach (changes kept) frees $b for this attempt
+      echo "detached stale dirty worktree $p (held $b; changes kept)" >> "$LOG"
+    else echo "could not detach dirty worktree $p (held $b); leaving it" >> "$LOG"; fi
   fi
   git -C "$REPO" show-ref -q "refs/heads/$b" && git -C "$REPO" show-ref -q "refs/remotes/origin/$b" || return 0
   git -C "$REPO" merge-base --is-ancestor "refs/heads/$b" "refs/remotes/origin/$b" && return 0   # behind or equal: fine
