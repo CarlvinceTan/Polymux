@@ -10,6 +10,12 @@
 #          .mov is never appended; only files publish_proof uploaded (proof-dir/uploaded) are appended.
 #          media-check exit != 0 (missing Pillow/ffmpeg) -> board_error, nothing appended.
 #   merged <unit>                      Status -> "Completed" (caller confirms mergedAt first)
+#   review <unit>                      Status -> "Review" (approved, in the merge queue)
+#   requeued <unit>                    Status -> "In Progress" (post-approval re-verify failed; fix attempt)
+#   drop   <unit> [reason]             forget an abandoned unit: its card mapping and card-ledger rows go, so a
+#          shared card no longer waits on it; if the remaining units have all merged/verified, that is
+#          written now. Called by run-lane.sh when a unit ends in NEEDS_CODY; a unit whose task file sits
+#          in $OPS/queue/archive/ is dropped automatically the next time its card is evaluated.
 # merged/verify on a card shared by several units wait for all of them (see "Shared cards" below).
 # Ships disabled: live only when $OPS/BOARD_LIVE exists AND $GOAL_LOOP_HOME/RELAY_HOLD exists (old relay
 # held, so never two writers); otherwise logs the exact intended write. Read-before-write: a failed read
@@ -21,7 +27,7 @@ SD=$(cd "$(dirname "$0")" && pwd); . "$SD/lanelib.sh"
 OPS=${LANES_HOME:-$HOME/ops/lanes}; GL=${GOAL_LOOP_HOME:-$HOME/ops/goal-loop}; mkdir -p "$OPS/cards" "$OPS/board"
 VAULT_ITEM=${BOARD_VAULT_ITEM:-"Notion - Polymux integration token"}
 API=${NOTION_API:-https://api.notion.com/v1}; NV=2022-06-28
-DRY=0; [ "${1:-}" = --dry-run ] && { DRY=1; shift; }
+DRY=0; DA=""; [ "${1:-}" = --dry-run ] && { DRY=1; DA=--dry-run; shift; }
 [ -f "$OPS/BOARD_LIVE" ] || DRY=1
 EVT=${1:-}; UNIT=${2:-}; shift 2 2>/dev/null || true
 _ev() { local m; m=$(printf '%s' "$2" | tr '\t\n' '  ')
@@ -29,17 +35,33 @@ _ev() { local m; m=$(printf '%s' "$2" | tr '\t\n' '  ')
   printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$UNIT" "$1" "$EVT" "$m" >> "$OPS/events.tsv"; }
 log() { _ev board "$*"; }
 err() { _ev board_error "$*"; echo "board_error: $UNIT $EVT: $*"; }
-[ -n "$EVT" ] && [ -n "$UNIT" ] || { echo "usage: board-update.sh [--dry-run] card|start|pr|verify|merged <unit> [arg]" >&2; exit 0; }
+[ -n "$EVT" ] && [ -n "$UNIT" ] || { echo "usage: board-update.sh [--dry-run] card|start|pr|verify|merged|drop <unit> [arg]" >&2; exit 0; }
 page_id() { echo "${1%%\?*}" | grep -oiE '[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}' | tail -1 | tr -d - | tr A-F a-f | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/'; }
 if [ "$EVT" = card ]; then
   C=$(sed -n 's/^card: *//p' "${1:-/dev/null}" 2>/dev/null | head -1); P=$(page_id "$C")
   if [ -n "$P" ]; then echo "$P" > "$OPS/cards/$UNIT"; log "card $P"; else rm -f "$OPS/cards/$UNIT"; log "skip: no card: line in brief"; fi
   exit 0; fi
 PAGE=$(cat "$OPS/cards/$UNIT" 2>/dev/null); PDIR=""; PBASE=""
+# archived <unit>: its task was archived ($OPS/queue/archive/*.task with 'unit: <u>' or named *-<u>.task)
+archived() { local f; for f in "$OPS"/queue/archive/*.task; do [ -f "$f" ] || continue
+  case ${f##*/} in *-"$1".task) return 0;; esac; grep -qx "unit: *$(printf '%s' "$1" | sed 's/[][\\.*^$]/\\&/g')" "$f" && return 0; done; return 1; }   # unit names are literal (dots escaped)
+forget() { awk -F'\t' -v u="$1" '$1!=u' "$CLED" > "$CLED.tmp" && mv "$CLED.tmp" "$CLED"; rm -f "$OPS/cards/$1"; }  # caller holds the card lock
+if [ "$EVT" = drop ]; then
+  [ -n "$PAGE" ] || { log "skip: unit has no card"; exit 0; }
+  CL="$OPS/board/card-$PAGE.lock"; CLED="$OPS/board/card-$PAGE.tsv"; n=0
+  until lock_take "$CL"; do n=$((n+1)); [ $n -ge "${BOARD_LOCK_TRIES:-10}" ] && { err "card lock busy (pid $(lock_holder "$CL")); not dropped"; exit 0; }; sleep 1; done
+  touch "$CLED"; forget "$UNIT"; RE=$(awk -F'\t' '$2=="merged"||$2=="verify"{print $2"\t"$1"\t"$3}' "$CLED" | sort -u -k1,1); lock_drop "$CL"
+  log "dropped from card $PAGE (${1:-abandoned}); card no longer waits for it"
+  # Re-evaluate held events with one remaining unit each (the event re-checks every member).
+  while IFS=$'\t' read -r e u v; do [ -n "$u" ] && [ -f "$OPS/cards/$u" ] || continue
+    if [ "$e" = merged ]; then bash "$0" $DA merged "$u"; else bash "$0" $DA verify "$u" "$v"; fi; done <<< "$RE"
+  exit 0; fi
 [ -n "$PAGE" ] || { log "skip: no card for unit (brief had no card: line)"; exit 0; }
 case $EVT in
   start)  PROP=Status; KIND=select; VAL="In Progress";;
   merged) PROP=Status; KIND=select; VAL=Completed;;
+  review) PROP=Status; KIND=select; VAL=Review;;              # merge lane: approved PR queued for the post-approval gate
+  requeued) PROP=Status; KIND=select; VAL="In Progress";;     # merge lane: re-verify failed, fix attempt back on its lane
   pr)     PROP=PR; KIND=url; VAL=${1:-}; [ -n "$VAL" ] || { err "no PR url given"; exit 0; };;
   verify) PROP=Verification; KIND=select; VAL=${1:-}; PDIR=${2:-}; PBASE=${3:-}
           case $VAL in UI-verified|unit-test-verified|build-only|blocked|failed) ;;
@@ -57,7 +79,8 @@ if [ "$EVT" = merged ] || [ "$EVT" = verify ]; then
   until lock_take "$CL"; do n=$((n+1)); [ $n -ge "${BOARD_LOCK_TRIES:-10}" ] && { err "card lock busy (pid $(lock_holder "$CL")); not written"; exit 0; }; sleep 1; done
   touch "$CLED"; { awk -F'\t' -v u="$UNIT" -v e="$EVT" '!($1==u&&$2==e)' "$CLED"; printf '%s\t%s\t%s\n' "$UNIT" "$EVT" "$VAL"; } > "$CLED.tmp" && mv "$CLED.tmp" "$CLED"
   WAITU=""; LOW=""; MEM=()
-  for f in "$OPS"/cards/*; do case $f in *.wt) continue;; esac; [ -f "$f" ] && [ "$(cat "$f")" = "$PAGE" ] && MEM+=("${f##*/}"); done
+  for f in "$OPS"/cards/*; do case $f in *.wt) continue;; esac; [ -f "$f" ] && [ "$(cat "$f")" = "$PAGE" ] || continue
+    m=${f##*/}; if [ "$m" != "$UNIT" ] && archived "$m"; then forget "$m"; log "dropped archived unit $m from card $PAGE"; continue; fi; MEM+=("$m"); done
   for m in "${MEM[@]}"; do v=$(awk -F'\t' -v u="$m" -v e="$EVT" '$1==u&&$2==e{print $3}' "$CLED")
     if [ -z "$v" ]; then WAITU="$WAITU $m"; elif [ -z "$LOW" ] || [ "$(rank "$v")" -lt "$(rank "$LOW")" ]; then LOW=$v; fi; done
   lock_drop "$CL"

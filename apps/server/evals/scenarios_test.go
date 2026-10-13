@@ -267,6 +267,12 @@ func TestX2PersistedToolResult(t *testing.T) {
 				}
 				return nil
 			}, HoldReply("", release, func() { close(opened) }, nil)),
+			Fixed(func(req *ChatRequest) error {
+				if !hasToolResult(req, "x2-call", "effect-ok") {
+					return fmt.Errorf("resume missing x2-call result effect-ok")
+				}
+				return nil
+			}, TextReply("RESUMED_X2")),
 		},
 	})
 	if code := h.Send(agentID, "x2-user", "effect then crash"); code != 202 && code != 200 {
@@ -285,26 +291,166 @@ func TestX2PersistedToolResult(t *testing.T) {
 	runID := RunID("x2-user", agentID)
 	h.Restart()
 	run := h.WaitRunID(runID, deadline)
-	// Durable transcript after restart: tool must not re-run; prior model request retained effect-ok.
 	reqs := h.Emulator.Requests()
-	if len(reqs) < 2 || !hasToolResult(reqs[1], "x2-call", "effect-ok") {
-		fail(t, "X2", "persisted tool result missing from transcript after restart")
+	done := h.AssistantDone(agentID)
+	if len(reqs) < 3 || !hasToolResult(reqs[2], "x2-call", "effect-ok") {
+		fail(t, "X2", fmt.Sprintf("resumed request missing tool result (status %s, requests %d)", run.Status, len(reqs)))
 		return
 	}
 	if err := h.Emulator.DoneAllowExtra(); err != nil {
 		fail(t, "X2", err.Error())
 		return
 	}
+	resumed := ""
+	if len(done) > 0 {
+		resumed = messageText(done[len(done)-1])
+	}
 	switch {
 	case counter.Load() != 1:
 		fail(t, "X2", fmt.Sprintf("side_effect re-ran after restart: %d", counter.Load()))
-	case !store.Terminal(run.Status):
-		fail(t, "X2", "run not terminal: "+run.Status)
-	case run.Error == nil && run.Summary == "":
-		fail(t, "X2", "terminal run not explained")
+	case run.Status != "completed":
+		fail(t, "X2", "run status "+run.Status)
+	case assistantsFor(h.Messages(agentID), run.ID) != 1:
+		fail(t, "X2", fmt.Sprintf("assistant messages for run: %d", assistantsFor(h.Messages(agentID), run.ID)))
+	case !strings.Contains(resumed, "RESUMED_X2"):
+		fail(t, "X2", "missing resumed final text: "+resumed)
 	default:
-		pass(t, "X2", fmt.Sprintf("tool not re-run; run %s explained", run.Status))
+		pass(t, "X2", "resumed from the saved tool result")
 	}
+}
+
+func TestTR1SingleResume(t *testing.T) {
+	counter := &atomic.Int32{}
+	first := make(chan struct{})
+	second := make(chan struct{})
+	release := make(chan struct{})
+	h := Start(t, Options{
+		ID:      "TR1",
+		Effects: map[string]*atomic.Int32{agentID: counter},
+		Steps: []Step{
+			Fixed(nil, ToolReply("tr1-call", "side_effect", map[string]any{})),
+			Fixed(func(req *ChatRequest) error {
+				if !hasToolResult(req, "tr1-call", "effect-ok") {
+					return fmt.Errorf("expected tool result before first crash")
+				}
+				return nil
+			}, HoldReply("", release, func() { close(first) }, nil)),
+			Fixed(func(req *ChatRequest) error {
+				if !hasToolResult(req, "tr1-call", "effect-ok") {
+					return fmt.Errorf("resume missing tool result")
+				}
+				return nil
+			}, HoldReply("", release, func() { close(second) }, nil)),
+			Fixed(nil, TextReply("should not run")),
+		},
+	})
+	if code := h.Send(agentID, "tr1-user", "effect then crash twice"); code != 202 && code != 200 {
+		fail(t, "TR1", fmt.Sprintf("send status %d", code))
+		return
+	}
+	WaitHold(t, "TR1", first, holdWait)
+	if counter.Load() != 1 {
+		fail(t, "TR1", fmt.Sprintf("tool did not complete before restart: %d", counter.Load()))
+		return
+	}
+	runID := RunID("tr1-user", agentID)
+	h.Restart()
+	WaitHold(t, "TR1", second, deadline)
+	if counter.Load() != 1 || h.Emulator.Count() != 3 {
+		fail(t, "TR1", fmt.Sprintf("resume calls=%d counter=%d", h.Emulator.Count(), counter.Load()))
+		return
+	}
+	h.Restart()
+	run := h.WaitRunID(runID, deadline)
+	if err := h.Emulator.DoneAllowExtra(); err != nil {
+		fail(t, "TR1", err.Error())
+		return
+	}
+	switch {
+	case counter.Load() != 1:
+		fail(t, "TR1", fmt.Sprintf("side_effect counter=%d", counter.Load()))
+	case h.Emulator.Count() != 3:
+		fail(t, "TR1", fmt.Sprintf("resume loop made %d model requests", h.Emulator.Count()))
+	case run.Status != "interrupted":
+		fail(t, "TR1", "run status "+run.Status)
+	case run.Error == nil || run.Error.Message == "":
+		fail(t, "TR1", "missing user-visible error")
+	default:
+		pass(t, "TR1", "second crash interrupted without another resume")
+	}
+}
+
+func TestTR1QueuedMessage(t *testing.T) {
+	counter := &atomic.Int32{}
+	opened := make(chan struct{})
+	release := make(chan struct{})
+	h := Start(t, Options{
+		ID:      "TR1Q",
+		Effects: map[string]*atomic.Int32{agentID: counter},
+		Steps: []Step{
+			Fixed(nil, ToolReply("tr1q-call", "side_effect", map[string]any{})),
+			Fixed(func(req *ChatRequest) error {
+				if !hasToolResult(req, "tr1q-call", "effect-ok") {
+					return fmt.Errorf("expected tool result before the crash")
+				}
+				return nil
+			}, HoldReply("", release, func() { close(opened) }, nil)),
+			Fixed(func(req *ChatRequest) error {
+				if !hasToolResult(req, "tr1q-call", "effect-ok") {
+					return fmt.Errorf("resume missing tool result")
+				}
+				if strings.Contains(requestText(req), "queued-second") {
+					return fmt.Errorf("resume included the queued message")
+				}
+				return nil
+			}, TextReply("RESUMED_OWN")),
+			Fixed(nil, TextReply("SECOND_LATER")),
+		},
+	})
+	if code := h.Send(agentID, "tr1q-user", "effect then queue"); code != 202 && code != 200 {
+		fail(t, "TR1Q", fmt.Sprintf("send status %d", code))
+		return
+	}
+	WaitHold(t, "TR1Q", opened, holdWait)
+	if code := h.Send(agentID, "tr1q-next", "queued-second"); code != 202 && code != 200 {
+		fail(t, "TR1Q", fmt.Sprintf("second send status %d", code))
+		return
+	}
+	runID := RunID("tr1q-user", agentID)
+	h.Restart()
+	run := h.WaitRunID(runID, deadline)
+	if err := h.Emulator.DoneAllowExtra(); err != nil {
+		fail(t, "TR1Q", err.Error())
+		return
+	}
+	resumed := ""
+	for _, m := range h.AssistantDone(agentID) {
+		if m.RunID != nil && *m.RunID == run.ID {
+			resumed = messageText(m)
+		}
+	}
+	switch {
+	case counter.Load() != 1:
+		fail(t, "TR1Q", fmt.Sprintf("side_effect counter=%d", counter.Load()))
+	case run.Status != "completed":
+		fail(t, "TR1Q", "run status "+run.Status)
+	case assistantsFor(h.Messages(agentID), run.ID) != 1:
+		fail(t, "TR1Q", fmt.Sprintf("assistant messages for run: %d", assistantsFor(h.Messages(agentID), run.ID)))
+	case !strings.Contains(resumed, "RESUMED_OWN"):
+		fail(t, "TR1Q", "missing resumed text: "+resumed)
+	default:
+		pass(t, "TR1Q", "queued message stayed out of the resumed turn")
+	}
+}
+
+func assistantsFor(messages []contract.Message, runID string) int {
+	n := 0
+	for _, m := range messages {
+		if m.Role == "assistant" && m.RunID != nil && *m.RunID == runID {
+			n++
+		}
+	}
+	return n
 }
 
 func TestX4ProviderErrors(t *testing.T) {
