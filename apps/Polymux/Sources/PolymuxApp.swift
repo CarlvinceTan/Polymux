@@ -33,17 +33,7 @@ struct PolymuxApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            Group {
-                #if DEBUG
-                if CommandLine.arguments.contains("--verify-approval") {
-                    ApprovalFixture()
-                } else {
-                    root
-                }
-                #else
-                root
-                #endif
-            }
+            WindowRoot()
         }
         #if os(macOS)
         .defaultSize(width: 1060, height: 760)
@@ -53,14 +43,29 @@ struct PolymuxApp: App {
         #endif
     }
 
+}
+
+private struct WindowRoot: View {
+    var body: some View {
+        #if DEBUG
+        if CommandLine.arguments.contains("--verify-approval") {
+            ApprovalFixture()
+        } else {
+            root
+        }
+        #else
+        root
+        #endif
+    }
+
     private var root: some View {
-            AppRoot()
-                .tint(Color("AccentColor"))
-                #if os(macOS)
-                .frame(minWidth: 780, minHeight: 500)
-                #else
-                .frame(minWidth: 360, minHeight: 500)
-                #endif
+        AppRoot()
+            .tint(Color("AccentColor"))
+            #if os(macOS)
+            .frame(minWidth: 780, minHeight: 500)
+            #else
+            .frame(minWidth: 360, minHeight: 500)
+            #endif
     }
 }
 
