@@ -21,7 +21,7 @@ cmd = "true"
 agent = "codex"
 cmd = "true"
 TOML
-echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
+echo .build/ > .gitignore; echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
 export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" LANE_SKIP_SETUP=1 LANE_TARGET=testmac
 export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
@@ -163,7 +163,7 @@ git push -q origin test/big:refs/heads/test/open; echo https://github.com/o/r/pu
 VC2='mkdir -p .build/proof && echo "## ok" > .build/proof/summary.md && echo unit-test-verified > .build/proof/level'
 OUT=$(PATH="$GB:$PATH" LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Continue open' t21)" --branch test/open 2>&1); RC=$?
 NH=$(git ls-remote origin refs/heads/test/open | cut -f1)
-check "open PR: pushed, commented new head, no new PR, success recorded" '[ $RC = 0 ] && ! grep -q "^pr create" "$T/gh.log" && grep -q "^pr comment https://github.com/o/r/pull/55 .*new head $NH" "$T/gh.log" && [ "$NH" != "$(git rev-parse test/big)" ] && grep -q "continue-open	https://github.com/o/r/pull/55	$NH" "$LANES_HOME/results.tsv" && [ -f "$LANES_HOME/cards/continue-open.wt" ]'
+check "open PR: pushed, commented new head, no new PR, success recorded" '[ $RC = 0 ] && ! grep -q "^pr create" "$T/gh.log" && grep -q "^pr comment https://github.com/o/r/pull/55 .*new head $NH" "$T/gh.log" && [ "$NH" != "$(git rev-parse test/big)" ] && grep -q "continue-open	https://github.com/o/r/pull/55	$NH" "$LANES_HOME/results.tsv" && [ ! -f "$LANES_HOME/cards/continue-open.wt" ] && ! git -C "$LANES_WT/laneA-continue-open" symbolic-ref -q HEAD'
 # 21 PR body footer, build-only existing PR -> draft, gh pr list error, local branch behind origin
 G2="$T/ghbin2"; mkdir -p "$G2"; cat > "$G2/gh" <<GH
 #!/bin/bash
@@ -458,7 +458,7 @@ OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Sta
 check "clean stale worktree holding the branch is removed, run proceeds" '[ $RC = 0 ] && [ ! -d "$T/stalewt1" ] && grep -q "removed stale worktree $T/stalewt1" "$LANES_HOME"/logs/*stale-clean-laneA.log'
 mkbr test/stale2; git worktree add -q "$T/stalewt2" test/stale2; echo wip > "$T/stalewt2/wip.txt"
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale dirty' s2)" --branch test/stale2 2>&1); RC=$?
-check "dirty stale worktree is detached with its changes kept, run proceeds" '[ $RC = 0 ] && [ -f "$T/stalewt2/wip.txt" ] && [ -z "$(git -C "$T/stalewt2" branch --show-current)" ]'
+check "dirty stale worktree is detached with its changes kept, run proceeds" '[ $RC = 0 ] && [ "$(cat "$T/stalewt2/wip.txt")" = wip ] && ! git -C "$T/stalewt2" symbolic-ref -q HEAD && grep -q "detached stale dirty worktree $T/stalewt2 (held test/stale2; changes kept)" "$LANES_HOME"/logs/*stale-dirty-laneA.log'
 git worktree remove --force "$T/stalewt2"
 mkbr test/stale3; git worktree add -q "$T/stalewt3" test/stale3; (cd "$T/stalewt3" && exec sleep 60) & SP=$!; for k in $(seq 1 100); do lsof -d cwd -Fn 2>/dev/null | grep -q "^n$T/stalewt3$" && break; sleep 0.1; done   # wait until the live cwd is visible (load)
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale live' s3)" --branch test/stale3 2>&1); RC=$?
@@ -550,7 +550,7 @@ OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 
 WQ=$(ls "$QD"/*wd-nocommit*-retry.task 2>/dev/null | head -1)
 check "watchdog: no commit within the limit -> stopped, opencode session ended, retry pinned to codex with a note" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "^## Watchdog" "$WQ" && grep -q "no new commit" "$WQ" && [ "$(head -1 "$WQ")" = "# Wd nocommit (attempt 2)" ] && grep -q "session delete ses_.*wd_nocommit" "$T/oc.log" && bash scripts/queue-write.sh --check "$WQ" >/dev/null'
 rm -f "$QD"/*.task
-OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; echo "--- FAIL: TestOther$i (0.01s)"; done; while :; do echo y >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd testloop' wd2)" 2>&1); RC=$?
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; echo "--- FAIL: TestOther$i (0.01s)"; done; while :; do echo y >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd testloop' wd2)" 2>&1); RC=$?
 WQ=$(ls "$QD"/*wd-testloop*-retry.task 2>/dev/null | head -1)
 check "watchdog: the same test failing 3 times -> stopped, retry on the other agent names the test" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "test .TestLoopy. failed 3+ times" "$WQ"'
 rm -f "$QD"/*.task
@@ -560,6 +560,47 @@ printf '# Wd pinned\nneeds: none\nexpected_min: 5\nagent: codex\n' > "$T/wdp.tas
 OA=$(LANE_NO_CHAIN=1 $RL --check laneA "$T/wdp.task" 2>&1); RA=$?; OB=$(LANE_NO_CHAIN=1 $RL --check laneB "$T/wdp.task" 2>&1); RB=$?
 check "agent: header pins the retry: --check refuses the opencode lane (5), the codex lane is not refused for agent" '[ $RA = 5 ] && echo "$OA" | grep -q "wants agent .codex." && ! echo "$OB" | grep -q "wants agent"'
 rm -f "$QD"/*.task
+# 32 unit exit detaches trees with changes kept and preserves live locks.
+# A freed tree is detached; test 8's cleanup.sh --apply deletes a clean detached tree whose HEAD is on a
+# remote, so a tree that is gone counts as freed too. The unit log is the proof that the exit path ran.
+for name in happy-path always-fails oc-fastfail oc-killed wd-disabled; do
+  check "unit-free: $name exits detached" 'grep -q "unit-free: $name wt=.* detached" "$LANES_HOME"/logs/*-$name-laneA.log && { [ ! -d "$LANES_WT/laneA-$name" ] || ! git -C "$LANES_WT/laneA-$name" symbolic-ref -q HEAD; }'
+done
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; sleep 300' $RL laneA "$(task 'Free watchdog' uf1)" 2>&1); RC=$?
+check "unit-free: clean watchdog exit detaches" '[ $RC = 1 ] && ! git -C "$LANES_WT/laneA-free-watchdog" symbolic-ref -q HEAD'
+check "unit-free: dirty watchdog tree exits detached with its change kept, counted once" '! git -C "$LANES_WT/laneA-wd-nocommit" symbolic-ref -q HEAD && [ -f "$LANES_WT/laneA-wd-nocommit/w.txt" ] && [ "$(grep -c "unit-free: wd-nocommit .*dirty=1; detached (changes kept)" "$LANES_HOME"/logs/*wd-nocommit-laneA.log)" = 1 ] && grep -q "wt_dirty.*wd-nocommit.*dirty=1" "$LANES_HOME/events.tsv"'
+UF_STUB='mkdir -p .build/verify.lock "$HOME/ops/lanes/locks/active" "$HOME/ops/lanes/locks/slot1"; echo 999999 > .build/verify.lock/pid; echo 999999 > "$HOME/ops/lanes/locks/slot1/pid"; pwd > "$HOME/ops/lanes/locks/slot1/wt"; touch .build/verify-active "$HOME/ops/lanes/locks/active/polymux-$(basename "$PWD")"; mkdir -p "$HOME/ops/lanes/cards"; basename "$PWD" > "$HOME/ops/lanes/cards/free-markers.wt"; '
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$UF_STUB$STUB_OK" $RL laneA "$(task 'Free markers' uf2)" 2>&1); RC=$?
+check "unit-free: clears verify markers, card.wt and dead build locks" '[ $RC = 0 ] && [ ! -e "$LANES_WT/laneA-free-markers/.build/verify-active" ] && [ ! -e "$LANES_WT/laneA-free-markers/.build/verify.lock" ] && [ ! -e "$HOME/ops/lanes/locks/slot1" ] && [ ! -e "$HOME/ops/lanes/locks/active/polymux-laneA-free-markers" ] && [ ! -e "$LANES_HOME/cards/free-markers.wt" ]'
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='test "$(git symbolic-ref --short HEAD)" = agent/free-markers && '"$STUB_OK" $RL laneA "$T/uf2.task" 2>&1); RC=$?
+check "unit-free: a new attempt re-attaches the same branch and frees it again" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK" && ! git -C "$LANES_WT/laneA-free-markers" symbolic-ref -q HEAD'
+git worktree add -q "$LANES_WT/reattach-proof" agent/free-markers
+check "unit-free: branch re-attaches in a different worktree after exit" '[ "$(git -C "$LANES_WT/reattach-proof" symbolic-ref --short HEAD)" = agent/free-markers ]'
+git worktree remove "$LANES_WT/reattach-proof"
+. scripts/lanelib.sh
+mkdir -p "$HOME/ops/lanes/locks/slot2"; echo $$ > "$HOME/ops/lanes/locks/slot2/pid"; echo "$LANES_WT/laneA-free-markers" > "$HOME/ops/lanes/locks/slot2/wt"
+# Run in a separate shell so the test's pid is another live holder.
+bash -c '. scripts/lanelib.sh; OPS=$LANES_HOME ID=test unit_free "$1" free-markers "$HOME/ops/lanes/locks" "$2"' _ "$LANES_WT/laneA-free-markers" "$T/free.log"
+check "unit-free: preserves a build lock held by another live pid" '[ "$(cat "$HOME/ops/lanes/locks/slot2/pid")" = $$ ]'
+rm -rf "$HOME/ops/lanes/locks/slot2"
+# 33 cross-lane retry: a dirty unit exits on the opencode lane (laneA); the queued retry runs on the codex
+# lane (laneB), checks the branch out there, and laneA's worktree keeps every change, detached.
+rm -f "$LANES_HOME"/queue/*.task
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo staged > README; git add README; echo unstaged >> README; echo wip > wip.txt; exit 3' $RL laneA "$(task 'Retry dirty' rd1)" --branch test/retrydirty 2>&1); RC=$?
+RQ=$(ls "$LANES_HOME"/queue/*-retry-dirty-retry.task 2>/dev/null | head -1)
+check "dirty unit exits on laneA: tree detached, change kept, branch freed, retry queued" '[ $RC = 1 ] && [ -n "$RQ" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" show :README)" = staged ] && [ "$(cat "$LANES_WT/laneA-retry-dirty/README")" = "$(printf "staged\nunstaged")" ] && [ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD && grep -q "unit-free: retry-dirty wt=.*dirty=2; detached (changes kept)" "$LANES_HOME"/logs/*retry-dirty-laneA.log && grep -qx "branch: test/retrydirty" "$RQ"'
+OLD_HEAD=$(git -C "$LANES_WT/laneA-retry-dirty" rev-parse HEAD)
+OLD_DIFF=$(git -C "$LANES_WT/laneA-retry-dirty" diff HEAD)
+OLD_INDEX=$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)
+# Simulate a killed attempt still holding the branch; the retry must free it.
+git -C "$LANES_WT/laneA-retry-dirty" checkout -q test/retrydirty
+RETRY_STUB='test "$(git symbolic-ref --short HEAD)" = test/retrydirty && test "$(cat README)" = base && test ! -e wip.txt && '"$STUB_OK"
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$RETRY_STUB" $RL laneB "$RQ" 2>&1); RC=$?
+[ "$RC" = 0 ] || { printf "%s\n" "$OUT"; cat "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log; }
+WTL=$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep "/laneB-retry-dirty" | head -1)
+check "retry on laneB detaches laneA's dirty tree, checks the branch out and commits there" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "detached stale dirty worktree $LANES_WT/laneA-retry-dirty (held test/retrydirty; changes kept)" "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log && [ -n "$WTL" ] && [ "$(git -C "$WTL" rev-parse HEAD)" = "$(git rev-parse test/retrydirty)" ]'
+check "laneA keeps its HEAD, staged, unstaged and untracked changes, detached" '[ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" rev-parse HEAD)" = "$OLD_HEAD" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff HEAD)" = "$OLD_DIFF" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)" = "$OLD_INDEX" ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD'
+rm -f "$LANES_HOME"/queue/*.task
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"

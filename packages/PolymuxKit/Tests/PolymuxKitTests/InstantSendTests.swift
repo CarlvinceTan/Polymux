@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
+extension InstantTiming {
 /// SA1: pressing Send with files shows the bubble and clears the composer before uploads finish.
 @Suite @MainActor
 struct InstantSendTests {
@@ -92,6 +93,8 @@ struct InstantSendTests {
         #expect(rig.chat.messages.first?.status == "pending")
         #expect(rig.chat.messages.first?.attachments.compactMap(\.localURL).count == 2)
     }
+}
+
 }
 
 private func uploaded(_ file: LocalFile) -> PolymuxKit.Attachment {
