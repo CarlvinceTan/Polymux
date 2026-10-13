@@ -210,7 +210,7 @@ struct NewChatView: View {
             } else {
                 thread = try await session.client.createThread(agentIDs: recipients.map(\.id),
                                                                 title: cleanTitle.isEmpty ? nil : cleanTitle)
-                session.sidebar.accept(thread)
+                await session.sidebar.accept(thread)
                 await session.sidebar.refresh()
             }
             select(thread)
@@ -232,7 +232,7 @@ struct NewChatView: View {
             let agent = try await session.client.createAgent(
                 CreateAgentRequest(name: names.randomElement() ?? "Nova", role: "", prompt: "", avatar: options.design)
             )
-            session.sidebar.accept(agent)
+            await session.sidebar.accept(agent)
             await session.sidebar.refresh()
             session.avatars.sync(agents: session.sidebar.agents)
             recipients.append(agent)

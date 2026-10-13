@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import PolymuxKit
 
-@Suite @MainActor
+@Suite
 struct HTMLTests {
     @Test func cardReplaySurvivesRelaunch() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("polymux-html-\(UUID())")
