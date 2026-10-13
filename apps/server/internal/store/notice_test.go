@@ -228,6 +228,11 @@ func noticeOutcome(t *testing.T, status, body string) {
 		if _, _, err := s.CreateApproval(t.Context(), Approval{ID: "gate", RunID: run.ID, AgentID: "a", ThreadID: "a", Tool: "exec", Key: "gate"}); err != nil {
 			t.Fatal(err)
 		}
+		for range 2 {
+			if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if _, err := s.DecideApproval(t.Context(), "gate", ApprovalApproved); err != nil {
 			t.Fatal(err)
 		}
