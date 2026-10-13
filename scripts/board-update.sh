@@ -10,6 +10,8 @@
 #          .mov is never appended; only files publish_proof uploaded (proof-dir/uploaded) are appended.
 #          media-check exit != 0 (missing Pillow/ffmpeg) -> board_error, nothing appended.
 #   merged <unit>                      Status -> "Completed" (caller confirms mergedAt first)
+#   review <unit>                      Status -> "Review" (approved, in the merge queue)
+#   requeued <unit>                    Status -> "In Progress" (post-approval re-verify failed; fix attempt)
 # merged/verify on a card shared by several units wait for all of them (see "Shared cards" below).
 # Ships disabled: live only when $OPS/BOARD_LIVE exists AND $GOAL_LOOP_HOME/RELAY_HOLD exists (old relay
 # held, so never two writers); otherwise logs the exact intended write. Read-before-write: a failed read
@@ -40,6 +42,8 @@ PAGE=$(cat "$OPS/cards/$UNIT" 2>/dev/null); PDIR=""; PBASE=""
 case $EVT in
   start)  PROP=Status; KIND=select; VAL="In Progress";;
   merged) PROP=Status; KIND=select; VAL=Completed;;
+  review) PROP=Status; KIND=select; VAL=Review;;              # merge lane: approved PR queued for the post-approval gate
+  requeued) PROP=Status; KIND=select; VAL="In Progress";;     # merge lane: re-verify failed, fix attempt back on its lane
   pr)     PROP=PR; KIND=url; VAL=${1:-}; [ -n "$VAL" ] || { err "no PR url given"; exit 0; };;
   verify) PROP=Verification; KIND=select; VAL=${1:-}; PDIR=${2:-}; PBASE=${3:-}
           case $VAL in UI-verified|unit-test-verified|build-only|blocked|failed) ;;
