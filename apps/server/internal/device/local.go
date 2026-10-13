@@ -13,12 +13,20 @@ func (s *Store) Local(ctx context.Context, dir string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
 		token := string(data)
-		if _, err := s.Authenticate(ctx, token); err != nil {
-			return "", err
+		if _, authErr := s.Authenticate(ctx, token); authErr == nil {
+			return token, os.Chmod(path, 0600)
+		} else {
+			var revoked bool
+			if err := s.db.QueryRowContext(ctx, `SELECT revoked FROM devices WHERE token_hash=? AND agent='local'`, hash(token)).Scan(&revoked); err != nil {
+				return "", err
+			}
+			if !revoked {
+				return "", authErr
+			}
 		}
-		return token, os.Chmod(path, 0600)
+		// A revoked owner credential must not prevent supervised startup.
 	}
-	if !errors.Is(err, os.ErrNotExist) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 	token := randomID()

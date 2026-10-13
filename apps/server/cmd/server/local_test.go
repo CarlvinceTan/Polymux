@@ -57,8 +57,13 @@ func TestLocalPublication(t *testing.T) {
 			if _, err := pairs.Authenticate(t.Context(), string(data)); err == nil {
 				t.Fatal("published credential must respect revocation")
 			}
-			if _, err := localCredential(t.Context(), pairs, dir); err == nil {
-				t.Fatal("restart must not republish a revoked credential")
+			replacement, err := localCredential(t.Context(), pairs, dir)
+			if err != nil || replacement == token {
+				t.Fatal("restart must publish a fresh credential")
+			}
+			data, err = os.ReadFile(path)
+			if err != nil || string(data) != replacement {
+				t.Fatal("client path must contain the replacement credential")
 			}
 		})
 	}

@@ -32,7 +32,15 @@ func TestLocalCredential(t *testing.T) {
 	if err := s.Revoke(t.Context(), pair.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Local(t.Context(), dir); err == nil {
-		t.Fatal("revoked credential recreated")
+	replacement, err := s.Local(t.Context(), dir)
+	if err != nil || replacement == token {
+		t.Fatal("restart must issue a fresh owner credential")
+	}
+	if _, err := s.Authenticate(t.Context(), token); err == nil {
+		t.Fatal("revoked credential accepted")
+	}
+	owner, err := s.Authenticate(t.Context(), replacement)
+	if err != nil || len(owner.Capabilities) != 0 {
+		t.Fatal("replacement must authenticate without native capabilities")
 	}
 }
