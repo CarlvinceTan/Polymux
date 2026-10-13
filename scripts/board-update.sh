@@ -5,7 +5,9 @@
 #   pr     <unit> <pr-url>             PR (url)
 #   verify <unit> <level> [proof-dir url-base]   Verification (exact option) + proof media: files in
 #          proof-dir that pass media-check.py, deduped by sha256 (ledger $OPS/board/<unit>.media and
-#          a "proof sha256:" caption on the card), appended as image/video blocks at url-base/<file>
+#          a "proof sha256:" caption on the card), appended as image/video blocks at url-base/<file>.
+#          Only files listed (one name per line) in proof-dir/approved are appended; no list = no media;
+#          .mov is never appended.
 #   merged <unit>                      Status -> "Completed" (caller confirms mergedAt first)
 # Ships disabled: live only when $OPS/BOARD_LIVE exists AND $GOAL_LOOP_HOME/RELAY_HOLD exists (old relay
 # held, so never two writers); otherwise logs the exact intended write. Read-before-write: a failed read
@@ -72,6 +74,8 @@ else api PATCH "pages/$PAGE" --data "$BODY" >/dev/null && log "wrote $PROP: '$CU
 LED="$OPS/board/$UNIT.media"; touch "$LED"; CAND=()
 while IFS=$'\t' read -r st x f; do [ -n "$f" ] || continue
   if [ "$st" != PASS ]; then log "held media (pre-publish check failed: $x): $f"; continue; fi
+  case $f in *.[mM][oO][vV]) log "held media (.mov is not uploaded by publish_proof): $f"; continue;; esac
+  grep -qxF "$f" "$PDIR/approved" 2>/dev/null || { log "held media (not in $PDIR/approved): $f"; continue; }
   grep -qx "$x" "$LED" && { log "skip media: sha256 $x already published ($f)"; continue; }
   CAND+=("$x $f"); done < <(python3 "$SD/media-check.py" "$PDIR" 2>&1)
 [ ${#CAND[@]} -gt 0 ] || exit 0
