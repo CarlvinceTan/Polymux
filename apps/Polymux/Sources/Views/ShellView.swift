@@ -780,6 +780,7 @@ private final class HeaderProbe: UIView {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.pending = false
+            if let bar = self.navigationBar() { self.clearBarFill(bar) }
             guard let reading = self.reading() else { return }
             let alpha = Self.alphaText(reading.alphas)
             let spanChanged = abs(reading.span - self.lastSpan) > 0.5
@@ -787,6 +788,23 @@ private final class HeaderProbe: UIView {
             self.lastSpan = reading.span
             self.lastAlpha = alpha
             self.onUpdate(reading.span, alpha)
+        }
+    }
+
+    /// SwiftUI `.toolbarBackgroundVisibility(.hidden)` still leaves liquid-glass Background/Platter
+    /// views at alpha 1. Force a transparent UIKit appearance and hide those fills so the list
+    /// colour (and HeaderFade) show through; the probe then reports alpha 0.
+    private func clearBarFill(_ bar: UINavigationBar) {
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithTransparentBackground()
+        bar.standardAppearance = appearance
+        bar.scrollEdgeAppearance = appearance
+        bar.compactAppearance = appearance
+        bar.compactScrollEdgeAppearance = appearance
+        bar.isTranslucent = true
+        for view in backgroundViews(of: bar) {
+            view.isHidden = true
+            view.alpha = 0
         }
     }
 
