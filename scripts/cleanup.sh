@@ -29,18 +29,7 @@ last_activity() {  # newest of: last commit, index write, newest tracked-or-untr
     while IFS= read -r -d '' x; do _mtime "$x"; done | sort -n | tail -1)
   printf '%s\n' "$c" "$i" "${f:-0}" | sort -n | tail -1; }
 wt_exists() { [ -d "$HOME/code/wt/$1" ] && return 0; for d in "$CW"/*/"$1"; do [ -d "$d" ] && return 0; done; return 1; }
-fresh() { [ -e "$1" ] && [ $(( $(date +%s) - $(_mtime "$1") )) -lt $(( ${VERIFY_FRESH_MIN:-120} * 60 )) ]; }
-verify_active() {  # $1 worktree path or "" ; $2 sim name
-  local p; if [ -n "$1" ]; then p=$(cat "$1/.build/verify.lock/pid" 2>/dev/null)
-    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 0; fresh "$1/.build/verify-active" && return 0; fi
-  fresh "$LOCKS/active/$2"; }
-in_use() {  # $1 worktree path
-  verify_active "$1" "polymux-$(basename "$1")" && return 0
-  grep -qsF "$1" "$LOCKS"/slot*/wt && return 0
-  for u in "$OPS"/units/*.lock; do [ -d "$u" ] && kill -0 "$(cat "$u/pid" 2>/dev/null)" 2>/dev/null && \
-    [[ "$1" == *"$(basename "$u" .lock)"* ]] && return 0; done
-  pgrep -f "$1" >/dev/null
-}
+# fresh / verify_active / in_use live in lanelib.sh (shared with run-lane.sh free_branch).
 git -C "$REPO" fetch -q origin --prune
 wts() { git -C "$REPO" worktree list --porcelain | sed -n 's/^worktree //p'; }   # one path per line; paths may contain spaces
 wts | while IFS= read -r W; do

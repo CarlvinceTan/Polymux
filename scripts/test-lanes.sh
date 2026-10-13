@@ -399,6 +399,43 @@ check "warm failures capped at 2 attempts, counted under LANES_HOME" '[ "$(grep 
 rm -f "$T/warmfail" "$LANES_HOME/.sim-warm-fail-TPL1"; : > "$T/warm.log"; WSR; WSR
 check "successful warm runs once, then the marker skips it" '[ "$(grep -c "simctl bootstatus" "$T/warm.log")" = 1 ] && [ -f "$LANES_HOME/.sim-warm-TPL1" ] && [ ! -e "$LANES_HOME/.sim-warm-fail-TPL1" ]'
 git worktree remove --force "$T/wsA"
+# 28 stale worktree holding the branch (free_branch before git worktree add)
+mkbr() { git branch -q "$1" main; git checkout -q "$1"; echo "$1" > "br-$(echo "$1" | tr / -).txt"; git add -A; git commit -qm "$1"; git push -q origin "$1"; git checkout -q main; }
+mkbr test/stale1; git worktree add -q "$T/stalewt1" test/stale1
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale clean' s1)" --branch test/stale1 2>&1); RC=$?
+check "clean stale worktree holding the branch is removed, run proceeds" '[ $RC = 0 ] && [ ! -d "$T/stalewt1" ] && grep -q "removed stale worktree $T/stalewt1" "$LANES_HOME"/logs/*stale-clean-laneA.log'
+mkbr test/stale2; git worktree add -q "$T/stalewt2" test/stale2; echo wip > "$T/stalewt2/wip.txt"
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale dirty' s2)" --branch test/stale2 2>&1); RC=$?
+check "dirty stale worktree is detached with its changes kept, run proceeds" '[ $RC = 0 ] && [ -f "$T/stalewt2/wip.txt" ] && [ -z "$(git -C "$T/stalewt2" branch --show-current)" ]'
+git worktree remove --force "$T/stalewt2"
+mkbr test/stale3; git worktree add -q "$T/stalewt3" test/stale3; (cd "$T/stalewt3" && exec sleep 60) & SP=$!; for k in $(seq 1 100); do lsof -d cwd -Fn 2>/dev/null | grep -q "^n$T/stalewt3$" && break; sleep 0.1; done   # wait until the live cwd is visible (load)
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale live' s3)" --branch test/stale3 2>&1); RC=$?
+kill $SP 2>/dev/null; wait $SP 2>/dev/null
+check "worktree in use by a live process is left alone (no remove, no detach)" '[ $RC != 0 ] && [ -d "$T/stalewt3" ] && [ "$(git -C "$T/stalewt3" branch --show-current)" = test/stale3 ] && grep -q "live process; leaving it" "$LANES_HOME"/logs/*stale-live-laneA.log'
+git worktree remove --force "$T/stalewt3"; rm -f "$LANES_HOME/queue/"*.task
+# 28b free_branch fails closed: failing/missing lsof, live verify lock, held unit lock
+FL="$T/failsof"; mkdir -p "$FL"; printf '#!/bin/sh\nexit 1\n' > "$FL/lsof"; chmod +x "$FL/lsof"
+mkbr test/stale5; git worktree add -q "$T/stalewt5" test/stale5
+OUT=$(PATH="$FL:$PATH" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale nolsof' s5)" --branch test/stale5 2>&1); RC=$?
+check "lsof failing with no output: worktree left alone (fail closed)" '[ $RC != 0 ] && [ -d "$T/stalewt5" ] && [ "$(git -C "$T/stalewt5" branch --show-current)" = test/stale5 ] && grep -q "fail closed" "$LANES_HOME"/logs/*stale-nolsof-laneA.log'
+NL=$(PATH=/nonexistent; . scripts/lanelib.sh; cwd_in_use "$T/stalewt5"; echo $?)
+check "lsof missing: cwd_in_use reports unknown (2)" '[ "$NL" = 2 ]'
+git worktree remove --force "$T/stalewt5"; rm -f "$LANES_HOME/queue/"*.task
+mkbr test/stale6; git worktree add -q "$T/stalewt6" test/stale6; sleep 60 & VP=$!; mkdir -p "$T/stalewt6/.build/verify.lock"; echo $VP > "$T/stalewt6/.build/verify.lock/pid"
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale verify' s6)" --branch test/stale6 2>&1); RC=$?
+kill $VP; wait $VP 2>/dev/null
+check "live .build/verify.lock (no process cwd in the tree): worktree left alone" '[ $RC != 0 ] && [ -d "$T/stalewt6" ] && [ "$(git -C "$T/stalewt6" branch --show-current)" = test/stale6 ] && grep -q "which is in use" "$LANES_HOME"/logs/*stale-verify-laneA.log'
+git worktree remove --force "$T/stalewt6"; rm -f "$LANES_HOME/queue/"*.task
+mkbr test/stale7; git worktree add -q "$T/laneZ-held-unit7" test/stale7; sleep 60 & UP=$!; mkdir -p "$LANES_HOME/units/held-unit7.lock"; echo $UP > "$LANES_HOME/units/held-unit7.lock/pid"
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Stale unit' s7)" --branch test/stale7 2>&1); RC=$?
+kill $UP; wait $UP 2>/dev/null; rm -rf "$LANES_HOME/units/held-unit7.lock"
+check "held unit lock for the worktree: worktree left alone" '[ $RC != 0 ] && [ -d "$T/laneZ-held-unit7" ] && [ "$(git -C "$T/laneZ-held-unit7" branch --show-current)" = test/stale7 ]'
+git worktree remove --force "$T/laneZ-held-unit7"; rm -f "$LANES_HOME/queue/"*.task
+mkbr test/div; git checkout -q test/div; echo local > div.txt; git add -A; git commit -qm local-only; LOC=$(git rev-parse HEAD); git checkout -q main
+git worktree add -q --detach "$T/divpush" origin/test/div; (cd "$T/divpush" && echo remote > div2.txt && git add -A && git commit -qm remote-only && git push -q origin HEAD:test/div); git worktree remove --force "$T/divpush"; git fetch -q origin
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Div branch' s4)" --branch test/div 2>&1); RC=$?
+check "diverged local branch kept as cody-stale/<branch>-<sha>, run continues from origin" '[ $RC = 0 ] && [ "$(git rev-parse "cody-stale/test/div-${LOC:0:7}")" = "$LOC" ] && git merge-base --is-ancestor origin/test/div test/div'
+rm -f "$LANES_HOME/queue/"*.task
 # 16 board-update.sh (Notion board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"
