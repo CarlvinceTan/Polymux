@@ -25,7 +25,7 @@ echo base > README; git add -A; git commit -qm base; git remote add origin "$T/o
 export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" LANE_SKIP_SETUP=1 LANE_TARGET=testmac
 export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
-export LANE_BREAKER_N=99   # global breaker off except in its own test (19e); many cases fail fast on purpose
+export LANE_CHAIN_DEBOUNCE_S=0 LANE_BREAKER_N=99   # global breaker off except in its own test (19e); many cases fail fast on purpose
 task() { printf '# %s\nneeds: none\nexpected_min: 5\n' "$1" > "$T/$2.task"; echo "$T/$2.task"; }
 STUB_OK='echo $RANDOM >> f.txt && git add f.txt && git commit -qm "stub change" -m "Lane: $LANE/$AGENT"'
 RL="bash scripts/run-lane.sh"
@@ -196,11 +196,33 @@ check "freed lane passed as --free-lane when lane-guard supports it" 'grep -q "^
 export GLOG="$T/g18d"
 OUT=$(LANE_NO_CHAIN=1 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain off' t17)" 2>&1)
 check "LANE_NO_CHAIN disables dispatch" '[ "$(ndisp "$GLOG")" = 0 ]'
-# 19 no chain on SIGTERM; a failing task never blocks refilling the lane, but its own queued retries are held
+# 19 SIGTERM still refills the lane; a failing task never blocks refilling the lane, but its own queued retries are held
 export GLOG="$T/g19"
 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD='sleep 5' $RL laneA "$(task 'Chain term' t19)" >/dev/null 2>&1 & P=$!
 for k in $(seq 1 50); do [ -d "$LANES_HOME/units/chain-term.lock" ] && break; sleep 0.1; done; kill -TERM $P; wait $P
-check "SIGTERM: no dispatch" 'grep -q "chain-term rc=143: not chaining" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
+waitfor "$GLOG" dispatch
+check "SIGTERM (kill): lane refilled, not counted as a task failure" 'grep -q "chain-term rc=143: killed (signal); refilling" "$CL" && [ "$(ndisp "$GLOG")" = 1 ] && [ ! -e "$LANES_HOME/chain-fails/chain-term" ]'
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
+# 19g refusals refill the lane too; --check has no side effects; storm guard; debounce
+export GLOG="$T/g19g"; rm -f "$LANES_HOME/refusals.tsv"; EV0=$(wc -l < "$LANES_HOME/events.tsv"); IN0=$(cat "$DISPATCH_INTAKE" 2>/dev/null | wc -l)
+$RL --check laneA "$(task 'Check ok' t19g)" >/dev/null 2>&1; C0=$?
+$RL --check laneA "$T/t3.task" >/dev/null 2>&1; C2=$?
+mkdir -p "$LANES_HOME/units/check-busy.lock"; echo $$ > "$LANES_HOME/units/check-busy.lock/pid"; $RL --check laneA "$(task 'Check busy' t19h)" >/dev/null 2>&1; C3=$?
+printf '# Check swift\nneeds: xcode\n' > "$T/t19i.task"; LANE_TARGET=linuxbox $RL --check laneA "$T/t19i.task" >/dev/null 2>&1; C4=$?
+check "--check: runnable 0, twice-failed 2, unit lock held 3, dispatch-guard 4" '[ $C0 = 0 ] && [ $C2 = 2 ] && [ $C3 = 3 ] && [ $C4 = 4 ]'
+check "--check: no events row, no intake row, no refusal ledger, no dispatch" '[ "$(wc -l < "$LANES_HOME/events.tsv")" = "$EV0" ] && [ "$(cat "$DISPATCH_INTAKE" 2>/dev/null | wc -l)" = "$IN0" ] && [ ! -f "$LANES_HOME/refusals.tsv" ] && [ "$(ndisp "$GLOG")" = 0 ]'
+LANE_GUARD="$FGF" $RL laneA "$T/t3.task" >/dev/null 2>&1; RC=$?; waitfor "$GLOG" dispatch
+check "refused unit (stop rule, exit 2): lane refilled with --free-lane, logged" '[ $RC = 2 ] && grep -q "^--dispatch --free-lane laneA" "$GLOG" && grep -q "rc=2: refused; refilling lane laneA" "$CL"'
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
+LANE_GUARD="$FGF" $RL laneA "$(task 'Check busy' t19h)" >/dev/null 2>&1; RC=$?; sleep 0.5; for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
+LANE_GUARD="$FGF" $RL laneA "$T/t3.task" >/dev/null 2>&1; sleep 0.5
+check "storm: 3rd refusal in a row within 60 s -> no refill, STORM logged + NEEDS_CODY" '[ $RC = 3 ] && [ "$(ndisp "$GLOG")" = 2 ] && grep -q "STORM: 3 refusals in a row within 60s" "$CL" && grep -q "dispatch storm: 3 units refused" "$LANES_HOME/NEEDS_CODY"'
+LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Storm breaker' t19j)" >/dev/null 2>&1
+check "a unit that takes its lock clears the refusal streak" '[ ! -f "$LANES_HOME/refusals.tsv" ]'
+rm -rf "$LANES_HOME/units/check-busy.lock"; export GLOG="$T/g19k"
+LANE_CHAIN_DEBOUNCE_S=2 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Debounced' t19k)" >/dev/null 2>&1; sleep 1; N1=$(ndisp "$GLOG"); waitfor "$GLOG" dispatch
+check "refill is debounced (LANE_CHAIN_DEBOUNCE_S): not yet at 1 s, done by ~5 s, once" '[ "$N1" = 0 ] && [ "$(ndisp "$GLOG")" = 1 ]'
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
 mkdir -p "$LANES_HOME/queue"; printf '# Chain short fail (attempt 2)\nneeds: none\n' > "$LANES_HOME/queue/r1.task"; printf '# Other card\nneeds: none\n' > "$LANES_HOME/queue/r2.task"
 OUT=$(LANE_GUARD="$FGF" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain short fail' t19b)" 2>&1); waitfor "$GLOG" "free-lane laneA"
 check "short failure: lane still refilled, same task's retry held, other card kept" 'grep -q "^--dispatch --free-lane laneA" "$GLOG" && [ -f "$LANES_HOME/queue-hold/r1.task" ] && [ -f "$LANES_HOME/queue/r2.task" ]'
