@@ -18,7 +18,7 @@
 # Kill switch: live only while $OPS/BOARD_LIVE exists (rm it = dry run, the exact write is logged).
 # Reads: only what finds the item (issue/PR node id when not in the map). addProjectV2ItemById is
 # idempotent and returns the item's current Status, so "start never moves backwards" costs no extra read.
-# Guard: no value containing a Notion URL or page id is ever sent (no_notion_ref, lanelib.sh).
+# Guard: no value containing a Notion URL or page id is ever sent (notion_ref, lanelib.sh, shared with gh_write).
 # Always exits 0; errors become board_error events (events.tsv + stdout for the lane log). Auth: gh's own.
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd); . "$SD/lanelib.sh"
@@ -42,7 +42,7 @@ map_issue() { [ -n "$1" ] && awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$BOAR
 # issue_of UNIT: issue number from cards/<unit> (a number; a legacy id there is translated through the map)
 issue_of() { local v; v=$(cat "$OPS/cards/$1" 2>/dev/null); case $v in ""|*[!0-9]*) map_issue "$(legacy_id "$v")";; *) echo "$v";; esac; }
 if [ "$EVT" = card ]; then
-  N=$(sed -n 's/^issue: *#\{0,1\}\([0-9][0-9]*\).*/\1/p' "${1:-/dev/null}" 2>/dev/null | head -1)
+  N=$(sed -n 's/^[Ii]ssue: *#\{0,1\}\([0-9][0-9]*\).*/\1/p' "${1:-/dev/null}" 2>/dev/null | head -1)
   [ -n "$N" ] || N=$(map_issue "$(legacy_id "$(sed -n 's/^card: *//p' "${1:-/dev/null}" 2>/dev/null | head -1)")")
   if [ -n "$N" ]; then echo "$N" > "$OPS/cards/$UNIT"; log "issue #$N"; else rm -f "$OPS/cards/$UNIT"; log "skip: no issue: header (or mapped card:) in brief"; fi
   exit 0; fi
@@ -72,7 +72,7 @@ case $EVT in
   *) err "unknown event"; exit 0;;
 esac
 [ -n "$ISSUE" ] || [ -n "$PRNODE" ] || [ -n "$PRURL" ] || { log "skip: no issue for unit (brief had no issue: header or mapped card:)"; exit 0; }
-if [ -n "$PRURL" ] && ! no_notion_ref "$PRURL"; then err "refusing: PR value carries a Notion reference"; exit 0; fi
+if [ -n "$PRURL" ] && notion_ref <<< "$PRURL"; then err "refusing: PR value carries a Notion reference"; exit 0; fi
 rank() { case $1 in UI-verified) echo 3;; unit-test-verified) echo 2;; build-only) echo 1;; *) echo 0;; esac; }
 if [ -n "$ISSUE" ] && { [ "$EVT" = merged ] || [ "$EVT" = verify ]; }; then
   CL="$OPS/board/card-$ISSUE.lock"; CLED="$OPS/board/card-$ISSUE.tsv"; n=0
@@ -97,7 +97,7 @@ add_item() { gql -f query='mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{p
   -f p="$PROJ" -f c="$1" --jq '.data.addProjectV2ItemById.item | "\(.id)\t\(.fieldValueByName.name // "")"'; }
 set_select() { gql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}' \
   -f p="$PROJ" -f i="$1" -f f="$2" -f o="$3" >/dev/null; }
-set_text() { no_notion_ref "$3" || return 1
+set_text() { notion_ref <<< "$3" && return 1
   gql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$t:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{text:$t}}){projectV2Item{id}}}' \
   -f p="$PROJ" -f i="$1" -f f="$2" -f t="$3" >/dev/null; }
 issue_node() { local n; n=$(awk -F'\t' -v k="$1" '$2==k && $3!=""{print $3; exit}' "$BOARD_MAP" 2>/dev/null)

@@ -304,6 +304,35 @@ check "warm failures capped at 2 attempts, counted under LANES_HOME" '[ "$(grep 
 rm -f "$T/warmfail" "$LANES_HOME/.sim-warm-fail-TPL1"; : > "$T/warm.log"; WSR; WSR
 check "successful warm runs once, then the marker skips it" '[ "$(grep -c "simctl bootstatus" "$T/warm.log")" = 1 ] && [ -f "$LANES_HOME/.sim-warm-TPL1" ] && [ ! -e "$LANES_HOME/.sim-warm-fail-TPL1" ]'
 git worktree remove --force "$T/wsA"
+# 28 GitHub labels (brief_labels) and Notion-free GitHub writes (gh_write)
+. scripts/lanelib.sh
+bl() { printf "$1" > "$T/bl.task"; brief_labels "$T/bl.task" "${2:-bl.task}"; }
+check "labels: type:/area: headers win over inference" '[ "$(bl "# FIX thing\nneeds: xcode\ntype: infra\narea: chat, area:routines\n")" = "type:infra,area:chat,area:routines" ]'
+check "labels: needs xcode -> area:ui, FIX title -> type:bug" '[ "$(bl "# FIX chat switch\nneeds: xcode\n")" = "type:bug,area:ui" ]'
+check "labels: server/go path -> area:server, bug title -> type:bug" '[ "$(bl "# Pairing bug\nneeds: go\nscope: apps/server/**\n")" = "type:bug,area:server" ]'
+check "labels: scripts/ path -> area:lanes, otherwise type:feature" '[ "$(bl "# Queue tweak\nneeds: none\nscope: scripts/*\n")" = "type:feature,area:lanes" ]'
+check "labels: dogfood for 00NN-- names and dogfood briefs, flake for deflake tasks" '[ "$(bl "# Thing\nneeds: xcode\n" 0012--thing.task)" = "type:feature,area:ui,dogfood" ] && [ "$(bl "# Deflake pairing test\nneeds: go\nscope: apps/server/p.go\nFound while dogfooding.\n")" = "type:feature,area:server,dogfood,flake" ] && [ "$(bl "# Plain\nneeds: xcode\n" 0012-x.task)" = "type:feature,area:ui" ]'
+Z40=$(printf "%040d" 0); NID=3f60dbb6e05381518ce5c571f278c93d
+printf 'Summary ok\nMigrated from Notion card: https://www.notion.so/%s\nboard https://app.notion.com/p/x\npage 3f60dbb6-e053-8151-8ce5-c571f278c93d\nhead %s\n' "$NID" "$Z40" > "$T/nb.md"
+SC=$(notion_scrub < "$T/nb.md")
+check "notion_scrub drops Notion links/notes, blanks page ids, keeps SHAs" 'grep -q "Summary ok" <<< "$SC" && grep -q "page \[id removed\]" <<< "$SC" && grep -q "head $Z40" <<< "$SC" && ! notion_ref <<< "$SC" && notion_ref < "$T/nb.md"'
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "%s/ghargs"; for a; do [ -f "$a" ] && cat "$a" >> "%s/ghargs"; done; exit 0\n' "$T" "$T" > "$T/ghrec"; chmod +x "$T/ghrec"
+rm -f "$T/ghargs"; GH_CMD="$T/ghrec" gh_write pr comment 7 --body "$(cat "$T/nb.md")"; RC=$?
+check "gh_write scrubs --body before gh runs" '[ $RC = 0 ] && grep -q "Summary ok" "$T/ghargs" && ! notion_ref < "$T/ghargs"'
+rm -f "$T/ghargs"; GH_CMD="$T/ghrec" gh_write issue create --title "t" --body-file "$T/nb.md"; RC=$?
+check "gh_write scrubs --body-file" '[ $RC = 0 ] && grep -q "Summary ok" "$T/ghargs" && ! notion_ref < "$T/ghargs"'
+rm -f "$T/ghargs"; OUT=$(GH_CMD="$T/ghrec" gh_write pr edit 7 --add-label "https://notion.so/$NID" 2>&1); RC=$?
+check "gh_write refuses (rc 6) when text it can't scrub references Notion; gh never runs" '[ $RC = 6 ] && grep -q refused <<< "$OUT" && [ ! -f "$T/ghargs" ]'
+G4="$T/ghbin4"; mkdir -p "$G4"
+printf '#!/bin/bash\ncase "$1 $2" in\n"pr create") printf "%%s\\n" "$@" > "%s/prargs"; echo https://github.com/o/r/pull/103;;\nesac\nexit 0\n' "$T" > "$G4/gh"; chmod +x "$G4/gh"
+printf '# Chat lane labels\nneeds: none\nexpected_min: 5\ntype: test\narea: chat\ncard: https://www.notion.so/%s\nNotes from https://app.notion.com/p/%s\n' "$NID" "$NID" > "$T/lb.task"
+OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/lb.task" --branch test/labels 2>&1); RC=$?
+check "run-lane PR: labels from type:/area: headers, no Notion text in title or body" '[ $RC = 0 ] && grep -qx "type:test,area:chat" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
+grep -v pull/103 "$LANES_HOME/results.tsv" > "$T/r.tsv"; cat "$T/r.tsv" > "$LANES_HOME/results.tsv"; rm -f "$LANES_HOME"/cards/chat-lane-labels*   # keep later cleanup cases exact
+git worktree remove --force "$LANES_WT/laneA-chat-lane-labels" 2>/dev/null
+printf '# Good\nneeds: none\nexpected_min: 5\ntype: bug\narea: ui, area:server\n' > "$T/qh1.task"; printf '# Bad\nneeds: none\nexpected_min: 5\ntype: chore\narea: web\n' > "$T/qh2.task"
+OK1=$(bash scripts/queue-write.sh --check "$T/qh1.task" 2>&1; echo rc=$?); OUT=$(bash scripts/queue-write.sh --check "$T/qh2.task" 2>&1); RC=$?
+check "queue-write --check accepts valid type:/area: headers and rejects unknown values" 'grep -q "^rc=0$" <<< "$OK1" && [ $RC = 2 ] && grep -q "type: \"chore\" is not one of" <<< "$OUT" && grep -q "area: \"web\" is not one of" <<< "$OUT"'
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"

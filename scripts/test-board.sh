@@ -23,12 +23,12 @@ NW() { grep -c "updateProjectV2ItemFieldValue${1:+.*$1}" "$T/ghb.log"; }   # fie
 NA() { grep -c "addProjectV2ItemById${1:+.*$1}" "$T/ghb.log"; }
 LID=0123456789abcdef0123456789abcdef
 printf '%s\t42\tI_node42\n' "$LID" > "$BOARD_MAP"
-printf 'needs: none\nissue: 7\nFake unit\n' > "$T/i.task"
+printf 'needs: none\nIssue: 7\nFake unit\n' > "$T/i.task"
 printf 'needs: none\ncard: https://example.invalid/p/Fake-%s\nMapped unit\n' "$LID" > "$T/c.task"
 printf 'needs: none\ncard: ffffffffffffffffffffffffffffffff\nUnmapped unit\n' > "$T/u.task"
 printf 'needs: none\nNo issue unit\n' > "$T/nc.task"
 PATH=$BP $BU card hdr-unit "$T/i.task"; PATH=$BP $BU card fake-unit "$T/c.task"; PATH=$BP $BU card unmapped "$T/u.task"; PATH=$BP $BU card nocard "$T/nc.task"
-check "board: issue: header -> issue 7; legacy card id -> issue 42 via local map; unmapped/none -> no mapping" \
+check "board: Issue: header -> issue 7; legacy card id -> issue 42 via local map; unmapped/none -> no mapping" \
   '[ "$(cat "$C/hdr-unit")" = 7 ] && [ "$(cat "$C/fake-unit")" = 42 ] && [ ! -f "$C/unmapped" ] && [ ! -f "$C/nocard" ] && [ "$(PATH=$BP $BU issue fake-unit)" = 42 ]'
 echo 3f70dbb6-e053-81b9-b0e0-f9992df9fa74 > "$C/legacy-unit"; printf '3f70dbb6e05381b9b0e0f9992df9fa74\t99\tI_node99\n' >> "$BOARD_MAP"
 check "board: a legacy id already in cards/<unit> is translated through the map" '[ "$(PATH=$BP $BU issue legacy-unit)" = 99 ]'
@@ -70,11 +70,11 @@ check "board: rm BOARD_LIVE is the kill switch (no gh call at all)" '[ ! -s "$T/
 touch "$LANES_HOME/BOARD_LIVE"
 # Notion-reference guard (lanelib.sh): nothing written to GitHub may name Notion or carry a page id
 . scripts/lanelib.sh
-G=0; for s in "see https://www.notion.so/x" "notion.site/p" "https://APP.NOTION.COM/p/abc" "id $LID here" "3f70dbb6-e053-81b9-b0e0-f9992df9fa74"; do no_notion_ref "$s" && G=1; done
-for s in "head 6a38594dce7c26dcd49c02517a2ca6bc424815a2" "Closes #42" "https://github.com/o/r/pull/9" "UDID 0A1B2C3D-0A1B-0A1B-0A1B-0A1B2C3D4E5F"; do no_notion_ref "$s" || G=1; done
-check "guard: no_notion_ref rejects Notion URLs/page ids, allows git shas and plain text" '[ $G = 0 ]'
-SN=$(printf 'card [x](https://app.notion.com/p/Fake-%s) and %s; sha 6a38594dce7c26dcd49c02517a2ca6bc424815a2\n' "$LID" 3f70dbb6-e053-81b9-b0e0-f9992df9fa74 | strip_notion_refs)
-check "guard: strip_notion_refs removes refs, keeps shas" 'no_notion_ref "$SN" && echo "$SN" | grep -q "6a38594dce7c26dcd49c02517a2ca6bc424815a2" && echo "$SN" | grep -q "\[ref removed\]"'
+G=0; for s in "see https://www.notion.so/x" "notion.site/p" "https://app.notion.com/p/abc" "id $LID here" "3f70dbb6-e053-81b9-b0e0-f9992df9fa74"; do notion_ref <<< "$s" || G=1; done
+for s in "head 6a38594dce7c26dcd49c02517a2ca6bc424815a2" "Closes #42" "https://github.com/o/r/pull/9"; do notion_ref <<< "$s" && G=1; done
+check "guard (shared notion_ref): rejects Notion URLs/page ids, allows git shas and plain text" '[ $G = 0 ]'
+SN=$(printf 'card [x](https://app.notion.com/p/Fake-%s)\nid %s; sha 6a38594dce7c26dcd49c02517a2ca6bc424815a2\n' "$LID" 3f70dbb6-e053-81b9-b0e0-f9992df9fa74 | notion_scrub)
+check "guard: notion_scrub removes refs, keeps shas" '! notion_ref <<< "$SN" && echo "$SN" | grep -q "6a38594dce7c26dcd49c02517a2ca6bc424815a2" && echo "$SN" | grep -q "\[id removed\]"'
 : > "$T/ghb.log"; PATH=$BP $BU pr fake-unit "https://www.notion.so/p/$LID" >/dev/null
 check "guard: board refuses a value carrying a Notion reference" '[ ! -s "$T/ghb.log" ] && grep -q "refusing: PR value carries a Notion reference" "$BLOG"'
 # media-check: video length, sampled frames, .mov, loud failure when Pillow/ffmpeg are missing
@@ -93,11 +93,11 @@ printf 'needs: none\nexpected_min: 5\nissue: 31\nBoard works\n' > "$T/bw.task"
 PATH=$BP LANE_DRY=1 LANE_STUB_CMD="sleep 2; grep -q \"board-works start\" \"$BLOG\" && echo early > \"$T/bw.seen\"; $STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
 check "run-lane: start not written before the agent works, written after its first commit" '[ ! -f "$T/bw.seen" ] && grep -q "board-works start: DRY-RUN .*-> .In progress." "$BLOG"'
 VCN='mkdir -p .build/proof && printf "verified: see https://app.notion.com/p/'"$LID"'\n" > .build/proof/summary.md && echo unit-test-verified > .build/proof/level'
-printf '# Closes issue\nneeds: none\nexpected_min: 5\nissue: 42\n' > "$T/ci.task"; : > "$T/ghb.log"
+printf '# Closes issue\nneeds: none\nexpected_min: 5\nIssue: 42\nLabels: type:infra,area:lanes\n' > "$T/ci.task"; : > "$T/ghb.log"
 OUT=$(PATH=$BP LANE_NO_CHAIN=1 LANE_RETRY_SLEEP=0 LANE_VERIFY_CMD="$VCN" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/ci.task" --branch test/closes 2>&1); RC=$?
 PRB=$(sed -n '/^pr create/,$p' "$T/ghb.log" | head -1)
-check "run-lane: PR body has Closes #42, ends with Release Notes, no Notion ref reaches gh" '[ $RC = 0 ] && echo "$PRB" | grep -q "Closes #42" && echo "$PRB" | grep -q "Release Notes:  - N/A" && no_notion_ref "$(cat "$T/ghb.log")"'
-check "run-lane: issue: header is not part of the brief/title" '! echo "$PRB" | grep -q "issue: 42" && grep -q -- "--title # Closes issue" "$T/ghb.log"'
+check "run-lane: PR body has Closes #42, ends with Release Notes, no Notion ref reaches gh" '[ $RC = 0 ] && echo "$PRB" | grep -q "Closes #42" && echo "$PRB" | grep -q "Release Notes:  - N/A" && echo "$PRB" | grep -q -- "--label type:infra,area:lanes" && ! notion_ref < "$T/ghb.log"'
+check "run-lane: issue: header is not part of the brief/title" '! echo "$PRB" | grep -qi "issue: 42" && ! echo "$PRB" | grep -q "Labels:" && grep -q -- "--title # Closes issue" "$T/ghb.log"'
 # approve-proof.sh + cleanup.sh route through the same board writer
 AW="$HOME/code/wt/laneA-approve-me"; AP="$AW/.build/proof"; mkdir -p "$AP"; cp "$V/ok.mp4" "$AP/"; echo ok.mp4 > "$AP/uploaded"
 echo UI-verified > "$AP/level"; echo laneA-approve-me > "$C/approve-me.wt"; echo 43 > "$C/approve-me"
@@ -128,5 +128,5 @@ rm -f "$LANES_HOME/BOARD_LIVE"; printf 'needs: none\nexpected_min: 5\nissue: 63\
 PATH=$BP LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/pk.task" >/dev/null 2>&1
 check "unit name keeps its number prefix (no leading -)" '[ -f "$C/sa9-prefix-kept" ] && ! ls "$C" | grep -q "^-" && grep -q "	[0-9]*-sa9-prefix-kept	queued" "$LANES_HOME/events.tsv" && [ -d "$LANES_WT/laneA-sa9-prefix-kept" ]'
 check "board: no Notion token read, no Notion API call (vault/curl tripwires untouched)" '[ ! -f "$T/tripwire.log" ] && ! grep -qiE "api\.notion|Notion - Polymux|Notion-Version|NOTION_API" scripts/board-update.sh scripts/run-lane.sh scripts/cleanup.sh scripts/approve-proof.sh scripts/lanelib.sh'
-check "board: no gh write ever carried a Notion reference" 'no_notion_ref "$(cat "$T/ghb.log")"'
+check "board: no gh write ever carried a Notion reference" '! notion_ref < "$T/ghb.log"'
 rm -f "$LANES_HOME/BOARD_LIVE"

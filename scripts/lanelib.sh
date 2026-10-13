@@ -45,11 +45,48 @@ repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|ht
 # Carl's lane-guard hook; missing = skip, never fatal unless the caller checks rc.
 LANE_GUARD=${LANE_GUARD:-$HOME/.local/bin/lane-guard}
 guard() { [ -x "$LANE_GUARD" ] || return 0; "$LANE_GUARD" "$@"; }
-# no_notion_ref TEXT: rc 1 if TEXT names Notion (notion.so, notion.site, app.notion.com) or carries a Notion
-# page id (32 hex, or dashed 8-4-4-4-12, lowercase, not part of a longer hex run such as a git sha).
-# Everything the lanes write to GitHub (PR bodies, comments, board values) passes this first.
-NOTION_REF_RE='notion\.so|notion\.site|app\.notion\.com|(^|[^0-9a-f])([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})([^0-9a-f]|$)'
-no_notion_ref() { ! printf '%s' "$1" | LC_ALL=C grep -qiE 'notion\.(so|site)|app\.notion\.com' && ! printf '%s' "$1" | LC_ALL=C grep -qE "$NOTION_REF_RE"; }
-# strip_notion_refs: stdin -> stdout with every such reference replaced by "[ref removed]" (perl: BSD sed has no /I)
-strip_notion_refs() { LC_ALL=C perl -pe 's#[^\s(<>"]*(?:notion\.so|notion\.site|app\.notion\.com)[^\s)<>"]*#[ref removed]#gi;
-  s/(?<![0-9a-f])(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f])/[ref removed]/g'; }
+# --- GitHub labels and Notion-free GitHub writes ---------------------------------------------------
+# Shared label set: exactly one type:*, at least one area:*, plus dogfood / flake. Priority is a
+# Project field, never a label.
+LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines server ui lanes"
+# brief_labels FILE [NAME] -> comma-separated labels for a gh issue/PR made from this brief.
+# type:/area: headers win ("area: ui, server"; the "type:"/"area:" value prefix is optional). Else
+# inferred: title with FIX or "bug" -> bug, else feature; needs: xcode -> ui; a server/ or .go path
+# -> server; a scripts/ or lanes path -> lanes; nothing matched -> lanes (logged by the caller's gh).
+# dogfood: NAME starts 00NN-- or the brief says dogfood. flake: the brief is a deflake task.
+brief_labels() {
+  local f=$1 n=${2:-$(basename "$1")} t a title needs body x out
+  title=$(grep -m1 '^# ' "$f" | sed 's/^# *//'); [ -n "$title" ] || title=$(head -1 "$f")
+  t=$(sed -n 's/^type: *//p' "$f" | head -1 | sed 's/^type://; s/[ ,]*$//')
+  a=$(sed -n 's/^area: *//p' "$f" | head -1 | tr ',' ' ' | sed 's/area://g')
+  needs=$(sed -n 's/^needs: *//p' "$f" | head -1 | tr 'A-Z' 'a-z')
+  body=$(grep -vE '^(needs|type|area):' "$f")
+  if [ -z "$t" ]; then
+    if echo "$title" | grep -qE '(^|[^A-Za-z])FIX([^A-Za-z]|$)' || echo "$title" | grep -qiE '(^|[^a-z])bugs?([^a-z]|$)'; then t=bug; else t=feature; fi; fi
+  if [ -z "$(echo $a)" ]; then a=""
+    case ",$needs," in *xcode*) a="$a ui";; esac
+    echo "$body" | grep -qE '(^|[^A-Za-z0-9_])(apps/)?server/|[A-Za-z0-9_]\.go([^A-Za-z]|$)' && a="$a server"
+    echo "$body" | grep -qE '(^|[^A-Za-z0-9_])scripts/|(^|[^A-Za-z0-9_])lanes?([^A-Za-z0-9_]|$)' && a="$a lanes"
+    [ -n "$a" ] || a=lanes; fi
+  out="type:$t"; for x in $a; do case ",$out," in *",area:$x,"*) ;; *) out="$out,area:$x";; esac; done
+  { echo "$n" | grep -qE '^00[0-9][0-9]--' || grep -qi 'dogfood' "$f"; } && out="$out,dogfood"
+  grep -qiE 'de-?flake' "$f" && out="$out,flake"
+  echo "$out"; }
+# Nothing written to GitHub may reference Notion: no notion.so / notion.site / app.notion.com links,
+# no "migrated from Notion" / "Notion card" lines, no Notion page ids (32 hex, dashed or not).
+NOTION_RE='notion\.so|notion\.site|app\.notion\.com|[Mm]igrated from [Nn]otion|[Nn]otion card|(^|[^0-9a-fA-F])[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}([^0-9a-fA-F]|$)'
+notion_ref() { grep -qE "$NOTION_RE"; }   # stdin has a Notion reference?
+notion_scrub() {  # stdin -> stdout: drop lines with Notion links/notes, blank out bare page ids
+  perl -ne 'next if /notion\.(so|site)|app\.notion\.com|migrated from notion|notion card/i;
+    s/(?<![0-9a-f])[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}(?![0-9a-f])/[id removed]/gi; print'; }
+# gh_write <gh args...>: the only way lane scripts write to GitHub. Scrubs --title/--body/--body-file
+# text, then refuses (rc 6, nothing sent) if any argument still references Notion. GH_CMD: test hook.
+gh_write() { local -a a=(); local v tmp=""
+  while [ $# -gt 0 ]; do case $1 in
+    -t|--title|-b|--body) v=$(printf '%s\n' "$2" | notion_scrub); a+=("$1" "$v"); shift 2;;
+    -F|--body-file) tmp=$(mktemp); if [ "$2" = - ]; then notion_scrub; else notion_scrub < "$2"; fi > "$tmp"; a+=("$1" "$tmp"); shift 2;;
+    *) a+=("$1"); shift;; esac; done
+  v=$(printf '%s\n' "${a[@]}"; [ -z "$tmp" ] || cat "$tmp")   # no pipe into grep -q: SIGPIPE + pipefail would hide a match
+  if notion_ref <<< "$v"; then
+    echo "gh_write: refused, text still references Notion (nothing sent to GitHub)" >&2; [ -n "$tmp" ] && rm -f "$tmp"; return 6; fi
+  ${GH_CMD:-gh} "${a[@]}"; local rc=$?; [ -n "$tmp" ] && rm -f "$tmp"; return $rc; }
