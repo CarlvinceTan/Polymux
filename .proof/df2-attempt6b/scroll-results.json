@@ -1,0 +1,18 @@
+{
+  "configuration": "Release",
+  "events": 700,
+  "messages": 100,
+  "activityEvents": 600,
+  "collapsedRows": 400,
+  "requestedSeconds": 20,
+  "tableSampleCounts": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "frameTimeMs": null,
+  "coverageValid": false,
+  "compositorExit": 250,
+  "status": "incomplete"
+}

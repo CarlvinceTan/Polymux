@@ -1,0 +1,224 @@
+xcrun xctrace record --template Animation Hitches --device 1CDF3801-4E9E-50FA-9008-C1B4AC849C21 --all-processes --time-limit 20s --no-prompt --output .build/scroll-all.trace
+Starting recording with the Animation Hitches template. Targeting All Processes. Time limit: 20.0 s
+Ctrl-C to stop the recording
+Action 0: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 1: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 2: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 3: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 4: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 5: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 6: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 7: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 8: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Reached specified time limit, ending recording...
+Action 9: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 10: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 11: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent down scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 12: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 13: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 14: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 15: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 16: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 17: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 18: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 19: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 20: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 21: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 22: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Action 23: {
+  "delivery": {
+    "mode": "foreground"
+  },
+  "effect": "unverifiable",
+  "route": "global_input",
+  "summary": "✅ Sent up scroll by page × 10 via pixel wheel at (886, 617) (delivery_mode:foreground) (background CGEvent; not driver-verified — confirm via screenshot)."
+}
+
+Stopping recording...
+Recording completed. Saving output file...
+Cannot save trace document to: .build/scroll-all.trace -- file:///Users/carlvincetan/code/wt/lane3-df2-fix-pr-39-ar-at-785d9dd-inli/
+libc++abi: terminating due to uncaught exception of type NSException

@@ -1,0 +1,2 @@
+App-attached frame/render/update/hitch sample counts: [0, 0, 0, 0]
+Compositor retry: exit 250; Cannot save trace document; uncaught NSException.
