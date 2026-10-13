@@ -106,10 +106,10 @@ check "shared card: start + pr written on the first unit" '[ "$(NP pages/$SC)" =
 echo Review > "$T/cur"; : > "$T/curl.log"; PATH=$BP $BU merged sa1-shared; PATH=$BP $BU verify sa1-shared UI-verified
 check "shared card: first unit merged/verified -> no write, hold logged" '[ "$(NP .)" = 0 ] && grep -q "sa1-shared merged: hold: Status not written; card $SC waits for unit(s): sa2-shared" "$BLOG" && grep -q "sa1-shared verify: hold: Verification .* sa2-shared" "$BLOG"'
 PATH=$BP $BU merged sa2-shared; PATH=$BP $BU verify sa2-shared unit-test-verified
-check "shared card: last unit merged -> one Completed write" '[ "$(grep -c "X PATCH.*pages/$SC.*Completed" "$T/curl.log")" = 1 ] && grep -q "sa2-shared merged: wrote Status: .Review. -> .Completed." "$BLOG"'
-check "shared card: Verification = weakest level (unit-test < UI)" '[ "$(grep -c "X PATCH.*pages/$SC.*Verification" "$T/curl.log")" = 1 ] && grep -q "X PATCH.*pages/$SC.*\"name\":\"unit-test-verified\"" "$T/curl.log" && grep -q "weakest" "$BLOG"'
-: > "$T/curl.log"; PATH=$BP $BU verify sa1-shared failed
-check "shared card: a unit re-verified as failed lowers the card to failed" 'grep -q "X PATCH.*pages/$SC.*\"name\":\"failed\"" "$T/curl.log"'
+check "shared card: last unit merged -> one Completed write" '[ "$(grep -c "X PATCH.*Completed.*pages/$SC" "$T/curl.log")" = 1 ] && grep -q "sa2-shared merged: wrote Status: .Review. -> .Completed." "$BLOG"'
+check "shared card: Verification = weakest level (unit-test < UI)" '[ "$(grep -c "X PATCH.*Verification.*pages/$SC" "$T/curl.log")" = 1 ] && grep -q "X PATCH.*\"name\":\"unit-test-verified\".*pages/$SC" "$T/curl.log"'
+: > "$T/curl.log"; PATH=$BP $BU verify sa1-shared failed; PATH=$BP $BU verify sa2-shared UI-verified
+check "shared card: one unit failed keeps the card at failed even when the other is UI-verified" '[ "$(grep -c "X PATCH.*\"name\":\"failed\".*pages/$SC" "$T/curl.log")" = 2 ] && ! grep -q "UI-verified.*pages/$SC" "$T/curl.log" && grep -q "sa2-shared verify: card $SC shared by 2 units: Verification .failed. (weakest)" "$BLOG"'
 check "shared card: ledger tracks both units" '[ "$(cut -f1,2 "$LANES_HOME/board/card-$SC.tsv" | sort -u | wc -l | tr -d " ")" = 4 ]'
 # unit name keeps its prefix: "# SA9: ..." -> sa9-..., never "-sa9-..."
 rm -f "$LANES_HOME/BOARD_LIVE"; printf 'needs: none\nexpected_min: 5\ncard: 33333333444455556666777777777777\n# SA9: Prefix kept\n' > "$T/pk.task"
