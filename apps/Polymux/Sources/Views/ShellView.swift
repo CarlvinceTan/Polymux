@@ -1,6 +1,9 @@
 import SwiftUI
 import PolymuxKit
 import AvatarKit
+#if os(iOS)
+import UIKit
+#endif
 
 struct ShellView: View {
     let session: AppSession
@@ -24,6 +27,13 @@ struct ShellView: View {
     @State private var deleting: String?
     @State private var deleteError: String?
     @State private var dropped: [URL] = []
+    #if os(iOS)
+    @State private var headerSpan: CGFloat = ChatsHeader.depth
+    @State private var headerAlpha = ""
+    #if DEBUG
+    @State private var previewStore: SidebarStore?
+    #endif
+    #endif
     @Environment(\.colorScheme) private var colorScheme
     #if os(macOS)
     @State private var sidebar = SidebarState()
@@ -59,6 +69,9 @@ struct ShellView: View {
             }
             #else
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background { sidebarSurface.ignoresSafeArea() }
+            .accessibilityIdentifier("chats.list")
             #endif
             .scrollIndicators(.hidden)
             #if os(macOS)
@@ -71,9 +84,28 @@ struct ShellView: View {
             .background { SearchFocus(sidebar: true).frame(width: 0, height: 0) }
             #else
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
             .simultaneousGesture(TapGesture().onEnded { searchFocused = false }, isEnabled: searching)
             .scrollDismissesKeyboard(.interactively)
             .contentMargins(.bottom, searching ? 0 : 96, for: .scrollContent)
+            .overlay(alignment: .top) {
+                HeaderFade(color: sidebarSurface, span: headerSpan)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: headerSpan)
+                    .background {
+                        HeaderMeasure { span, alpha in
+                            if abs(headerSpan - span) > 0.5 { headerSpan = span }
+                            if headerAlpha != alpha { headerAlpha = alpha }
+                        }
+                    }
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("chats.header.fade")
+                    .accessibilityLabel("Chats header fade")
+                    .accessibilityValue(headerAlpha)
+                    .accessibilityRespondsToUserInteraction(false)
+            }
             .overlay(alignment: .bottom) {
                 if !searching {
                     VStack {
@@ -174,7 +206,7 @@ struct ShellView: View {
             }
             .toolbar(removing: .sidebarToggle)
         } detail: {
-            if let thread = session.sidebar.threads.first(where: { $0.id == selection }),
+            if let thread = sidebarStore.threads.first(where: { $0.id == selection }),
                let agent = participants(thread).first {
                 ChatPane(agent: agent, thread: thread, session: session, drops: $dropped)
                     .id(thread.id)
@@ -198,7 +230,7 @@ struct ShellView: View {
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
             guard !files.isEmpty, let selection,
-                  session.sidebar.threads.contains(where: { $0.id == selection }) else { return false }
+                  sidebarStore.threads.contains(where: { $0.id == selection }) else { return false }
             dropped.append(contentsOf: files)
             return true
         }
@@ -261,14 +293,19 @@ struct ShellView: View {
             Button("OK") { deleteError = nil }
         } message: { Text(deleteError ?? "") }
         .task {
+            #if DEBUG && os(iOS)
+            if headerPreview { loadPreview() }
+            #endif
             while !Task.isCancelled {
-                await session.sidebar.refresh()
-                if session.sidebar.isConnected {
-                    session.avatars.sync(agents: session.sidebar.agents)
-                    await session.avatars.flush(client: session.client)
+                if !headerPreview {
+                    await sidebarStore.refresh()
+                    if sidebarStore.isConnected {
+                        session.avatars.sync(agents: sidebarStore.agents)
+                        await session.avatars.flush(client: session.client)
+                    }
                 }
                 #if os(macOS)
-                if selection == nil { selection = Notifications.shared.destination ?? session.sidebar.threads.first(where: { $0.agentID == "assistant" && !$0.isGroup })?.id ?? conversations.first?.id }
+                if selection == nil { selection = Notifications.shared.destination ?? sidebarStore.threads.first(where: { $0.agentID == "assistant" && !$0.isGroup })?.id ?? conversations.first?.id }
                 #endif
                 try? await Task.sleep(for: .seconds(3))
             }
@@ -276,7 +313,7 @@ struct ShellView: View {
     }
 
     private func participants(_ thread: PolymuxKit.Thread) -> [Agent] {
-        thread.participantIDs.compactMap { id in session.sidebar.agents.first { $0.id == id } }
+        thread.participantIDs.compactMap { id in sidebarStore.agents.first { $0.id == id } }
     }
 
     #if os(macOS)
@@ -304,15 +341,66 @@ struct ShellView: View {
         #endif
     }
 
+    private var sidebarStore: SidebarStore {
+        #if DEBUG && os(iOS)
+        previewStore ?? session.sidebar
+        #else
+        session.sidebar
+        #endif
+    }
+
+    #if DEBUG && os(iOS)
+    private var headerPreview: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ChatsHeaderPreview")
+    }
+
+    /// Stable rows in a throwaway cache, so the fixture cannot persist into the user's store.
+    private func loadPreview() {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "PolymuxHeaderPreview", directoryHint: .isDirectory)
+        try? FileManager.default.removeItem(at: directory)
+        guard let cache = try? LocalCache(url: directory.appending(path: "cache.sqlite")) else { return }
+        let store = SidebarStore(client: session.client, cache: cache)
+        let names = ["Avery", "Blake", "Cameron", "Drew", "Ellis", "Finley", "Gray", "Harper",
+                     "Indigo", "Jordan", "Kai", "Logan", "Morgan", "Nova"]
+        for (index, name) in names.enumerated() {
+            let id = "preview-\(index)"
+            let agent = Agent(id: id, name: name, role: "Preview", active: index == 0)
+            let message = Message(
+                id: "preview-message-\(index)",
+                threadID: id,
+                role: "agent",
+                parts: [Part(kind: "text", text: "Row \(index + 1) under the header")],
+                createdAt: WireDate.string(Date().addingTimeInterval(Double(-index * 120))),
+                status: "done",
+                seq: Int64(index + 1)
+            )
+            let thread = Thread(
+                id: id,
+                agentID: id,
+                lastSeq: Int64(index + 1),
+                lastMessage: message,
+                title: name,
+                agentIDs: [id]
+            )
+            store.accept(agent)
+            store.accept(thread)
+        }
+        previewStore = store
+    }
+    #else
+    private var headerPreview: Bool { false }
+    #endif
+
     private var duplicateAgentNames: Set<String> {
         var seen: [String: Int] = [:]
-        for agent in session.sidebar.agents { seen[agent.name, default: 0] += 1 }
+        for agent in sidebarStore.agents { seen[agent.name, default: 0] += 1 }
         return Set(seen.filter { $0.value > 1 }.map(\.key))
     }
 
     private var conversations: [PolymuxKit.Thread] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return session.sidebar.threads.filter { thread in
+        return sidebarStore.threads.filter { thread in
             let members = participants(thread)
             guard !members.isEmpty else { return false }
             let matches = term.isEmpty || title(thread).localizedStandardContains(term) || members.contains {
@@ -353,11 +441,11 @@ struct ShellView: View {
     private func chatLink(_ thread: PolymuxKit.Thread) -> some View {
         SidebarChatLink(threadID: thread.id, selected: selection == thread.id, surface: sidebarSurface) {
             if thread.isGroup {
-                GroupRow(thread: thread, members: participants(thread), activity: session.sidebar.activity, connected: session.sidebar.isConnected)
+                GroupRow(thread: thread, members: participants(thread), activity: sidebarStore.activity, connected: sidebarStore.isConnected)
             } else if let agent = participants(thread).first {
                 AgentRow(agent: agent, thread: thread,
                          duplicate: duplicateAgentNames.contains(agent.name),
-                         activity: session.sidebar.activity, connected: session.sidebar.isConnected)
+                         activity: sidebarStore.activity, connected: sidebarStore.isConnected)
             }
         }
         #if os(macOS)
@@ -420,8 +508,8 @@ struct ShellView: View {
         do {
             try await session.client.deleteAgent(id: agent.id)
             session.avatars.remove(id: agent.id)
-            await session.sidebar.refresh()
-            if !session.sidebar.threads.contains(where: { $0.id == selection }) { selection = conversations.first?.id }
+            await sidebarStore.refresh()
+            if !sidebarStore.threads.contains(where: { $0.id == selection }) { selection = conversations.first?.id }
         } catch { deleteError = error.localizedDescription }
     }
 }
@@ -630,3 +718,141 @@ private enum AgentOrder: String, CaseIterable, Identifiable {
     case recent = "Most recent", name = "Name"
     var id: String { rawValue }
 }
+
+#if os(iOS)
+private enum ChatsHeader {
+    /// How far the fade runs past the bottom of the navigation bar.
+    static let depth: CGFloat = 28
+}
+
+/// Opaque through the bar, then the list colour fades to clear.
+private struct HeaderFade: View {
+    let color: Color
+    let span: CGFloat
+
+    var body: some View {
+        LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
+    }
+
+    private var stops: [Gradient.Stop] {
+        let header = max(span - ChatsHeader.depth, 0)
+        let stop = span > 0 ? header / span : 0
+        return [
+            .init(color: color, location: 0),
+            .init(color: color, location: stop),
+            .init(color: color.opacity(0), location: 1),
+        ]
+    }
+}
+
+/// Distance from this view's top to 28pt below the navigation bar, plus background alphas.
+private struct HeaderMeasure: UIViewRepresentable {
+    var onUpdate: (CGFloat, String) -> Void
+
+    func makeUIView(context: Context) -> HeaderProbe {
+        let view = HeaderProbe()
+        view.isUserInteractionEnabled = false
+        view.isAccessibilityElement = false
+        view.accessibilityElementsHidden = true
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ view: HeaderProbe, context: Context) {
+        view.onUpdate = onUpdate
+        view.measure()
+    }
+}
+
+private final class HeaderProbe: UIView {
+    var onUpdate: (CGFloat, String) -> Void = { _, _ in }
+    private var pending = false
+    private var lastSpan: CGFloat = -1
+    private var lastAlpha = ""
+    private weak var bar: UINavigationBar?
+
+    override func layoutSubviews() { super.layoutSubviews(); measure() }
+    override func didMoveToWindow() { super.didMoveToWindow(); measure() }
+    override func safeAreaInsetsDidChange() { super.safeAreaInsetsDidChange(); measure() }
+
+    func measure() {
+        guard !pending else { return }
+        pending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pending = false
+            guard let reading = self.reading() else { return }
+            let alpha = Self.alphaText(reading.alphas)
+            let spanChanged = abs(reading.span - self.lastSpan) > 0.5
+            guard spanChanged || alpha != self.lastAlpha else { return }
+            self.lastSpan = reading.span
+            self.lastAlpha = alpha
+            self.onUpdate(reading.span, alpha)
+        }
+    }
+
+    private struct Reading {
+        var span: CGFloat
+        var alphas: [CGFloat]
+    }
+
+    private func reading() -> Reading? {
+        guard let window else { return nil }
+        let originY = convert(CGPoint.zero, to: window).y
+        guard originY.isFinite, let bar = navigationBar() else { return nil }
+        let bottom = bar.convert(bar.bounds, to: window).maxY
+        guard bottom.isFinite, bottom > originY else { return nil }
+        return Reading(span: bottom - originY + ChatsHeader.depth, alphas: backgroundViews(of: bar).map(\.alpha))
+    }
+
+    private func navigationBar() -> UINavigationBar? {
+        if let bar, bar.window === window, !bar.isHidden, bar.bounds.height > 1 { return bar }
+        let found = findBar()
+        bar = found
+        return found
+    }
+
+    private func findBar() -> UINavigationBar? {
+        var responder: UIResponder? = self
+        while let current = responder {
+            if let controller = current as? UIViewController, let bar = controller.navigationController?.navigationBar {
+                return bar
+            }
+            responder = current.next
+        }
+        guard let window else { return nil }
+        let midX = convert(bounds, to: window).midX
+        return bars(in: window).min { lhs, rhs in
+            abs(lhs.convert(lhs.bounds, to: window).midX - midX) < abs(rhs.convert(rhs.bounds, to: window).midX - midX)
+        }
+    }
+
+    /// Bar chrome only. Content hosts the title and glass buttons, whose effects are not the bar fill.
+    private func backgroundViews(of bar: UINavigationBar) -> [UIView] {
+        var found: [UIView] = []
+        func walk(_ view: UIView) {
+            for subview in view.subviews {
+                let name = NSStringFromClass(type(of: subview))
+                if name.contains("Content") { continue }
+                let platter = name.contains("Platter") && subview.bounds.width > bar.bounds.width * 0.6
+                if name.contains("Background") || platter { found.append(subview) }
+                walk(subview)
+            }
+        }
+        walk(bar)
+        return found
+    }
+
+    private static func alphaText(_ alphas: [CGFloat]) -> String {
+        if alphas.isEmpty { return "none" }
+        return alphas.map { String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), Double($0)) }.joined(separator: ",")
+    }
+
+    private func bars(in view: UIView) -> [UINavigationBar] {
+        var found: [UINavigationBar] = []
+        if let bar = view as? UINavigationBar, !bar.isHidden, bar.bounds.height > 1 { found.append(bar) }
+        for subview in view.subviews { found.append(contentsOf: bars(in: subview)) }
+        return found
+    }
+}
+#endif

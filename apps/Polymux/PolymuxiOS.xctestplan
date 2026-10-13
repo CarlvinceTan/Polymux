@@ -1,0 +1,29 @@
+{
+  "configurations" : [
+    {
+      "id" : "7E4C1A20-5B3F-4D8E-9C11-A6F0E2B84D17",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:Polymux.xcodeproj",
+      "identifier" : "A10000000000000000000009",
+      "name" : "Polymux"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Polymux.xcodeproj",
+        "identifier" : "A10000000000000000000042",
+        "name" : "PolymuxUITests"
+      }
+    }
+  ],
+  "version" : 1
+}
