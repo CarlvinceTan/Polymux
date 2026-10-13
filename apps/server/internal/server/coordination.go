@@ -35,6 +35,7 @@ type handoffWork struct {
 }
 
 type turnState struct {
+	mergeLane    string
 	run          contract.Run
 	work         store.Work
 	mu           sync.Mutex
