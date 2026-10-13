@@ -159,7 +159,7 @@ breaker() {  # $1 task key of a fast failure; trips PAUSE on N distinct fast-fai
     echo "$(date '+%F %T') $SLUG: breaker tripped ($d distinct fast failures) -> PAUSE" >> "$OPS/logs/dispatch-chain.log"; }; }
 free_lane() {  # $1 lane now free; non-blocking
   { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
-  local fl=""; { "$LANE_GUARD" --help 2>&1 </dev/null || true; } | grep -q -- '--free-lane' && fl="--free-lane $1"
+  local fl=""; { "$LANE_GUARD" --help 2>&1 </dev/null || true; } | out_has -- '--free-lane' && fl="--free-lane $1"
   nohup bash -c '. "$1"; for k in $(seq 1 100); do lock_take "$2" && break; [ $k = 100 ] && { echo "$(date "+%F %T") $4: refill of lane $3 skipped: $2 busy for ~10 s (pid $(lock_holder "$2"))"; exit 0; }; sleep 0.1; done
     trap "lock_drop \"$2\"" EXIT; shift 4; "$@"' _ \
     "$SD/lanelib.sh" "$OPS/dispatch-chain.lock" "$1" "$SLUG" "$LANE_GUARD" --dispatch $fl >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null &
@@ -202,7 +202,7 @@ free_branch() {
   git -C "$REPO" merge-base --is-ancestor "refs/heads/$b" "refs/remotes/origin/$b" && return 0   # behind or equal: fine
   git -C "$REPO" merge-base --is-ancestor "refs/remotes/origin/$b" "refs/heads/$b" && return 0   # only ahead: unpushed work, keep
   sha=$(git -C "$REPO" rev-parse --short=7 "refs/heads/$b")
-  git -C "$REPO" worktree list --porcelain | grep -qx "branch refs/heads/$b" && { echo "branch $b diverged but is still checked out; leaving it" >> "$LOG"; return 0; }
+  git -C "$REPO" worktree list --porcelain | out_has -x "branch refs/heads/$b" && { echo "branch $b diverged but is still checked out; leaving it" >> "$LOG"; return 0; }
   git -C "$REPO" branch -q "cody-stale/$b-$sha" "refs/heads/$b" && git -C "$REPO" branch -q -f "$b" "refs/remotes/origin/$b" &&
     echo "local $b diverged from origin; kept as cody-stale/$b-$sha, $b now at origin/$b" >> "$LOG"; }
 IDLE_S=${LANE_IDLE_S:-$(( ${LANE_IDLE_MIN:-12} * 60 ))}; RS=${LANE_RETRY_SLEEP:-1}   # RS: retry backoff multiplier (tests: 0)
@@ -255,7 +255,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   [ "$NT" = 0 ] || echo "warn: $NT lane commit(s) without a 'Lane:' trailer (committer name still says $L)" | tee -a "$LOG"
   CH=$(git -C "$WT" diff --shortstat "$START"..HEAD | awk '{print $4+$6}')
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
-    git -C "$WT" log --format=%B "$START"..HEAD | grep -qE '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
+    git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
