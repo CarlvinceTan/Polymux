@@ -41,15 +41,18 @@ if [ "${1:-}" = "--verify-only" ]; then
   (cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
     if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else bash "$SD/verify.sh"; fi) > "$OPS/logs/$ID.log" 2>&1; rc=$?   # LANE_VERIFY_CMD: test hook
   BODY="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID" 2>>"$OPS/logs/$ID.log")"
-  gh pr comment "$BR" -R "$SLUG_REPO" --body "Mac proof ($HOST):"$'\n'"$BODY" && ev pr verify "$BR"
+  gh_write pr comment "$BR" -R "$SLUG_REPO" --body "Mac proof ($HOST):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
 fi
 LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60; SCOPE=""
 TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "card:" (Notion card), "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
-  TASK=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
+  TASK=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after|type|area):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
 fi
+# GitHub labels for the PR (type:/area: headers, else inferred; see brief_labels in lanelib.sh)
+LBF=${TASKF:-$(mktemp)}; [ -n "$TASKF" ] || printf '%s\n' "$TASK" > "$LBF"
+LABELS=$(brief_labels "$LBF" "$(basename "${TASKF:-inline}")"); [ -n "$TASKF" ] || rm -f "$LBF"
 QW() { bash "$SD/queue-write.sh" "$@"; }   # every queue/queue-hold write goes through the locked helper
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
@@ -109,7 +112,7 @@ base_title() { echo "$1" | sed -E 's/ \(attempt [0-9]+\)$//'; }
 hold_retries() {  # move queued retries of this task to queue-hold/
   local f t bt; bt=$(base_title "$TITLE"); mkdir -p "$OPS/queue-hold"
   for f in "$OPS"/queue/*.task; do [ -f "$f" ] || continue
-    t=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)
+    t=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after|type|area):' "$f" | head -1)
     [ "$(base_title "$t")" = "$bt" ] && QW --force --mv "$f" "$OPS/queue-hold/" >/dev/null && echo "$(date '+%F %T') $SLUG: held retry $(basename "$f") (runaway guard)" >> "$OPS/logs/dispatch-chain.log"
   done; }
 fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-40 | sed 's/-$//')"
@@ -221,13 +224,13 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   EX=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG") ||
     { ev failed "$L" "gh pr list failed (pushed $B; no PR created or commented)"; continue; }
   if [ -n "$EX" ]; then URL=$EX; NH=$(git -C "$WT" rev-parse HEAD)
-    (cd "$WT" && gh pr comment "$URL" -R "$SLUG_REPO" --body "Lane update: new head $NH (from $START)"$'\n\n'"$BODY") >> "$LOG" 2>&1 ||
+    (cd "$WT" && gh_write pr comment "$URL" -R "$SLUG_REPO" --body "Lane update: new head $NH (from $START)"$'\n\n'"$BODY") >> "$LOG" 2>&1 ||
       echo "warn: comment on existing PR $URL failed (push succeeded)" | tee -a "$LOG"
     [ -n "$DRAFT" ] && { (cd "$WT" && gh pr ready --undo "$URL" -R "$SLUG_REPO") >> "$LOG" 2>&1 ||
       echo "warn: could not mark existing PR $URL as draft (build-only)" | tee -a "$LOG"; }
   else
     URL=""; for ptry in 1 2 3; do   # pushed already: retry the API call only, never the agent
-      URL=$(cd "$WT" && gh pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
+      URL=$(cd "$WT" && gh_write pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --label "$LABELS" --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
       sleep $((ptry * 10 * RS)); URL=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG"); [ -n "$URL" ] && break
       echo "gh pr create failed (try $ptry); retrying" >> "$LOG"; done
     [ -n "$URL" ] || { ev failed "$L" "gh pr create failed (3 tries; $B is pushed)"; continue; }
@@ -241,10 +244,10 @@ BT=$(base_title "$TITLE"); AT=$(echo "$TITLE" | sed -nE 's/.* \(attempt ([0-9]+)
 if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to place on a free lane
   QD="$OPS/queue"; mkdir -p "$QD"; DUP=""
   for f in "$QD"/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have re-queued it
-    [ "$(base_title "$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
+    [ "$(base_title "$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after|type|area):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
   if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)-$SLUG-retry.task"
     QB=$(mktemp); { echo "$BT (attempt 2)"; echo "needs: ${NEEDS:-none}"; echo "expected_min: $EXP"   # title first (queue-write rule)
-      [ -n "$TASKF" ] && grep -E '^(unit|scope|card|after):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
+      [ -n "$TASKF" ] && grep -E '^(unit|scope|card|after|type|area):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
       echo "$TASK" | tail -n +2; } > "$QB"
     sleep 1   # file newer than our events (lane-guard drop rule)
     if QW --name "$(basename "$Q")" "$QB" >/dev/null 2>"$QB.err"; then ev requeued "$L" "failed on $L; brief back in queue ($Q)"
