@@ -3,10 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -241,5 +244,132 @@ func TestCreateAgentShutdownRace(t *testing.T) {
 	definitions, err := api.Store.Definitions(t.Context())
 	if err != nil || len(definitions) != len(agents) {
 		t.Fatalf("definition count=%d agents=%d err=%v", len(definitions), len(agents), err)
+	}
+}
+
+// workspaceRepo seeds a repository with an origin carrying main, so the server
+// can create a conversation worktree from origin/main.
+func workspaceRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init", "-b", "main")
+	git(t, repo, "config", "user.email", "polymux@example.test")
+	git(t, repo, "config", "user.name", "Polymux")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("polymux\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "README.md")
+	git(t, repo, "commit", "-m", "Seed")
+	origin := t.TempDir()
+	git(t, origin, "init", "--bare", "-b", "main")
+	git(t, repo, "remote", "add", "origin", origin)
+	git(t, repo, "push", "origin", "main")
+	return repo
+}
+
+func git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func patchWorkspace(t *testing.T, api *Server, id, workspace string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"name": "Assistant", "role": "Guide", "prompt": "Help.", "workspace": workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	api.ServeHTTP(recorder, httptest.NewRequest(http.MethodPatch, "/agents/"+id, strings.NewReader(string(body))))
+	if recorder.Code != 200 {
+		t.Fatalf("workspace patch status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	data, err := api.Store.Definition(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d agentruntime.Definition
+	if err := json.Unmarshal(data, &d); err != nil || d.Workspace != workspace {
+		t.Fatalf("workspace was not saved: %q %v", d.Workspace, err)
+	}
+}
+
+func TestWorkspaceChatGetsCheckout(t *testing.T) {
+	repo := workspaceRepo(t)
+	api, server := startTest(t, &testFactory{})
+	patchWorkspace(t, api, "assistant", repo)
+	body := `{"id":"first","text":"hello","attachmentIDs":[]}`
+	response, err := http.Post(server.URL+"/threads/assistant/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 202 {
+		t.Fatalf("send status %d", response.StatusCode)
+	}
+	awaitReply(t, api, "assistant", "first")
+	checkout := filepath.Join(api.config.DataDir, "worktrees", "assistant")
+	if branch := git(t, checkout, "rev-parse", "--abbrev-ref", "HEAD"); branch != "polymux/assistant" {
+		t.Fatalf("chat checkout is on branch %q", branch)
+	}
+	request, err := http.NewRequest(http.MethodDelete, server.URL+"/agents/assistant", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatalf("delete status %d", response.StatusCode)
+	}
+	if _, err := os.Stat(checkout); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleting the chat left its checkout: %v", err)
+	}
+}
+
+func TestWorkspaceChatFailureExplained(t *testing.T) {
+	api, server := startTest(t, &testFactory{})
+	patchWorkspace(t, api, "assistant", t.TempDir()) // exists but is not a git repository
+	body := `{"id":"first","text":"hello","attachmentIDs":[]}`
+	response, err := http.Post(server.URL+"/threads/assistant/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 202 {
+		t.Fatalf("failing workspace turned the send into %d", response.StatusCode)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		messages, err := api.Store.Messages(t.Context(), "assistant", 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range messages {
+			if m.Status != "error" || m.RunID == nil {
+				continue
+			}
+			run, err := api.Store.Run(t.Context(), *m.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.Error == nil || run.Error.Code != "workspace" || !strings.HasPrefix(run.Error.Message, "Can't open repo:") {
+				t.Fatalf("run error %+v", run.Error)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the turn did not end on its own")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
