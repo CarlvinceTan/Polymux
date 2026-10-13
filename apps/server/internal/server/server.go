@@ -1655,6 +1655,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		finalized = true
 	}
 	messageMu.Unlock()
+	if finalized && !isolated && d.Workspace != "" && work.Trigger != "created" {
+		go s.diffCard(d, run)
+	}
 	if finalized && endsChildren(run.Status) {
 		s.cancelTree(writeCtx, run.ID)
 	}

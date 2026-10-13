@@ -25,7 +25,7 @@ echo base > README; git add -A; git commit -qm base; git remote add origin "$T/o
 export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" LANE_SKIP_SETUP=1 LANE_TARGET=testmac
 export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
-export LANE_BREAKER_N=99   # global breaker off except in its own test (19e); many cases fail fast on purpose
+export LANE_CHAIN_DEBOUNCE_S=0 LANE_BREAKER_N=99   # global breaker off except in its own test (19e); many cases fail fast on purpose
 task() { printf '# %s\nneeds: none\nexpected_min: 5\n' "$1" > "$T/$2.task"; echo "$T/$2.task"; }
 STUB_OK='echo $RANDOM >> f.txt && git add f.txt && git commit -qm "stub change" -m "Lane: $LANE/$AGENT"'
 RL="bash scripts/run-lane.sh"
@@ -53,6 +53,12 @@ printf '# Parked dup (attempt 2)\nneeds: none\nexpected_min: 5\n' > "$LANES_HOME
 printf '# Parked dup\nneeds: none\nexpected_min: 5\n' > "$LANES_HOME/deferred/0011--parked-dup.task"
 OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Parked dup' t2f)" 2>&1); RC=$?
 check "deferred retry already written by lane-guard: no second retry (deferred/ or queue/)" '[ $RC = 1 ] && echo "$OUT" | grep -q "DEFERRED after: laneA" && [ "$(ls "$LANES_HOME"/deferred/ | grep -c parked-dup)" = 2 ] && ! ls "$LANES_HOME"/queue/*parked-dup* >/dev/null 2>&1 && grep -q "already re-queued (.*deferred/10131300-parked-dup.task)" "$LANES_HOME/events.tsv"'
+# 2f session teardown: a child that left the agent's process group (like an MCP server under a shared opencode serve) but runs in the worktree is stopped when the attempt ends
+rm -f "$T/orphan.pid"
+OUT=$(LANE_DRY=1 LANE_KILL_WAIT=2 LANE_STUB_CMD='( set -m; sleep 300 & echo $! > "$HOME/../orphan.pid" ); '"$STUB_OK" $RL laneA "$(task 'Orphan reap' t2f)" 2>&1); RC=$?
+OP=$(cat "$T/orphan.pid" 2>/dev/null); sleep 0.5
+check "attempt end reaps a worktree process outside the agent group" '[ $RC = 0 ] && [ -n "$OP" ] && ! kill -0 "$OP" 2>/dev/null && grep -q "reap: TERM leftover pids" "$LANES_HOME"/logs/*orphan-reap-laneA.log'
+[ -n "$OP" ] && kill "$OP" 2>/dev/null
 # 2g SIGPIPE: a match early in a long output must still count under pipefail (was rc 141 -> "no Size-reason")
 ( . scripts/lanelib.sh; set -o pipefail
   { echo "Size-reason: big refactor"; seq 1 400000; } | out_has '^Size-reason: *[^ ]' || exit 1
@@ -216,11 +222,31 @@ check "freed lane passed as --free-lane when lane-guard supports it" 'grep -q "^
 export GLOG="$T/g18d"
 OUT=$(LANE_NO_CHAIN=1 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain off' t17)" 2>&1)
 check "LANE_NO_CHAIN disables dispatch" '[ "$(ndisp "$GLOG")" = 0 ]'
-# 19 no chain on SIGTERM; a failing task never blocks refilling the lane, but its own queued retries are held
+# 19 SIGTERM (an outside stop) never refills the lane; a failing task never blocks refilling the lane, but its own queued retries are held
 export GLOG="$T/g19"
 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD='sleep 5' $RL laneA "$(task 'Chain term' t19)" >/dev/null 2>&1 & P=$!
 for k in $(seq 1 50); do grep -q "chain-term	running" "$LANES_HOME/events.tsv" 2>/dev/null && break; sleep 0.1; done; sleep 0.3; kill -TERM $P; wait $P
 check "SIGTERM: no dispatch" 'grep -q "chain-term rc=143: not chaining" "$CL" && [ "$(ndisp "$GLOG")" = 0 ]'
+# 19g refusals refill the lane too; --check has no side effects; storm guard; debounce
+export GLOG="$T/g19g"; rm -f "$LANES_HOME/refusals.tsv"; EV0=$(wc -l < "$LANES_HOME/events.tsv"); IN0=$(cat "$DISPATCH_INTAKE" 2>/dev/null | wc -l)
+$RL --check laneA "$(task 'Check ok' t19g)" >/dev/null 2>&1; C0=$?
+$RL --check laneA "$T/t3.task" >/dev/null 2>&1; C2=$?
+mkdir -p "$LANES_HOME/units/check-busy.lock"; echo $$ > "$LANES_HOME/units/check-busy.lock/pid"; $RL --check laneA "$(task 'Check busy' t19h)" >/dev/null 2>&1; C3=$?
+printf '# Check swift\nneeds: xcode\n' > "$T/t19i.task"; LANE_TARGET=linuxbox $RL --check laneA "$T/t19i.task" >/dev/null 2>&1; C4=$?
+check "--check: runnable 0, twice-failed 2, unit lock held 3, dispatch-guard 4" '[ $C0 = 0 ] && [ $C2 = 2 ] && [ $C3 = 3 ] && [ $C4 = 4 ]'
+check "--check: no events row, no intake row, no refusal ledger, no dispatch" '[ "$(wc -l < "$LANES_HOME/events.tsv")" = "$EV0" ] && [ "$(cat "$DISPATCH_INTAKE" 2>/dev/null | wc -l)" = "$IN0" ] && [ ! -f "$LANES_HOME/refusals.tsv" ] && [ "$(ndisp "$GLOG")" = 0 ]'
+LANE_GUARD="$FGF" $RL laneA "$T/t3.task" >/dev/null 2>&1; RC=$?; waitfor "$GLOG" dispatch
+check "refused unit (stop rule, exit 2): lane refilled with --free-lane, logged" '[ $RC = 2 ] && grep -q "^--dispatch --free-lane laneA" "$GLOG" && grep -q "rc=2: refused; refilling lane laneA" "$CL"'
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
+LANE_GUARD="$FGF" $RL laneA "$(task 'Check busy' t19h)" >/dev/null 2>&1; RC=$?; sleep 0.5; for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
+LANE_GUARD="$FGF" $RL laneA "$T/t3.task" >/dev/null 2>&1; sleep 0.5
+check "storm: 3rd refusal in a row within 60 s -> no refill, STORM logged + NEEDS_CODY" '[ $RC = 3 ] && [ "$(ndisp "$GLOG")" = 2 ] && grep -q "STORM: 3 refusals in a row within 60s" "$CL" && grep -q "dispatch storm: 3 units refused" "$LANES_HOME/NEEDS_CODY"'
+LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Storm breaker' t19j)" >/dev/null 2>&1
+check "a unit that takes its lock clears the refusal streak" '[ ! -f "$LANES_HOME/refusals.tsv" ]'
+rm -rf "$LANES_HOME/units/check-busy.lock"; export GLOG="$T/g19k"
+LANE_CHAIN_DEBOUNCE_S=2 LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Debounced' t19k)" >/dev/null 2>&1; sleep 1; N1=$(ndisp "$GLOG"); waitfor "$GLOG" dispatch
+check "refill is debounced (LANE_CHAIN_DEBOUNCE_S): not yet at 1 s, done by ~5 s, once" '[ "$N1" = 0 ] && [ "$(ndisp "$GLOG")" = 1 ]'
+for k in $(seq 1 50); do [ -d "$LANES_HOME/dispatch-chain.lock" ] || break; sleep 0.1; done
 mkdir -p "$LANES_HOME/queue"; printf '# Chain short fail (attempt 2)\nneeds: none\n' > "$LANES_HOME/queue/r1.task"; printf '# Other card\nneeds: none\n' > "$LANES_HOME/queue/r2.task"
 OUT=$(LANE_GUARD="$FGF" LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Chain short fail' t19b)" 2>&1); waitfor "$GLOG" "free-lane laneA"
 check "short failure: lane still refilled, same task's retry held, other card kept" 'grep -q "^--dispatch --free-lane laneA" "$GLOG" && [ -f "$LANES_HOME/queue-hold/r1.task" ] && [ -f "$LANES_HOME/queue/r2.task" ]'
@@ -368,6 +394,11 @@ OUT1=$(env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD=tr
 CAPU cap-live2 $LP2
 OUT2=$(env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD=true $RL lane8 "$(task 'Conc two' g11)" 2>&1); RC=$?
 check "max_concurrent=2: 2nd run allowed with 1 live, refused (exit 5) with 2 live" '! echo "$OUT1" | grep -q "max_concurrent" && [ $RC = 5 ] && echo "$OUT2" | grep -q "already has 2 running (max_concurrent 2)"'
+EVN=$(wc -l < "$LANES_HOME/events.tsv")
+env LANES_TOML="$T/gate.toml" $RL --check lane8 "$(task 'Check at cap' g14)" >/dev/null 2>&1; CC=$?
+env LANES_TOML="$T/gate.toml" $RL --check lane7 "$(task 'Check mainkey' g15)" >/dev/null 2>&1; CK=$?
+env LANES_TOML="$T/gate.toml" $RL --check lane1 "$(task 'Check disabled' g16)" >/dev/null 2>&1; CD=$?
+check "--check includes #72 gates: lane at max_concurrent 5, main-key lane 5, disabled lane 5; no side effects" '[ $CC = 5 ] && [ $CK = 5 ] && [ $CD = 5 ] && [ "$(wc -l < "$LANES_HOME/events.tsv")" = "$EVN" ] && [ ! -d "$LANES_HOME/units/check-at-cap.lock" ]'
 kill $LP2; wait $LP2 2>/dev/null
 OUT3=$(env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD=true $RL lane8 "$(task 'Conc killed' g12)" 2>&1)
 printf '2026-10-13 10:00:00\tx9\trunning\tlane8\t/w9\n2026-10-13 10:00:00\tx8\trunning\tlane8\t/w8\n' >> "$LANES_HOME/events.tsv"
@@ -456,7 +487,79 @@ git worktree add -q --detach "$T/divpush" origin/test/div; (cd "$T/divpush" && e
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Div branch' s4)" --branch test/div 2>&1); RC=$?
 check "diverged local branch kept as cody-stale/<branch>-<sha>, run continues from origin" '[ $RC = 0 ] && [ "$(git rev-parse "cody-stale/test/div-${LOC:0:7}")" = "$LOC" ] && git merge-base --is-ancestor origin/test/div test/div'
 rm -f "$LANES_HOME/queue/"*.task
-# 16 board-update.sh (Notion board) cases
+# 28 GitHub labels (brief_labels) and Notion-free GitHub writes (gh_write)
+. scripts/lanelib.sh
+bl() { printf "$1" > "$T/bl.task"; brief_labels "$T/bl.task" "${2:-bl.task}"; }
+check "labels: type:/area: headers win over inference" '[ "$(bl "# FIX thing\nneeds: xcode\ntype: infra\narea: chat, area:routines\n")" = "type:infra,area:chat,area:routines" ]'
+check "labels: needs xcode -> area:ui, FIX title -> type:bug" '[ "$(bl "# FIX chat switch\nneeds: xcode\n")" = "type:bug,area:ui" ]'
+check "labels: server/go path -> area:server, bug title -> type:bug" '[ "$(bl "# Pairing bug\nneeds: go\nscope: apps/server/**\n")" = "type:bug,area:server" ]'
+check "labels: scripts/ path -> area:lanes, otherwise type:feature" '[ "$(bl "# Queue tweak\nneeds: none\nscope: scripts/*\n")" = "type:feature,area:lanes" ]'
+check "labels: dogfood for 00NN-- names and dogfood briefs, flake for deflake tasks" '[ "$(bl "# Thing\nneeds: xcode\n" 0012--thing.task)" = "type:feature,area:ui,dogfood" ] && [ "$(bl "# Deflake pairing test\nneeds: go\nscope: apps/server/p.go\nFound while dogfooding.\n")" = "type:feature,area:server,dogfood,flake" ] && [ "$(bl "# Plain\nneeds: xcode\n" 0012-x.task)" = "type:feature,area:ui" ]'
+Z40=$(printf "%040d" 0); NID=3f60dbb6e05381518ce5c571f278c93d
+printf 'Summary ok\nMigrated from Notion card: https://www.notion.so/%s\nboard https://app.notion.com/p/x\nNotion page 3f60dbb6-e053-8151-8ce5-c571f278c93d\nhead %s\n' "$NID" "$Z40" > "$T/nb.md"
+SC=$(notion_scrub < "$T/nb.md")
+check "notion_scrub: removes Notion links and Notion page ids, keeps every line and SHAs" 'grep -q "Summary ok" <<< "$SC" && grep -qx "Migrated from Notion card: \[Notion link removed\]" <<< "$SC" && grep -qx "board \[Notion link removed\]" <<< "$SC" && grep -qx "Notion page \[id removed\]" <<< "$SC" && grep -q "head $Z40" <<< "$SC" && [ $(wc -l <<< "$SC") = 5 ] && ! notion_ref <<< "$SC" && notion_ref < "$T/nb.md"'
+UU=6f1c2a9e-3b4d-4e5f-9a8b-7c6d5e4f3a2b; UD=00008112-001A2C3E0E78801E; SIMU=C07BB27B-B6BE-4566-9991-3DF89FD06E17; MD=d41d8cd98f00b204e9800998ecf8427e
+printf 'request id %s\ndevice UDID %s\nsim %s\nmd5 %s\nboard page id %s\n' "$UU" "$UD" "$SIMU" "$MD" "$NID" > "$T/ids.md"
+check "notion_scrub: UUIDs, UDIDs, sim UDIDs and MD5s with no Notion context pass through untouched" '[ "$(notion_scrub < "$T/ids.md")" = "$(cat "$T/ids.md")" ] && ! notion_ref < "$T/ids.md"'
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "%s/ghargs"; for a; do [ -f "$a" ] && cat "$a" >> "%s/ghargs"; done; exit 0\n' "$T" "$T" > "$T/ghrec"; chmod +x "$T/ghrec"
+rm -f "$T/ghargs"; GH_CMD="$T/ghrec" gh_write pr comment 7 --body "$(cat "$T/nb.md")"; RC=$?
+check "gh_write scrubs --body before gh runs" '[ $RC = 0 ] && grep -q "Summary ok" "$T/ghargs" && ! notion_ref < "$T/ghargs"'
+rm -f "$T/ghargs"; GH_CMD="$T/ghrec" gh_write issue create --title "t" --body-file "$T/nb.md"; RC=$?
+check "gh_write scrubs --body-file" '[ $RC = 0 ] && grep -q "Summary ok" "$T/ghargs" && ! notion_ref < "$T/ghargs"'
+rm -f "$T/ghargs"; GH_CMD="$T/ghrec" gh_write pr comment 7 --body "$(cat "$T/ids.md")"; RC=$?
+check "gh_write: plain UUIDs/UDIDs/MD5s reach gh unchanged" '[ $RC = 0 ] && grep -q "$UU" "$T/ghargs" && grep -q "$UD" "$T/ghargs" && grep -q "$SIMU" "$T/ghargs" && grep -q "$MD" "$T/ghargs"'
+rm -f "$T/ghargs"; OUT=$(GH_CMD="$T/ghrec" gh_write pr edit 7 --add-label "x https://notion.so/$NID" 2>&1); RC=$?
+check "gh_write never refuses: any argument is scrubbed and gh runs" '[ $RC = 0 ] && grep -qx "x \[Notion link removed\]" "$T/ghargs" && ! notion_ref < "$T/ghargs"'
+G4="$T/ghbin4"; mkdir -p "$G4"
+printf '#!/bin/bash\ncase "$1 $2" in\n"pr create") printf "%%s\\n" "$@" > "%s/prargs"; echo https://github.com/o/r/pull/103;;\nesac\nexit 0\n' "$T" > "$G4/gh"; chmod +x "$G4/gh"
+printf '# Chat lane labels\nneeds: none\nexpected_min: 5\ntype: test\narea: chat\ncard: https://www.notion.so/%s\nNotes from https://app.notion.com/p/%s\n' "$NID" "$NID" > "$T/lb.task"
+OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/lb.task" --branch test/labels 2>&1); RC=$?
+check "run-lane PR: labels from type:/area: headers, no Notion text in title or body" '[ $RC = 0 ] && grep -qx "type:test,area:chat" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
+grep -v pull/103 "$LANES_HOME/results.tsv" > "$T/r.tsv"; cat "$T/r.tsv" > "$LANES_HOME/results.tsv"; rm -f "$LANES_HOME"/cards/chat-lane-labels*   # keep later cleanup cases exact
+git worktree remove --force "$LANES_WT/laneA-chat-lane-labels" 2>/dev/null
+printf '# Good\nneeds: none\nexpected_min: 5\ntype: bug\narea: ui, area:server\n' > "$T/qh1.task"; printf '# Bad\nneeds: none\nexpected_min: 5\ntype: chore\narea: web\n' > "$T/qh2.task"
+OK1=$(bash scripts/queue-write.sh --check "$T/qh1.task" 2>&1; echo rc=$?); OUT=$(bash scripts/queue-write.sh --check "$T/qh2.task" 2>&1); RC=$?
+check "queue-write --check accepts valid type:/area: headers and rejects unknown values" 'grep -q "^rc=0$" <<< "$OK1" && [ $RC = 2 ] && grep -q "type: \"chore\" is not one of" <<< "$OUT" && grep -q "area: \"web\" is not one of" <<< "$OUT"'
+# 30 opencode: a stopped, killed or fast-failed unit ends its session on the shared serve (stubbed CLI), serve untouched
+OCB="$T/ocbin"; mkdir -p "$OCB"; : > "$T/oc.log"
+cat > "$OCB/opencode" <<OCSTUB
+#!/bin/bash
+echo "\$*" >> "$T/oc.log"
+case "\$1 \$2" in
+"session list") d=\$(pwd -P); echo "[{\"id\":\"ses_other\",\"directory\":\"/elsewhere\",\"created\":\$(( \$(date +%s) * 1000 ))},{\"id\":\"ses_\$(basename "\$d" | tr -c 'a-z0-9\n' _)\",\"directory\":\"\$d\",\"created\":\$(( \$(date +%s) * 1000 ))}]";;
+"session export") echo "{\"id\":\"\$3\"}";;
+"session delete") echo "deleted \$3";;
+esac
+OCSTUB
+chmod +x "$OCB/opencode"
+OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_IDLE_S=2 LANE_DRY=1 LANE_STUB_CMD='sleep 300' $RL laneA "$(task 'Oc fastfail' oc1)" 2>&1); RC=$?
+OL=$(ls "$LANES_HOME"/logs/*oc-fastfail*laneA.log 2>/dev/null | head -1)
+check "opencode fast-fail: session id recorded, exported, deleted on the serve; other sessions untouched" '[ -n "$OL" ] && grep -q "^opencode session: ses_" "$OL" && grep -q "^session delete ses_.*oc_fastfail" "$T/oc.log" && ! grep -q "delete ses_other" "$T/oc.log" && ls "$OL".oc-ses_*.json >/dev/null 2>&1 && grep -q "ended on the shared serve" "$OL" && ! grep -qiE "serve|restart|kill" <(grep -v "^session " "$T/oc.log")'
+: > "$T/oc.log"
+LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='sleep 300' $RL laneA "$(task 'Oc killed' oc2)" >/dev/null 2>&1 & P=$!
+for k in $(seq 1 100); do grep -q "session list" "$T/oc.log" 2>/dev/null && break; sleep 0.1; done; sleep 1; kill -TERM $P; wait $P 2>/dev/null
+check "opencode unit killed (TERM): its session is deleted on the serve" 'grep -q "^session delete ses_.*oc_killed" "$T/oc.log"'
+: > "$T/oc.log"
+OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Oc happy' oc3)" 2>&1); RC=$?
+check "opencode unit that finishes by itself: no session delete" '[ $RC = 0 ] && ! grep -q "session delete" "$T/oc.log"'
+# 31 no-progress watchdog: no commit for N s, or the same test failing N times -> clean stop (opencode-aware), one retry on the OTHER agent
+QD="$LANES_HOME/queue"; rm -f "$QD"/*.task; : > "$T/oc.log"
+OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_NOCOMMIT_S=3 LANE_STUB_CMD='while :; do echo x >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd nocommit' wd1)" 2>&1); RC=$?
+WQ=$(ls "$QD"/*wd-nocommit*-retry.task 2>/dev/null | head -1)
+check "watchdog: no commit within the limit -> stopped, opencode session ended, retry pinned to codex with a note" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "^## Watchdog" "$WQ" && grep -q "no new commit" "$WQ" && [ "$(head -1 "$WQ")" = "# Wd nocommit (attempt 2)" ] && grep -q "session delete ses_.*wd_nocommit" "$T/oc.log" && bash scripts/queue-write.sh --check "$WQ" >/dev/null'
+rm -f "$QD"/*.task
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; echo "--- FAIL: TestOther$i (0.01s)"; done; while :; do echo y >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd testloop' wd2)" 2>&1); RC=$?
+WQ=$(ls "$QD"/*wd-testloop*-retry.task 2>/dev/null | head -1)
+check "watchdog: the same test failing 3 times -> stopped, retry on the other agent names the test" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "test .TestLoopy. failed 3+ times" "$WQ"'
+rm -f "$QD"/*.task
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=0 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; done; sleep 2; '"$STUB_OK" $RL laneA "$(task 'Wd disabled' wd3)" 2>&1); RC=$?
+check "watchdog limits are configurable: LANE_WD_TESTFAIL_N=0 disables the test-loop stop" '[ $RC = 0 ] && ! grep -q watchdog "$LANES_HOME"/logs/*wd-disabled-laneA.log'
+printf '# Wd pinned\nneeds: none\nexpected_min: 5\nagent: codex\n' > "$T/wdp.task"
+OA=$(LANE_NO_CHAIN=1 $RL --check laneA "$T/wdp.task" 2>&1); RA=$?; OB=$(LANE_NO_CHAIN=1 $RL --check laneB "$T/wdp.task" 2>&1); RB=$?
+check "agent: header pins the retry: --check refuses the opencode lane (5), the codex lane is not refused for agent" '[ $RA = 5 ] && echo "$OA" | grep -q "wants agent .codex." && ! echo "$OB" | grep -q "wants agent"'
+rm -f "$QD"/*.task
+# 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"
 echo "test-lanes: $PASS passed, $FAILS failed"; [ $FAILS = 0 ]

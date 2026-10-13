@@ -90,7 +90,7 @@ func TestWorkspaceWorktreePerThread(t *testing.T) {
 		t.Fatalf("two threads share a checkout: %q", first)
 	}
 	for thread, path := range map[string]string{"chat-one": first, "chat-two": second} {
-		if branch := runGit(t, path, "rev-parse", "--abbrev-ref", "HEAD"); branch != "polymux/"+thread {
+		if branch := runGit(t, path, "rev-parse", "--abbrev-ref", "HEAD"); branch != "polymux/coding--"+thread {
 			t.Fatalf("thread %s is on branch %q", thread, branch)
 		}
 		if head, want := runGit(t, path, "rev-parse", "HEAD"), runGit(t, repo, "rev-parse", "origin/main"); head != want {
@@ -159,7 +159,7 @@ func TestWorkspaceFirstReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prompt, "Working in ~/code/Polymux on branch polymux/chat") {
+	if !strings.Contains(prompt, "Working in ~/code/Polymux on branch polymux/coding--chat") {
 		t.Fatal("first reply does not identify the repository and branch")
 	}
 }
@@ -248,7 +248,7 @@ func TestWorkspaceRejectsOtherRepoCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The conversation's directory already holds another repo's checkout.
-	runGit(t, second, "worktree", "add", path, "-b", "polymux/chat", "origin/main")
+	runGit(t, second, "worktree", "add", path, "-b", "polymux/coding--chat", "origin/main")
 	_, err := worktrees.Ensure(t.Context(), first, "coding", "chat")
 	var repoErr *RepoError
 	if !errors.As(err, &repoErr) || !strings.HasPrefix(err.Error(), "Can't open repo:") {
@@ -271,5 +271,60 @@ func TestWorkspaceRejectsLeftoverDirectory(t *testing.T) {
 	var repoErr *RepoError
 	if !errors.As(err, &repoErr) || !strings.HasPrefix(err.Error(), "Can't open repo:") {
 		t.Fatalf("a leftover directory was reused: %v", err)
+	}
+}
+
+func TestWorkspaceSameRepoTwoAgents(t *testing.T) {
+	repo := gitRepo(t, true)
+	legacy := runGit(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "branch", "polymux/group1", legacy)
+	worktrees := NewWorktrees(t.TempDir())
+	paths := make(map[string]string)
+	for _, agent := range []string{"coding", "writer"} {
+		path, err := worktrees.Ensure(t.Context(), repo, agent, "group1")
+		if err != nil {
+			t.Fatalf("agent %s: %v", agent, err)
+		}
+		paths[agent] = path
+	}
+	for agent, path := range paths {
+		if branch := runGit(t, path, "branch", "--show-current"); branch != "polymux/"+agent+"--group1" {
+			t.Fatalf("agent %s is on branch %q", agent, branch)
+		}
+	}
+	if paths["coding"] == paths["writer"] {
+		t.Fatal("two agents share a checkout")
+	}
+	if err := os.WriteFile(filepath.Join(paths["coding"], "draft.txt"), []byte("coding only\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(paths["writer"], "draft.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a file written by one agent is visible to the other")
+	}
+	if err := worktrees.Remove(t.Context(), repo, "writer", "group1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths["writer"]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed agent's checkout remains: %v", err)
+	}
+	if again, err := worktrees.Ensure(t.Context(), repo, "coding", "group1"); err != nil || again != paths["coding"] {
+		t.Fatalf("deletion affected the other agent's checkout: %q %v", again, err)
+	}
+	if head := runGit(t, repo, "rev-parse", "polymux/group1"); head != legacy {
+		t.Fatal("the legacy branch changed")
+	}
+}
+
+func TestWorkspaceInvalidNames(t *testing.T) {
+	worktrees := NewWorktrees(t.TempDir())
+	for _, name := range []string{"", "bad/name", "bad\\name", "bad.name"} {
+		for _, pair := range [][2]string{{name, "chat"}, {"coding", name}} {
+			if _, err := worktrees.Ensure(t.Context(), "", pair[0], pair[1]); err == nil {
+				t.Fatalf("Ensure accepted invalid pair %q", pair)
+			}
+			if err := worktrees.Remove(t.Context(), "", pair[0], pair[1]); err == nil {
+				t.Fatalf("Remove accepted invalid pair %q", pair)
+			}
+		}
 	}
 }
