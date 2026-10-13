@@ -70,9 +70,9 @@ func diffHTML(ctx context.Context, dir string) (string, error) {
 	return body.String(), nil
 }
 
-func prStatus(ctx context.Context, dir, thread string) (string, bool) {
+func prStatus(ctx context.Context, dir, agent, thread string) (string, bool) {
 	// gh pr view accepts a branch as its positional selector, not --head.
-	data, err := repoOutput(ctx, dir, "gh", "pr", "view", "polymux/"+thread, "--json", "number,url,state,isDraft,statusCheckRollup,mergeable,headRefOid")
+	data, err := repoOutput(ctx, dir, "gh", "pr", "view", agentruntime.BranchName(agent, thread), "--json", "number,url,state,isDraft,statusCheckRollup,mergeable,headRefOid")
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok && strings.Contains(string(exit.Stderr), "no pull requests found") {
 			return "No PR yet", false
@@ -108,6 +108,9 @@ func prStatus(ctx context.Context, dir, thread string) (string, bool) {
 		checks = "checks failing"
 	}
 	state := strings.ToLower(pr.State)
+	if pr.State == "MERGED" {
+		state = "Merged"
+	}
 	if pr.IsDraft {
 		state += " · draft"
 	}
@@ -127,9 +130,13 @@ func (s *Server) diffCard(d agentruntime.Definition, run contract.Run) {
 
 func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *contract.Message, body string, interval time.Duration) {
 	dir := s.worktrees.Path(d.Agent.ID, agentruntime.WorkspaceThread(d))
+	action := mergeAction(ctx, dir, d.Agent.ID, agentruntime.WorkspaceThread(d))
 	for {
-		status, pending := prStatus(ctx, dir, agentruntime.WorkspaceThread(d))
-		source := body + "<p>" + html.EscapeString(status) + "</p>"
+		status, pending := prStatus(ctx, dir, d.Agent.ID, agentruntime.WorkspaceThread(d))
+		if !strings.Contains(status, " · open") {
+			action = ""
+		}
+		source := body + "<p>" + html.EscapeString(status) + "</p>" + action
 		id := ID()
 		path := filepath.Join(s.config.DataDir, "attachments", id)
 		if os.WriteFile(path, []byte(source), 0600) != nil {
@@ -143,7 +150,7 @@ func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *
 			os.Remove(path)
 			return
 		}
-		if !pending {
+		if !pending && !strings.Contains(status, " · open") {
 			return
 		}
 		timer := time.NewTimer(interval)
@@ -154,4 +161,23 @@ func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *
 		case <-timer.C:
 		}
 	}
+}
+
+func mergeAction(ctx context.Context, dir, agent, thread string) string {
+	data, err := repoOutput(ctx, dir, "gh", "pr", "list", "--head", agentruntime.BranchName(agent, thread), "--json", "number,state,isDraft,headRefOid")
+	var prs []struct {
+		Number            int
+		State, HeadRefOid string
+		IsDraft           bool
+	}
+	if err != nil || json.Unmarshal(data, &prs) != nil || len(prs) != 1 {
+		return ""
+	}
+	pr := prs[0]
+	if pr.Number < 1 || pr.State != "OPEN" || pr.IsDraft || !mergeSHA.MatchString(pr.HeadRefOid) {
+		return ""
+	}
+	intent, _ := json.Marshal(mergeArgs{PR: pr.Number, HeadSHA: pr.HeadRefOid})
+	message, _ := json.Marshal("merge #" + strconv.Itoa(pr.Number) + " using merge_pr with " + string(intent))
+	return `<lg-button onclick='polymuxSend(` + html.EscapeString(string(message)) + `)'>Merge</lg-button>`
 }

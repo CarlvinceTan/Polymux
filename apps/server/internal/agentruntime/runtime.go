@@ -23,6 +23,9 @@ import (
 	"github.com/MichaelKinsy/PiG/mcp"
 )
 
+// WorkspaceTool supplies the server-owned approval tool without an import cycle.
+var WorkspaceTool func(string) agent.AgentTool
+
 type Definition struct {
 	Devices []Device       `json:"devices,omitempty"`
 	Agent   contract.Agent `json:"agent"`
@@ -218,6 +221,9 @@ func (r *Runtime) Open(ctx context.Context, d Definition, path string) (Session,
 		}
 		tools = append(tools, paired...)
 		tools = append(tools, d.ExtraTools...)
+		if d.Workspace != "" && WorkspaceTool != nil {
+			tools = append(tools, WorkspaceTool(cwd))
+		}
 	}
 	names := slices.Clone(d.Tools)
 	for _, tool := range tools {
@@ -276,7 +282,7 @@ func buildPrompt(d Definition, tools []string, mcpDown bool) (string, error) {
 		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(repo, home+string(filepath.Separator)) {
 			repo = "~" + strings.TrimPrefix(repo, home)
 		}
-		prompt += "\nStart your first reply with: Working in " + repo + " on branch " + branchName(WorkspaceThread(d)) + "."
+		prompt += "\nStart your first reply with: Working in " + repo + " on branch " + BranchName(d.Agent.ID, WorkspaceThread(d)) + "."
 		if d.Worktree != "" {
 			prompt += "\nThis conversation's checkout is " + d.Worktree + ", shared with no other conversation; keep edits there. The source repository is " + d.Workspace + "."
 		}

@@ -36,6 +36,7 @@ type Factory interface {
 	Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error)
 }
 type Config struct {
+	MergeLane   string
 	DataDir     string
 	Model       string
 	Definitions []agentruntime.Definition
@@ -938,7 +939,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger != "review" {
 		run.MessageID = pointer("reply:" + run.ID)
 	}
-	state := &turnState{run: run, work: work, store: s.Store, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
+	state := &turnState{run: run, work: work, store: s.Store, mergeLane: s.config.MergeLane, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
 	runCtx = agentruntime.WithSteers(context.WithValue(runCtx, turnKey{}, state), func(ctx context.Context, persist func([]contract.Message) error) error {
 		return s.Store.DrainSteers(ctx, run.ID, persist)
 	})

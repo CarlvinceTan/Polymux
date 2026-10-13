@@ -2,6 +2,8 @@
 # The one build contract for agents: Go server vet+test, Swift packages, macOS and iOS
 # build/test in this worktree, readiness UI test (proof = its XCUITest attachments), optional
 # allowed-files check (VERIFY_SCOPE="glob,glob" from the task brief's scope: line),
+# VERIFY_TARGETS=full (default; merge lane / --verify-only) | affected (task lanes: only the Go packages,
+# Swift test targets and app builds reachable from paths changed since TI_BASE, via scripts/affected.py),
 # write .build/proof/summary.md. Exit 0 only when everything passed.
 # Builds wait for a slot in the shared lock dir (max_builds; 1 while ~/ops/pr-verify builds).
 set -uo pipefail
@@ -67,6 +69,10 @@ acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
   done
 }
 declare -a ROWS; FAIL=0
+skip() { ROWS+=("| $1 | SKIP | not affected | 0s |"); echo "verify: $1 SKIP (not affected)"; }
+# Target selection (scripts/verify-targets.sh): unset/full -> everything; affected -> affected.py, falling back to full.
+VT=full GO_PKGS=./... SWIFT=all APP=1 WHY="verify-targets.sh missing"; [ -f "$SD/verify-targets.sh" ] && eval "$(bash "$SD/verify-targets.sh" "${TI_BASE:-origin/main}" "$L/affected.log")"
+[ "$VT" = affected ] && echo "verify: affected ($WHY): go=[${GO_PKGS:-none}] swift=[${SWIFT:-none}] app=$APP" || echo "verify: targets full ($WHY)"
 step() {  # step NAME cmd...
   local n=$1; shift; local t=$SECONDS; mark
   perl -e 'alarm shift; exec @ARGV' 2400 "$@" > "$L/$n.log" 2>&1; local rc=$?
@@ -79,23 +85,45 @@ step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 [ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"
 # Lane scripts changed -> run their hermetic tests too.
 # From the worktree under test, so --verify-only checks the PR's own scripts and tests.
+[ -f "$ROOT/scripts/test-affected.sh" ] && step affected-tests bash "$ROOT/scripts/test-affected.sh"
 lane_files_changed "${TI_BASE:-origin/main}" && step lane-tests bash "$(lane_tests_path "$ROOT" "$SD")"
 lane_files_changed "${TI_BASE:-origin/main}" && [ -f "$ROOT/scripts/test-merge-queue.sh" ] && step merge-queue-tests bash "$ROOT/scripts/test-merge-queue.sh"
-[ -d apps/server ] && { step go-vet sh -c 'cd apps/server && GOMAXPROCS=4 go vet -tags sqlite_fts5 ./... && GOMAXPROCS=4 go vet -tags "sqlite_fts5 verifyfixture" ./...'
-  step go-test sh -c 'cd apps/server && GOMAXPROCS=4 go test -p 4 -tags "sqlite_fts5 verifyfixture" -count=1 ./...'
+if [ -d apps/server ] && [ -z "$GO_PKGS" ]; then skip go-vet; skip go-test; skip fixture-off
+elif [ -d apps/server ]; then
+  step go-vet sh -c 'cd apps/server && GOMAXPROCS=4 go vet -tags sqlite_fts5 $1 && GOMAXPROCS=4 go vet -tags "sqlite_fts5 verifyfixture" $1' _ "$GO_PKGS"
+  # -json keeps per-test times (go-test.json); the text log stays readable for failures.txt.
+  step go-test sh -c 'cd apps/server && GOMAXPROCS=4 go test -p 4 -tags "sqlite_fts5 verifyfixture" -count=1 -json $1 > "$2" ; rc=$?; python3 -c "import json,sys
+for l in open(sys.argv[1]):
+  try: e=json.loads(l)
+  except ValueError: continue
+  if e.get(\"Action\")==\"output\": sys.stdout.write(e.get(\"Output\",\"\"))" "$2"; exit $rc' _ "$GO_PKGS" "$ROOT/$L/go-test.json"
   # Opt-in fixture: a default-tag build must compile and must not advertise --verify-fixture.
-  step fixture-off sh -c 'cd apps/server && out=$(go run ./cmd/server -h 2>&1) || { printf "%s\n" "$out"; exit 1; }; printf "%s" "$out" | grep -q verify-fixture && { echo "default build advertises --verify-fixture"; exit 1; }; exit 0'; }
-python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }
+  step fixture-off sh -c 'cd apps/server && out=$(go run ./cmd/server -h 2>&1) || { printf "%s\n" "$out"; exit 1; }; printf "%s" "$out" | grep -q verify-fixture && { echo "default build advertises --verify-fixture"; exit 1; }; exit 0'
+fi
+NEED_SLOT=1; [ "$APP" = 0 ] && [ -z "$SWIFT" ] && NEED_SLOT=0
+if [ "$APP" = 1 ]; then python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }; fi
 XC=(-jobs 6 -derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
-acquire; echo "verify: slot $SLOT"
-step packages swift test --scratch-path .build/swiftpm --cache-path .build/SPM-cache
+[ $NEED_SLOT = 1 ] && { acquire; echo "verify: slot $SLOT"; }
+if [ -z "$SWIFT" ]; then skip packages
+elif [ "$SWIFT" = all ]; then step packages swift test --scratch-path .build/swiftpm --cache-path .build/SPM-cache
+else step packages swift test --scratch-path .build/swiftpm --cache-path .build/SPM-cache --filter "$SWIFT"; fi
+if [ "$APP" = 0 ]; then skip macos-build; skip ios-build; ACT=skip; READY=unavailable
+else
 step macos-build xcodebuild build -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination platform=macOS "${XC[@]}"
 # App scheme gains a test action later (UI tests); until then build it and rely on package tests.
 ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme && ACT=test
-[ $ACT = test ] && step macos-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
-  -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
+# cvmini macOS XCUITest runner hangs before connecting when PolymuxUITests is a TestableReference.
+# Readiness proof is ios-ready (-only-testing on the simulator); skip launching macos-test in that case.
+if [ $ACT = test ]; then
+  if [ -f apps/Polymux/PolymuxUITests/ReadinessTests.swift ]; then
+    echo "verify: skipping macos-test (cvmini macOS XCUITest runner hangs; ios-ready covers readiness)"
+  else
+    step macos-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+      -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
+  fi
+fi
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1
 step ios-$ACT xcodebuild $ACT -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination "id=$SIM_UDID" $([ $ACT = test ] && echo -resultBundlePath "$R/ios.xcresult") "${XC[@]}"
@@ -105,6 +133,7 @@ if [ -f "$UT" ]; then step ios-ready xcodebuild test -project apps/Polymux/Polym
   -destination "id=$SIM_UDID" -only-testing:PolymuxUITests/ReadinessTests -resultBundlePath "$R/ready.xcresult" "${XC[@]}"
   grep -q '^| ios-ready | PASS' <(printf '%s\n' "${ROWS[@]}") && READY=yes || READY=no
 else echo "verify: readiness unavailable (no $UT; see scripts/templates/ReadinessTests.swift); caps level below UI-verified"; fi
+fi
 rm -rf "$SLOT"; SLOT=""
 # Proof = XCUITest attachments (readiness screenshots taken after every wait held). No sleep-N
 # simctl shots and no macOS screencapture (unreliable over SSH on cvmini).
@@ -126,11 +155,16 @@ MEDIA=$(cd "$P" && ls *.png *.mp4 *.mov 2>/dev/null | tr '\n' ' ')
 # Verification level (exact names): UI-verified | unit-test-verified | build-only | blocked | failed
 ok() { printf '%s\n' "${ROWS[@]}" | grep -q "^| $1 | PASS | [1-9]"; }
 LEVEL=build-only; ok packages && LEVEL=unit-test-verified
+[ "$VT" = affected ] && [ -z "$SWIFT" ] && printf "%s\n" "${ROWS[@]}" | grep -q "^| go-test | PASS" && LEVEL=unit-test-verified   # Go-only change
 [ $READY = yes ] && [ -s "$P/ready.json" ] && ls "$P"/ready-*.png >/dev/null 2>&1 && LEVEL=UI-verified   # readiness + ready.json required
+BUILT=0; printf '%s\n' "${ROWS[@]}" | grep -qE '^\| (go-test|packages|macos-build|ios-build) \| PASS' && BUILT=1
+NOTE=""; [ $BUILT = 0 ] && NOTE="nothing built or tested (inert-only change in affected mode); not a build"
 [ $FAIL = 1 ] && LEVEL=failed
-echo $LEVEL > "$P/level"
+echo $LEVEL > "$P/level"; if [ -n "$NOTE" ]; then echo "$NOTE" > "$P/level-note"; else rm -f "$P/level-note"; fi
 { echo "## verify.sh: $([ $FAIL = 0 ] && echo PASS || echo FAIL)"
   echo "commit \`$(git rev-parse --short HEAD)\` on $(hostname -s), $(date '+%F %T %Z'), worktree $WT_NAME"
+  echo "targets: $VT$([ "$VT" = affected ] && echo " (go: ${GO_PKGS:-none}; swift: ${SWIFT:-none}; app: $APP)")"
+  [ -n "$NOTE" ] && echo "note: **$NOTE**"
   echo "level: **$LEVEL**, ready (chats.list + 12 sidebar rows + waits): $READY"
   echo; echo "| step | result | tests | time |"; echo "|---|---|---|---|"; printf '%s\n' "${ROWS[@]}"
   echo; echo "media: ${MEDIA:-none (readiness test attachments only)}"
