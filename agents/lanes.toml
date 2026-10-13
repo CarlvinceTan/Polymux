@@ -20,7 +20,7 @@ cursor_install_sha256 = ""        # empty = refuse automatic install; install ma
 # lane3 max_concurrent = 2: codex exec runs parallel sessions on one ChatGPT login (shared rate limit);
 # builds are still capped by max_builds/locks. run-lane.sh refuses a 3rd concurrent lane3 run (exit 5).
 # run-lane.sh refuses a disabled/expired/unknown lane, or one whose key/account/env points at the main
-# account (case-insensitive: forbidden_keys, "ultra", "carlvincetan@gmail"), with exit 5 before any claim,
+# account (case-insensitive SUBSTRING: forbidden_keys, "ultra", "carlvincetan@gmail"; so ANY title containing "ultra" is refused), with exit 5 before any claim,
 # worktree or vault read, and strips any inherited CURSOR_API_KEY from every agent child.
 # Keychain: a per-lane HOME does NOT isolate the macOS login keychain (securityd is per user), so
 # isolation rests on: the key is passed only via the child's CURSOR_API_KEY (no `cursor-agent login`,

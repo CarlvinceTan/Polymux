@@ -340,13 +340,25 @@ check "lane whose account is carlvincetan@gmail (any case) exits 5 up front" '[ 
 OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" LANE_NO_CHAIN=1 LANE_KEY_TITLE="my ultra key" $RL lane2 "$(task 'Gate env' g9)" 2>&1); RC=$?
 check "env LANE_KEY_TITLE pointing at Ultra exits 5 up front" '[ $RC = 5 ] && [ ! -s "$T/vault.log" ]'
 check "forbidden guard is case-insensitive and substring (ultra, carlvincetan@gmail, listed titles); others pass" 'LANES_TOML=$T/gate.toml python3 scripts/lanes.py forbidden "cursor api key - lane1 (ULTRA)" && LANES_TOML=$T/gate.toml python3 scripts/lanes.py forbidden "key of CARLVINCETAN@GMAIL.COM" && LANES_TOML=$T/gate.toml python3 scripts/lanes.py forbidden "MAIN KEY v2" && ! LANES_TOML=$T/gate.toml python3 scripts/lanes.py forbidden "student key"'
-# 24 max_concurrent enforced per lane
-printf '2026-10-13 10:00:00\tx1\trunning\tlane8\t/w1\n' >> "$LANES_HOME/events.tsv"
+# 24 max_concurrent: live unit locks on the lane, atomic, killed runs don't hold a slot
+CAPU() { mkdir -p "$LANES_HOME/units/$1.lock"; echo "$2" > "$LANES_HOME/units/$1.lock/pid"; echo lane8 > "$LANES_HOME/units/$1.lock/lane"; }
+sleep 300 & LP1=$!; sleep 300 & LP2=$!
+CAPU cap-live1 $LP1
 OUT1=$(env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD=true $RL lane8 "$(task 'Conc one' g10)" 2>&1)
-printf '2026-10-13 10:00:00\tx2\trunning\tlane8\t/w2\n' >> "$LANES_HOME/events.tsv"
+CAPU cap-live2 $LP2
 OUT2=$(env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD=true $RL lane8 "$(task 'Conc two' g11)" 2>&1); RC=$?
-printf '2026-10-13 10:00:01\tx1\tpassed\tlane8\t\n2026-10-13 10:00:01\tx2\tpassed\tlane8\t\n' >> "$LANES_HOME/events.tsv"
-check "max_concurrent=2: 2nd run allowed with 1 running, 3rd refused (exit 5)" '! echo "$OUT1" | grep -q "max_concurrent" && [ $RC = 5 ] && echo "$OUT2" | grep -q "already has 2 running (max_concurrent 2)"'
+check "max_concurrent=2: 2nd run allowed with 1 live, refused (exit 5) with 2 live" '! echo "$OUT1" | grep -q "max_concurrent" && [ $RC = 5 ] && echo "$OUT2" | grep -q "already has 2 running (max_concurrent 2)"'
+kill $LP2; wait $LP2 2>/dev/null
+OUT3=$(env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD=true $RL lane8 "$(task 'Conc killed' g12)" 2>&1)
+printf '2026-10-13 10:00:00\tx9\trunning\tlane8\t/w9\n2026-10-13 10:00:00\tx8\trunning\tlane8\t/w8\n' >> "$LANES_HOME/events.tsv"
+OUT4=$(env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD=true $RL lane8 "$(task 'Conc stale rows' g13)" 2>&1)
+check "a killed run (dead pid lock) and stale running rows hold no slot" '! echo "$OUT3" | grep -q "max_concurrent" && ! echo "$OUT4" | grep -q "max_concurrent"'
+rm -rf "$LANES_HOME/units/cap-live2.lock"
+# cap atomic: with 1 live, 4 simultaneous starts -> exactly one passes the cap (the others refused)
+: > "$T/capres"; for k in 1 2 3 4; do ( env LANES_TOML="$T/gate.toml" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="sleep 12; $STUB_OK" $RL lane8 "$(task "Conc race $k" g2$k)" > "$T/capout$k" 2>&1; grep -q "max_concurrent 2" "$T/capout$k" && echo refused >> "$T/capres" || echo ran >> "$T/capres" ) & RPS="${RPS:-} $!"; done; wait $RPS
+[ -n "${TL_DEBUG:-}" ] && head -5 "$T"/capout*
+check "cap is atomic: 4 simultaneous starts with 1 live -> 1 runs, 3 refused" '[ "$(grep -c ran "$T/capres")" = 1 ] && [ "$(grep -c refused "$T/capres")" = 3 ]'
+kill $LP1; wait $LP1 2>/dev/null; rm -rf "$LANES_HOME"/units/cap-*.lock "$LANES_HOME/queue/"*.task
 # 25 committed agents/lanes.toml matches Carlvince's final layout
 CT="$SRC/agents/lanes.toml"
 check "committed lanes.toml: lane3 only primary (max 2), lane4 fallback, lane1+lane2 disabled, no main key" '[ "$(LANES_TOML=$CT python3 scripts/lanes.py primaries)" = lane3 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py order lane4)" = "lane3 lane4" ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py maxconc lane3)" = 2 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane4 role)" = fallback ] && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane1 && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane2 && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane1 key)" ] && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane2 key)" ]'

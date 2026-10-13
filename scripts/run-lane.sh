@@ -53,8 +53,6 @@ fi
 # Lane gate FIRST: a disabled (lane1 = main Cursor account), expired or unknown lane never runs; no claim, worktree or vault read.
 cfg usable "$LANE" || { echo "refusing: lane '$LANE' is disabled, expired or unknown in agents/lanes.toml"; exit 5; }
 cfg mainkey "$LANE" && { echo "refusing: lane '$LANE' key/account points at the main account"; exit 5; }
-N=$(awk -F"\t" -v l="$LANE" '{st[$2]=$3; ln[$2]=$4} END{n=0; for(i in st) if(st[i]=="running" && ln[i]==l) n++; print n}' "$EV" 2>/dev/null)
-MC=$(cfg maxconc "$LANE"); [ "$MC" = 0 ] || [ "${N:-0}" -lt "$MC" ] || { echo "refusing: lane '$LANE' already has ${N} running (max_concurrent $(cfg maxconc "$LANE"))"; exit 5; }
 QW() { bash "$SD/queue-write.sh" "$@"; }   # every queue/queue-hold write goes through the locked helper
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4
@@ -96,7 +94,21 @@ grep -qF "	$TITLE	" "$OPS/failures.tsv" 2>/dev/null && { echo "refusing: '$TITLE
 G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight refused: $G"; exit 5; }
 # One writer per unit and per branch.
 UL="$OPS/units/$SLUG.lock"; BLS=""
-lock_take "$UL" || { echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
+# Lane cap (max_concurrent): a run = a held unit lock with a LIVE pid on this lane (the lock's lane file, else its
+# latest events.tsv row), i.e. the unit locks lane-guard counts, minus dead ones. A killed/crashed run's lock has a
+# dead pid and never holds a slot. Count + unit-lock take happen under a per-lane mutex, so two starts can't both pass.
+lane_live() { local d p l n=0; for d in "$OPS"/units/*.lock; do [ -d "$d" ] || continue; p=$(lock_holder "$d")
+    { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || continue
+    l=$(cat "$d/lane" 2>/dev/null); [ -n "$l" ] || l=$(awk -F'\t' -v u="$(basename "$d" .lock)" '{s=$2; sub(/^[0-9]+-/,"",s); gsub(/^-+|-+$/,"",s)} s==u{l=$4} END{print l}' "$EV" 2>/dev/null)
+    [ "$l" = "$1" ] && n=$((n+1)); done; echo $n; }
+MC=$(cfg maxconc "$LANE"); CAPL="$OPS/lanes/$LANE.cap.lock"
+if [ "$MC" != 0 ]; then
+  for k in $(seq 1 100); do lock_take "$CAPL" && break; sleep 0.1; done
+  [ "$(lock_holder "$CAPL")" = $$ ] || { echo "refusing: lane '$LANE' cap mutex busy ($CAPL, pid $(lock_holder "$CAPL"))"; exit 5; }
+  N=$(lane_live "$LANE"); [ "$N" -lt "$MC" ] || { lock_drop "$CAPL"; echo "refusing: lane '$LANE' already has $N running (max_concurrent $MC)"; exit 5; }
+fi
+lock_take "$UL" || { lock_drop "$CAPL" 2>/dev/null; echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
+echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
 # Continuous dispatch: whenever a lane becomes free, for any reason (success, failure, failover to
 # another lane, blocked, infra error), ask lane-guard at once to refill it, so no lane idles until the
 # 10-min launchd tick (now only a backstop): 'lane-guard --dispatch --free-lane <lane>' when its --help
