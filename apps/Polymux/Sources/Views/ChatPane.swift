@@ -163,7 +163,7 @@ struct ChatPane: View {
         }
         .task {
             store.isVisible = scenePhase == .active
-            store.onUpdate = { session.sidebar.reload() }
+            store.onUpdate = { event, tap in session.sidebar.note(event, at: tap) }
             await store.start()
             await store.markRead()
         }
