@@ -56,6 +56,12 @@ struct NewChatView: View {
         }
         .panelDismiss(onClose: close)
         .task { focused = true }
+        #if DICTATION_CHECK
+        .task {
+            // The simulator check harness cannot post touches; it runs the real actions instead.
+            if NewChatCheck.autoAgent { NewChatCheck.autoAgent = false; create() }
+        }
+        #endif
     }
 
     private var recipientBar: some View {
@@ -230,6 +236,13 @@ struct NewChatView: View {
         return CreateAgentRequest(name: names.randomElement() ?? "Nova", role: "", prompt: "", avatar: options.design)
     }
 }
+
+#if DICTATION_CHECK
+/// Offscreen check harness switch; never compiled into the app.
+enum NewChatCheck {
+    @MainActor static var autoAgent = false
+}
+#endif
 
 private struct RecipientFlow: Layout {
     private struct Placement {
