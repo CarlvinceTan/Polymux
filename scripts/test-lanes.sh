@@ -316,6 +316,24 @@ check "max_concurrent=2: 2nd run allowed with 1 running, 3rd refused (exit 5)" '
 CT="$SRC/agents/lanes.toml"
 check "committed lanes.toml: lane3 only primary (max 2), lane4 fallback, lane1+lane2 disabled, no main key" '[ "$(LANES_TOML=$CT python3 scripts/lanes.py primaries)" = lane3 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py order lane4)" = "lane3 lane4" ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py maxconc lane3)" = 2 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane4 role)" = fallback ] && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane1 && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane2 && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane1 key)" ] && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane2 key)" ]'
 rm -f "$LANES_HOME/queue/"*.task
+# 23 wt-setup warms the sim template once; failed warms are capped; markers live under LANES_HOME
+WS="$T/warmbin"; mkdir -p "$WS"; : > "$T/warm.log"
+cat > "$WS/xcrun" <<XC
+#!/bin/bash
+echo "\$*" >> "$T/warm.log"
+case "\$2" in
+  list) [ "\$3" = devices ] && echo '{"devices":{"r":[{"name":"polymux-template","udid":"TPL1","isAvailable":true}]}}';;
+  bootstatus) [ -f "$T/warmfail" ] && exit 1; exit 0;;
+  clone) echo CLONE1;;
+esac; exit 0
+XC
+chmod +x "$WS/xcrun"; git worktree add -q --detach "$T/wsA" main
+WSR() { (cd "$T/wsA" && PATH="$WS:$PATH" SIM_WARM_SETTLE=0 SIM_WARM_TIMEOUT=5 bash scripts/wt-setup.sh) >/dev/null 2>&1; }
+touch "$T/warmfail"; WSR; WSR; WSR
+check "warm failures capped at 2 attempts, counted under LANES_HOME" '[ "$(grep -c "simctl bootstatus" "$T/warm.log")" = 2 ] && [ "$(cat "$LANES_HOME/.sim-warm-fail-TPL1")" = 2 ] && [ ! -e "$LANES_HOME/.sim-warm-TPL1" ]'
+rm -f "$T/warmfail" "$LANES_HOME/.sim-warm-fail-TPL1"; : > "$T/warm.log"; WSR; WSR
+check "successful warm runs once, then the marker skips it" '[ "$(grep -c "simctl bootstatus" "$T/warm.log")" = 1 ] && [ -f "$LANES_HOME/.sim-warm-TPL1" ] && [ ! -e "$LANES_HOME/.sim-warm-fail-TPL1" ]'
+git worktree remove --force "$T/wsA"
 # 16 board-update.sh (Notion board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"
