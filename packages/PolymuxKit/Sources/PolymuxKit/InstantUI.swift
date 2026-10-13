@@ -65,38 +65,78 @@ public struct ApprovalChoice: Equatable, Sendable {
     public var shown: String? { failed ? nil : optionID }
 
     /// Publishes the chosen answer before `send`, measured from `tap` through that publish.
-    /// A thrown send restores the unanswered card.
+    /// A thrown send restores the unanswered card. The frame spans are recorded by `ApprovalClock`.
     @MainActor
     @discardableResult
     public static func apply(
         current: ApprovalChoice = ApprovalChoice(),
         optionID: String,
         tap: ContinuousClock.Instant? = nil,
-        trace: SignpostTrace = SignpostTrace(),
+        clock: ApprovalClock,
         send: () async throws -> Void,
         publish: (ApprovalChoice) -> Void
     ) async -> ApprovalChoice {
         guard !current.isSending, current.shown == nil else { return current }
-        var choice = ApprovalChoice()
         let origin = tap ?? ContinuousClock().now
-        InstantUI.interval("ApprovalState", budget: InstantUI.stateBudget, trace: trace, from: origin) {
-            InstantUI.interval("ApprovalFeedback", budget: InstantUI.feedbackBudget, trace: trace, from: origin) {
-                choice.optionID = optionID
-                choice.isSending = true
-                publish(choice)
-            }
+        clock.arm(origin)
+        var choice = InstantUI.interval("ApprovalState", budget: InstantUI.stateBudget, trace: clock.trace, from: origin) {
+            let next = ApprovalChoice(optionID: optionID, isSending: true)
+            publish(next)
+            return next
         }
         do {
             try await send()
             choice.isSending = false
             publish(choice)
         } catch {
-            InstantUI.interval("ApprovalRollback", budget: InstantUI.feedbackBudget, trace: trace) {
-                choice = ApprovalChoice(failed: true)
-                publish(choice)
-            }
+            clock.armRollback()
+            choice = ApprovalChoice(failed: true)
+            publish(choice)
         }
         return choice
+    }
+}
+
+/// Holds the tap until the answered row, or the rollback caption, lands on screen.
+/// The span is recorded from that first frame, so the 16 ms budget covers the paint.
+@MainActor
+public final class ApprovalClock {
+    public let trace: SignpostTrace
+    private var tap: ContinuousClock.Instant?
+    private var failure: ContinuousClock.Instant?
+    private var answered = false
+    private var rolled = false
+
+    public init(trace: SignpostTrace = SignpostTrace()) {
+        self.trace = trace
+    }
+
+    public func arm(_ tap: ContinuousClock.Instant) {
+        self.tap = tap
+        answered = false
+    }
+
+    /// The answered row calls this from `onAppear`. Only the first frame of a tap records.
+    @discardableResult
+    public func answerAppeared() -> Bool {
+        guard let tap, !answered else { return false }
+        answered = true
+        InstantUI.interval("ApprovalFeedback", budget: InstantUI.feedbackBudget, trace: trace, from: tap) {}
+        return true
+    }
+
+    public func armRollback() {
+        failure = ContinuousClock().now
+        rolled = false
+    }
+
+    /// The failure caption calls this from `onAppear`.
+    @discardableResult
+    public func rollbackAppeared() -> Bool {
+        guard let failure, !rolled else { return false }
+        rolled = true
+        InstantUI.interval("ApprovalRollback", budget: InstantUI.feedbackBudget, trace: trace, from: failure) {}
+        return true
     }
 }
 

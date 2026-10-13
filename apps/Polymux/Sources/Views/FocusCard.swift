@@ -8,6 +8,7 @@ struct FocusCard: View {
     let agentID: String
     let bubble: Color
     @State private var choice = ApprovalChoice()
+    @State private var clock = ApprovalClock()
 
     private var answerID: String? { part.answerID ?? choice.shown }
 
@@ -21,6 +22,7 @@ struct FocusCard: View {
                     Text(label(answer))
                 }
                 .foregroundStyle(.secondary)
+                .onAppear { clock.answerAppeared() }
             } else {
                 ForEach(Array((part.options ?? []).enumerated()), id: \.element.id) { index, option in
                     Button { select(option.id) } label: {
@@ -41,6 +43,7 @@ struct FocusCard: View {
             }
             if choice.failed, part.answerID == nil {
                 Text("Couldn’t record that choice.").font(.caption).foregroundStyle(.secondary)
+                    .onAppear { clock.rollbackAppeared() }
             }
         }
         .padding(12)
@@ -63,7 +66,7 @@ struct FocusCard: View {
 
     private func choose(_ option: String, tap: ContinuousClock.Instant) async {
         guard part.answerID == nil else { return }
-        choice = await ApprovalChoice.apply(current: choice, optionID: option, tap: tap, send: {
+        choice = await ApprovalChoice.apply(current: choice, optionID: option, tap: tap, clock: clock, send: {
             _ = try await client.answerFocus(agentID: agentID, optionID: option)
         }, publish: { choice = $0 })
     }

@@ -7,11 +7,24 @@ import Testing
 
 @Suite @MainActor
 struct InstantUIApproval {
+    @Test func publishWaitsForTheFrame() async {
+        let clock = ApprovalClock()
+        let settled = await ApprovalChoice.apply(optionID: "day", clock: clock, send: {}, publish: { _ in })
+        // Publishing records only the state span; feedback is the answered row's first frame.
+        #expect(clock.trace.spans.map(\.name) == ["ApprovalState"])
+        #expect(settled.optionID == "day")
+        #expect(settled.failed == false)
+        #expect(settled.isSending == false)
+        #expect(clock.answerAppeared())
+        #expect(clock.answerAppeared() == false)
+        #expect(clock.trace.spans.map(\.name) == ["ApprovalState", "ApprovalFeedback"])
+    }
+
     @Test func optimisticAnswerMeetsBudgets() async {
-        let trace = SignpostTrace()
+        let clock = ApprovalClock()
         let gate = Gate()
         let task = Task { @MainActor in
-            await ApprovalChoice.apply(optionID: "day", trace: trace, send: {
+            await ApprovalChoice.apply(optionID: "day", clock: clock, send: {
                 await gate.hold()
             }, publish: { gate.publish($0) })
         }
@@ -23,7 +36,8 @@ struct InstantUIApproval {
         #expect(shown.shown == "day")
         #expect(InstantUI.feedbackBudget == .milliseconds(16))
         #expect(InstantUI.stateBudget == .milliseconds(50))
-        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState"])
+        #expect(clock.answerAppeared())
+        expectAppearance(clock.trace, names: ["ApprovalState", "ApprovalFeedback"])
         gate.release()
         let settled = await task.value
         #expect(settled.optionID == "day")
@@ -33,75 +47,98 @@ struct InstantUIApproval {
     }
 
     @Test func forcedFailureRollsBack() async {
-        let trace = SignpostTrace()
+        let clock = ApprovalClock()
         var seen: [ApprovalChoice] = []
-        let settled = await ApprovalChoice.apply(optionID: "research", trace: trace, send: {
+        let settled = await ApprovalChoice.apply(optionID: "research", clock: clock, send: {
             throw ClientError.unavailable
         }, publish: { seen.append($0) })
         #expect(seen.count == 2)
         #expect(seen[0].optionID == "research")
         #expect(seen[0].failed == false)
         #expect(seen[0].isSending == true)
+        #expect(clock.trace.spans.map(\.name) == ["ApprovalState"])
         #expect(settled == ApprovalChoice(failed: true))
         #expect(settled.shown == nil)
         #expect(seen[1] == settled)
-        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState", "ApprovalRollback"])
+        #expect(clock.rollbackAppeared())
+        #expect(clock.rollbackAppeared() == false)
+        expectAppearance(clock.trace, names: ["ApprovalState", "ApprovalRollback"])
     }
 
     @Test func failedRequestRollsBack() async throws {
         let host = ApprovalProtocol.routes.add(status: 503)
         defer { ApprovalProtocol.routes.remove(host) }
         let client = approvalClient(host)
-        let trace = SignpostTrace()
+        let clock = ApprovalClock()
+        let gate = Gate()
         var seen: [ApprovalChoice] = []
-        let settled = await ApprovalChoice.apply(optionID: "code", trace: trace, send: {
-            _ = try await client.answerFocus(agentID: "agent", optionID: "code")
-        }, publish: { seen.append($0) })
+        let task = Task { @MainActor in
+            await ApprovalChoice.apply(optionID: "code", clock: clock, send: {
+                await gate.hold()
+                _ = try await client.answerFocus(agentID: "agent", optionID: "code")
+            }, publish: {
+                seen.append($0)
+                gate.publish($0)
+            })
+        }
+        let shown = await gate.optimistic()
+        #expect(shown.optionID == "code")
+        #expect(shown.isSending == true)
+        #expect(clock.answerAppeared())
+        gate.release()
+        let settled = await task.value
+        #expect(ApprovalProtocol.routes.optionID(for: host) == "code")
         #expect(seen.first?.optionID == "code")
         #expect(seen.first?.isSending == true)
-        #expect(ApprovalProtocol.routes.optionID(for: host) == "code")
         #expect(settled == ApprovalChoice(failed: true))
         #expect(settled.shown == nil)
-        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState", "ApprovalRollback"])
+        #expect(clock.rollbackAppeared())
+        #expect(clock.trace.spans.map(\.name) == ["ApprovalState", "ApprovalFeedback", "ApprovalRollback"])
+        #expect(clock.trace.spans.last?.budget == InstantUI.feedbackBudget)
     }
 
     @Test func acceptedAnswerStays() async throws {
         let host = ApprovalProtocol.routes.add(status: 200)
         defer { ApprovalProtocol.routes.remove(host) }
         let client = approvalClient(host)
-        let trace = SignpostTrace()
-        var optimistic: ApprovalChoice?
-        let settled = await ApprovalChoice.apply(optionID: "everything", trace: trace, send: {
-            _ = try await client.answerFocus(agentID: "agent", optionID: "everything")
-        }, publish: { choice in
-            if optimistic == nil { optimistic = choice }
-        })
-        #expect(optimistic?.optionID == "everything")
-        #expect(optimistic?.isSending == true)
+        let clock = ApprovalClock()
+        let gate = Gate()
+        let task = Task { @MainActor in
+            await ApprovalChoice.apply(optionID: "everything", clock: clock, send: {
+                await gate.hold()
+                _ = try await client.answerFocus(agentID: "agent", optionID: "everything")
+            }, publish: { gate.publish($0) })
+        }
+        let optimistic = await gate.optimistic()
+        #expect(optimistic.optionID == "everything")
+        #expect(optimistic.isSending == true)
+        #expect(clock.answerAppeared())
+        expectAppearance(clock.trace, names: ["ApprovalState", "ApprovalFeedback"])
+        gate.release()
+        let settled = await task.value
         #expect(ApprovalProtocol.routes.optionID(for: host) == "everything")
         #expect(settled.optionID == "everything")
         #expect(settled.failed == false)
         #expect(settled.isSending == false)
-        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState"])
     }
 
     @Test func inflightAnswerIsKept() async {
         let gate = Gate()
-        let trace = SignpostTrace()
+        let clock = ApprovalClock()
         let task = Task { @MainActor in
-            await ApprovalChoice.apply(optionID: "day", trace: trace, send: {
+            await ApprovalChoice.apply(optionID: "day", clock: clock, send: {
                 await gate.hold()
             }, publish: { gate.publish($0) })
         }
         let first = await gate.optimistic()
-        let ignored = SignpostTrace()
+        let ignored = ApprovalClock()
         var sent = false
-        let second = await ApprovalChoice.apply(current: first, optionID: "code", trace: ignored, send: {
+        let second = await ApprovalChoice.apply(current: first, optionID: "code", clock: ignored, send: {
             sent = true
         }, publish: { _ in })
         #expect(sent == false)
         #expect(second == first)
-        #expect(ignored.spans.isEmpty)
+        #expect(ignored.trace.spans.isEmpty)
         gate.release()
         let settled = await task.value
         #expect(settled.optionID == "day")
@@ -110,9 +147,9 @@ struct InstantUIApproval {
     }
 
     @Test func skipAppliesOptimistically() async {
-        let trace = SignpostTrace()
+        let clock = ApprovalClock()
         var optimistic: ApprovalChoice?
-        let settled = await ApprovalChoice.apply(optionID: FocusAnswer.dismissed, trace: trace, send: {}, publish: { choice in
+        let settled = await ApprovalChoice.apply(optionID: FocusAnswer.dismissed, clock: clock, send: {}, publish: { choice in
             if optimistic == nil { optimistic = choice }
         })
         #expect(optimistic?.optionID == FocusAnswer.dismissed)
@@ -121,17 +158,19 @@ struct InstantUIApproval {
         #expect(settled.optionID == FocusAnswer.dismissed)
         #expect(settled.failed == false)
         #expect(settled.shown == FocusAnswer.dismissed)
-        expectBudgets(trace, names: ["ApprovalFeedback", "ApprovalState"])
+        #expect(clock.answerAppeared())
+        expectAppearance(clock.trace, names: ["ApprovalState", "ApprovalFeedback"])
     }
 
     @Test func slowPublishExceedsBudget() async {
-        let trace = SignpostTrace()
-        _ = await ApprovalChoice.apply(optionID: "day", trace: trace, send: {}, publish: { _ in
+        let clock = ApprovalClock()
+        _ = await ApprovalChoice.apply(optionID: "day", clock: clock, send: {}, publish: { _ in
             stall(.milliseconds(80))
         })
-        #expect(trace.meetsBudgets == false)
-        let feedback = trace.spans.first { $0.name == "ApprovalFeedback" }
-        let state = trace.spans.first { $0.name == "ApprovalState" }
+        #expect(clock.answerAppeared())
+        #expect(clock.trace.meetsBudgets == false)
+        let feedback = clock.trace.spans.first { $0.name == "ApprovalFeedback" }
+        let state = clock.trace.spans.first { $0.name == "ApprovalState" }
         #expect(feedback?.withinBudget == false)
         #expect(state?.withinBudget == false)
         #expect((feedback?.duration ?? .zero) > InstantUI.feedbackBudget)
@@ -139,24 +178,31 @@ struct InstantUIApproval {
     }
 
     @Test func staleTapExceedsBudget() async {
-        let trace = SignpostTrace()
+        let clock = ApprovalClock()
         let tap = ContinuousClock().now
         stall(.milliseconds(80))
-        _ = await ApprovalChoice.apply(optionID: "day", tap: tap, trace: trace, send: {}, publish: { _ in })
-        #expect(trace.meetsBudgets == false)
-        let state = trace.spans.first { $0.name == "ApprovalState" }
+        _ = await ApprovalChoice.apply(optionID: "day", tap: tap, clock: clock, send: {}, publish: { _ in })
+        #expect(clock.answerAppeared())
+        #expect(clock.trace.meetsBudgets == false)
+        let feedback = clock.trace.spans.first { $0.name == "ApprovalFeedback" }
+        let state = clock.trace.spans.first { $0.name == "ApprovalState" }
+        #expect(feedback?.withinBudget == false)
         #expect(state?.withinBudget == false)
+        #expect((feedback?.duration ?? .zero) > InstantUI.feedbackBudget)
         #expect((state?.duration ?? .zero) > InstantUI.stateBudget)
     }
 
-    private func expectBudgets(_ trace: SignpostTrace, names: [String], sourceLocation: SourceLocation = #_sourceLocation) {
-        #expect(trace.meetsBudgets, sourceLocation: sourceLocation)
+    /// State must land inside 50 ms. Frame spans start at the tap, so a test hop can miss 16 ms;
+    /// the stall tests cover that miss.
+    private func expectAppearance(_ trace: SignpostTrace, names: [String], sourceLocation: SourceLocation = #_sourceLocation) {
         #expect(trace.spans.map(\.name) == names, sourceLocation: sourceLocation)
         for span in trace.spans {
             let budget = span.name == "ApprovalState" ? InstantUI.stateBudget : InstantUI.feedbackBudget
             #expect(span.budget == budget, sourceLocation: sourceLocation)
-            #expect(span.withinBudget, sourceLocation: sourceLocation)
+            #expect(span.duration > .zero, sourceLocation: sourceLocation)
         }
+        let state = trace.spans.first { $0.name == "ApprovalState" }
+        #expect(state?.withinBudget == true, sourceLocation: sourceLocation)
     }
 
     private func approvalClient(_ host: String) -> APIClient {
