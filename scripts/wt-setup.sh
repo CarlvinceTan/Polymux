@@ -18,6 +18,13 @@ if [ -z "$T" ]; then
 r=[x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']]; print(r[-1]['identifier'])")
   T=$(xcrun simctl create "$TPL" "$DEVICE" "$RT")
 fi
+# Warm the template once (first boot builds dyld/data caches) so clones boot fast. Marker = done.
+WARM="$HOME/ops/lanes/.sim-warm-$T"
+if [ ! -f "$WARM" ]; then
+  xcrun simctl boot "$T" >/dev/null 2>&1 || true
+  perl -e 'alarm shift; exec @ARGV' 600 xcrun simctl bootstatus "$T" -b >/dev/null 2>&1 && sleep 60 && touch "$WARM"
+  xcrun simctl shutdown "$T" >/dev/null 2>&1 || true
+fi
 SIM="polymux-$WT"; U=$(udid_of "$SIM")
 [ -n "$U" ] || U=$(xcrun simctl clone "$T" "$SIM")
 cat > "$B/env" <<E

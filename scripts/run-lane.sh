@@ -119,6 +119,7 @@ BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""; N=0
 for L in $(cfg order "$LANE"); do
+  guard --preflight "$L" "$TITLE" || continue   # failover lanes pass the same lane-guard checks as the first
   N=$((N+1)); [ $N -gt 2 ] && break
   B=$BRANCH; [ $N -gt 1 ] && B="$BRANCH-$L"; WT="$WTR/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
   TRIED="$TRIED $L"; BL=$(branch_lock_dir "$B")
