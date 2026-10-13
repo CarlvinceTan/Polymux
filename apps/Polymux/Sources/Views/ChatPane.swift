@@ -1,5 +1,6 @@
 import SwiftUI
 import PolymuxKit
+import AvatarKit
 #if os(macOS)
 import AppKit
 #else
@@ -323,6 +324,7 @@ struct ChatPane: View {
                         }
                         MessageBubble(message: message, client: session.client, agentName: author(message),
                                       showAuthor: thread.isGroup && message.role == "assistant",
+                                      authorColor: session.avatars.options(for: message.agentID ?? agent.id).color,
                                       replyName: message.reply.flatMap { quote in session.sidebar.agents.first { $0.id == quote.agentID }?.name } ?? agent.name,
                                       sending: store.isSending, retry: { await store.retry(messageID: message.id) },
                                       respond: { reply = $0 }, jump: { jump(to: $0.messageID, part: $0.partIndex) },
@@ -528,6 +530,7 @@ struct MessageBubble: View {
     let client: APIClient
     let agentName: String
     var showAuthor = false
+    var authorColor: ColorID = .ink
     var replyName = ""
     var sending = false
     let retry: () async -> Void
@@ -545,7 +548,8 @@ struct MessageBubble: View {
             if message.role == "user" { Spacer(minLength: 0) }
             VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 6) {
                 if showAuthor {
-                    Text(agentName).font(.caption.weight(.medium)).foregroundStyle(.secondary).padding(.horizontal, 12)
+                    Text(agentName).font(.caption.weight(.medium))
+                        .foregroundStyle(authorColor.nameColor(colorScheme)).padding(.horizontal, 12)
                 }
                 VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 12) {
                     ForEach(displayParts, id: \.offset) { index, part in
