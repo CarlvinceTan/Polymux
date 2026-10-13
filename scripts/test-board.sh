@@ -72,9 +72,9 @@ MC_FFPROBE=/nonexistent/ffprobe PATH=$BP $BU verify fake-unit UI-verified "$V" h
 MC_NOPIL=1 PATH=$BP $BU verify fake-unit UI-verified "$P5" https://github.com/o/r/raw/proof-media/run7 >/dev/null
 check "board: missing ffprobe / Pillow -> loud board_error, no append" '[ "$(NP blocks)" = 1 ] && grep -q "board_error	verify	media-check failed (rc=3): media-check: ffprobe/ffmpeg missing" "$LANES_HOME/events.tsv" && grep -q "board_error	verify	media-check failed (rc=3): media-check: Pillow missing" "$LANES_HOME/events.tsv"'
 rm "$LANES_HOME/BOARD_LIVE"; echo Backlog > "$T/cur"; : > "$BLOG"
-printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard fails\n' > "$T/bf.task"
+printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard fails (attempt 2)\n' > "$T/bf.task"
 PATH=$BP LANE_FORCE_FAIL="laneA laneB" $RL laneA "$T/bf.task" >/dev/null 2>&1
-check "run-lane: no start without work; final failure -> Verification failed only" '! grep -q "board-fails start" "$BLOG" && grep -q "board-fails verify: DRY-RUN .*Verification: .. -> .failed." "$BLOG"'
+check "run-lane: no start without work; final failure -> Verification failed only" '! grep -q "board-fails-attempt-2 start" "$BLOG" && grep -q "board-fails-attempt-2 verify: DRY-RUN .*Verification: .. -> .failed." "$BLOG"'
 printf 'needs: none\nexpected_min: 5\ncard: 11111111222233334444555555555555\nBoard works\n' > "$T/bw.task"
 PATH=$BP LANE_DRY=1 LANE_STUB_CMD="sleep 2; grep -q \"board-works start\" \"$BLOG\" && echo early > \"$T/bw.seen\"; $STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
 check "run-lane: start not written before the agent works, written after its first commit" '[ ! -f "$T/bw.seen" ] && grep -q "board-works start: DRY-RUN .*-> .In Progress." "$BLOG"'
@@ -84,12 +84,46 @@ echo https://github.com/o/r/raw/proof-media/run8 > "$AP/url-base"; echo UI-verif
 cp "$SRC/scripts/approve-proof.sh" scripts/; rm -f "$LANES_HOME/BOARD_LIVE"; : > "$BLOG"
 PATH=$BP bash scripts/approve-proof.sh "$AW" nope.png >/dev/null 2>&1; A1=$?; PATH=$BP bash scripts/approve-proof.sh "$AW" fresh.png >/dev/null 2>&1; A2=$?
 check "approve-proof: unknown file refused, viewed file approved and board append runs" '[ $A1 != 0 ] && [ $A2 = 0 ] && [ "$(cat "$AP/approved")" = fresh.png ] && grep -q "approve-me verify: DRY-RUN would append .*run8/fresh.png" "$BLOG"'
+cp "$AP/fresh.png" "$AP/second.png"; mkdir -p "$AP/sub"; cp "$AP/fresh.png" "$AP/sub/x.png"; cp "$AP/fresh.png" "$AP/.hid.png"
+printf 'fresh.png\nsecond.png\nsub/x.png\n.hid.png\n' > "$AP/uploaded"
+PATH=$BP bash scripts/approve-proof.sh "$AW" second.png >/dev/null 2>&1
+check "approve-proof: merges into the existing approved list" '[ "$(cat "$AP/approved")" = "$(printf "fresh.png\nsecond.png")" ]'
+PATH=$BP bash scripts/approve-proof.sh "$AW" sub/x.png >/dev/null 2>&1; A3=$?; PATH=$BP bash scripts/approve-proof.sh "$AW" .hid.png >/dev/null 2>&1; A4=$?
+check "approve-proof: refuses names with / or a leading ." '[ $A3 != 0 ] && [ $A4 != 0 ] && ! grep -q "sub/x.png\|.hid.png" "$AP/approved"'
 touch "$LANES_HOME/BOARD_LIVE"; echo Review > "$T/cur"; : > "$T/curl.log"; : > "$BLOG"; C=$LANES_HOME/cards
-echo 11111111-2222-3333-4444-555555555555 | tee "$C/board-done" > "$C/done"; echo laneA-board-done > "$C/board-done.wt"; echo other > "$C/done.wt"
+echo 11111111-2222-3333-4444-777777777777 > "$C/board-done"; echo 11111111-2222-3333-4444-888888888888 > "$C/done"; echo laneA-board-done > "$C/board-done.wt"; echo other > "$C/done.wt"
 printf '2026-10-13 11:00:00\t10131100-board-done\thttps://github.com/o/r/pull/7\tabc\tUI-verified\n' >> "$LANES_HOME/results.tsv"
 git worktree add -q --detach "$HOME/code/wt/laneA-board-done" main
 PATH=$BP bash scripts/cleanup.sh >/dev/null 2>&1
 check "cleanup dry run: no board write" '[ "$(NP .)" = 0 ] && ! grep -q merged "$BLOG"'
 PATH=$BP bash scripts/cleanup.sh --apply >/dev/null 2>&1
 check "cleanup --apply: exact worktree + gh mergedAt -> one Completed write" '[ "$(NP pages)" = 1 ] && grep -q "board-done merged: wrote Status: .Review. -> .Completed." "$BLOG" && ! grep -q " done merged" "$BLOG"'
+# shared card: two units on one card. start/pr write on the first unit; merged/verify wait for all,
+# Verification = weakest level across the units.
+SC=22222222-3333-4444-5555-666666666666; echo $SC | tee "$C/sa1-shared" > "$C/sa2-shared"; echo Backlog > "$T/cur"; : > "$T/prurl"; : > "$T/curl.log"; : > "$BLOG"
+PATH=$BP $BU start sa1-shared; PATH=$BP $BU pr sa1-shared https://github.com/o/r/pull/11
+check "shared card: start + pr written on the first unit" '[ "$(NP pages/$SC)" = 2 ] && grep -q "sa1-shared start: wrote Status" "$BLOG"'
+echo Review > "$T/cur"; : > "$T/curl.log"; PATH=$BP $BU merged sa1-shared; PATH=$BP $BU verify sa1-shared UI-verified
+check "shared card: first unit merged/verified -> no write, hold logged" '[ "$(NP .)" = 0 ] && grep -q "sa1-shared merged: hold: Status not written; card $SC waits for unit(s): sa2-shared" "$BLOG" && grep -q "sa1-shared verify: hold: Verification .* sa2-shared" "$BLOG"'
+PATH=$BP $BU merged sa2-shared; PATH=$BP $BU verify sa2-shared unit-test-verified
+check "shared card: last unit merged -> one Completed write" '[ "$(grep -c "X PATCH.*Completed.*pages/$SC" "$T/curl.log")" = 1 ] && grep -q "sa2-shared merged: wrote Status: .Review. -> .Completed." "$BLOG"'
+check "shared card: Verification = weakest level (unit-test < UI)" '[ "$(grep -c "X PATCH.*Verification.*pages/$SC" "$T/curl.log")" = 1 ] && grep -q "X PATCH.*\"name\":\"unit-test-verified\".*pages/$SC" "$T/curl.log"'
+: > "$T/curl.log"; PATH=$BP $BU verify sa1-shared failed; PATH=$BP $BU verify sa2-shared UI-verified
+check "shared card: one unit failed keeps the card at failed even when the other is UI-verified" '[ "$(grep -c "X PATCH.*\"name\":\"failed\".*pages/$SC" "$T/curl.log")" = 2 ] && ! grep -q "UI-verified.*pages/$SC" "$T/curl.log" && grep -q "sa2-shared verify: card $SC shared by 2 units: Verification .failed. (weakest)" "$BLOG"'
+check "shared card: ledger tracks both units" '[ "$(cut -f1,2 "$LANES_HOME/board/card-$SC.tsv" | sort -u | wc -l | tr -d " ")" = 4 ]'
+# drop: an abandoned unit leaves the card's ledger, so 'merged' isn't held forever
+DC=33333333-4444-5555-6666-777777777777; echo $DC | tee "$C/da1-drop" > "$C/da2-drop"; echo Review > "$T/cur"; : > "$T/curl.log"
+PATH=$BP $BU merged da1-drop
+check "drop: merged held while abandoned unit is still on the card" '[ "$(NP pages/$DC)" = 0 ] && grep -q "da1-drop merged: hold: .*da2-drop" "$BLOG"'
+PATH=$BP $BU drop da2-drop "abandoned: test"
+check "drop: abandoned unit removed; held merged written once" '[ ! -f "$C/da2-drop" ] && ! grep -q "^da2-drop" "$LANES_HOME/board/card-$DC.tsv" && [ "$(grep -c "X PATCH.*Completed.*pages/$DC" "$T/curl.log")" = 1 ] && grep -q "da2-drop drop: dropped from card $DC" "$BLOG"'
+# archived task: its unit is dropped automatically when the card is next evaluated
+AC=44444444-5555-6666-7777-888888888888; echo $AC | tee "$C/aa1-arch" > "$C/aa2-arch"; : > "$T/curl.log"
+mkdir -p "$LANES_HOME/queue/archive"; printf 'unit: aa2-arch\nneeds: none\nArchived\n' > "$LANES_HOME/queue/archive/10131500--whatever.task"
+PATH=$BP $BU merged aa1-arch
+check "drop: archived unit auto-dropped, merged written" '[ ! -f "$C/aa2-arch" ] && [ "$(grep -c "X PATCH.*Completed.*pages/$AC" "$T/curl.log")" = 1 ] && grep -q "dropped archived unit aa2-arch" "$BLOG"'
+# unit name keeps its prefix: "# SA9: ..." -> sa9-..., never "-sa9-..."
+rm -f "$LANES_HOME/BOARD_LIVE"; printf 'needs: none\nexpected_min: 5\ncard: 33333333444455556666777777777777\n# SA9: Prefix kept\n' > "$T/pk.task"
+PATH=$BP LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/pk.task" >/dev/null 2>&1
+check "unit name keeps its number prefix (no leading -)" '[ -f "$C/sa9-prefix-kept" ] && ! ls "$C" | grep -q "^-" && grep -q "	[0-9]*-sa9-prefix-kept	queued" "$LANES_HOME/events.tsv" && [ -d "$LANES_WT/laneA-sa9-prefix-kept" ]'
 rm -f "$LANES_HOME/BOARD_LIVE"

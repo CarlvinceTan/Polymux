@@ -7,6 +7,25 @@
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd)   # scripts may live in another checkout (cloud PRs)
 ROOT=$(git rev-parse --show-toplevel); cd "$ROOT"
+# Toolchain preflight, before any step (and before wt-setup): every tool this run needs must be on PATH.
+# Needed = the steps that will run (apps/server -> go; Swift packages + Xcode app -> swift, xcodebuild,
+# xcrun;) plus the task's needs: line (VERIFY_NEEDS from run-lane.sh: go,
+# swift/ios/macos/xcode, node/npm/web). Missing -> exit 10 = infra error (run-lane.sh: failures.tsv
+# 'infra' row + NEEDS_CODY, not a task failure, not counted by lane-guard). VERIFY_PATH: test hook.
+# Go lives in ~/.local/go on the Macs, which launchd (lane-guard dispatch) PATHs lack.
+[ -x "$HOME/.local/go/bin/go" ] && case ":$PATH:" in *":$HOME/.local/go/bin:"*) ;; *) export PATH="$PATH:$HOME/.local/go/bin";; esac
+need_tools() { local t=" " n
+  [ -d apps/server ] && t+="go "
+  { [ -f Package.swift ] || [ -d apps/Polymux ]; } && t+="swift xcodebuild xcrun "
+  for n in $(echo "${VERIFY_NEEDS:-}" | tr 'A-Z,' 'a-z '); do case $n in
+    go|server) t+="go ";; swift|ios|macos|mac|xcode|apple) t+="swift xcodebuild xcrun ";;
+    node|npm|web|js|ts) t+="node npm ";; esac; done
+  echo $t | tr ' ' '\n' | awk 'NF&&!s[$0]++' | tr '\n' ' '; }
+MISSING=""; for t in $(need_tools); do PATH="${VERIFY_PATH:-$PATH}" command -v "$t" >/dev/null 2>&1 || MISSING+="$t "; done
+if [ -n "$MISSING" ]; then echo "verify: INFRA missing toolchain: ${MISSING% }"
+  mkdir -p .build/proof && echo blocked > .build/proof/level
+  printf '## verify.sh: INFRA\nmissing toolchain on %s: %s (needs: %s)\n' "$(hostname -s)" "${MISSING% }" "${VERIFY_NEEDS:-none}" > .build/proof/summary.md
+  exit 10; fi
 [ -f .build/env ] || bash "$SD/wt-setup.sh" >/dev/null
 . .build/env
 # One verify per worktree at a time. An agent may start verify.sh in the background and exit,
@@ -19,10 +38,15 @@ done
 P=.build/proof; L=.build/logs; R=.build/results
 VD="$ROOT/.build/verify-data"; rm -rf "$P" "$R" "$VD"; mkdir -p "$P" "$L" "$R" "$VD"
 # Own app data per worktree; the seed switch is the app launch argument --verify-fixture
-# (verify-polymux-features.md Part 2), passed by ReadinessTests, not an env var.
+# (verify-polymux-features.md Part 2), passed by ReadinessTests, not an env var. The flag exists
+# only in -tags verifyfixture builds; verify.sh starts no fixture server yet and the app has no
+# --verify-fixture handler, so ReadinessTests cannot use it until wiring lands.
 export POLYMUX_DATA_DIR="$VD" TEST_RUNNER_POLYMUX_DATA_DIR="$VD" SIMCTL_CHILD_POLYMUX_DATA_DIR="$VD"
 LOCKS=$(python3 "$SD/lanes.py" get lock_dir); MAX=${VERIFY_MAX_BUILDS:-$(python3 "$SD/lanes.py" get max_builds)}
 mkdir -p "$LOCKS"; SLOT=""; VPID=""
+# Freshness markers for cleanup.sh (hourly): it skips a worktree/sim whose verify holds .build/verify.lock
+# or touched a marker < 2h ago. Touched again before each step, so long runs stay fresh.
+mkdir -p "$LOCKS/active"; mark() { touch .build/verify-active "$LOCKS/active/polymux-$WT_NAME" 2>/dev/null; }; mark
 cleanup() { [ -n "$VPID" ] && kill -INT "$VPID" 2>/dev/null
   pkill -f "derivedDataPath $DD" 2>/dev/null; xcrun simctl shutdown "$SIM_UDID" >/dev/null 2>&1
   [ -n "$SLOT" ] && rm -rf "$SLOT"; rm -rf "$WL"; }
@@ -44,7 +68,7 @@ acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
 }
 declare -a ROWS; FAIL=0
 step() {  # step NAME cmd...
-  local n=$1; shift; local t=$SECONDS
+  local n=$1; shift; local t=$SECONDS; mark
   perl -e 'alarm shift; exec @ARGV' 2400 "$@" > "$L/$n.log" 2>&1; local rc=$?
   local res=PASS; [ $rc -ne 0 ] && { res=FAIL; FAIL=1; }
   local tests=$(awk '/^Test Case .* passed/||/^. Test .* passed after/{p++} /^Test Case .* failed/||/^. Test .* failed after/{f++}
@@ -56,10 +80,12 @@ step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 # Lane scripts changed -> run their hermetic tests too.
 # From the worktree under test, so --verify-only checks the PR's own scripts and tests.
 lane_files_changed "${TI_BASE:-origin/main}" && step lane-tests bash "$(lane_tests_path "$ROOT" "$SD")"
-[ -d apps/server ] && { step go-vet sh -c 'cd apps/server && go vet -tags sqlite_fts5 ./...'
-  step go-test sh -c 'cd apps/server && go test -tags sqlite_fts5 -count=1 ./...'; }
+[ -d apps/server ] && { step go-vet sh -c 'cd apps/server && GOMAXPROCS=4 go vet -tags sqlite_fts5 ./... && GOMAXPROCS=4 go vet -tags "sqlite_fts5 verifyfixture" ./...'
+  step go-test sh -c 'cd apps/server && GOMAXPROCS=4 go test -p 4 -tags "sqlite_fts5 verifyfixture" -count=1 ./...'
+  # Opt-in fixture: a default-tag build must compile and must not advertise --verify-fixture.
+  step fixture-off sh -c 'cd apps/server && out=$(go run ./cmd/server -h 2>&1) || { printf "%s\n" "$out"; exit 1; }; printf "%s" "$out" | grep -q verify-fixture && { echo "default build advertises --verify-fixture"; exit 1; }; exit 0'; }
 python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "verify: fetch_cua failed"; echo blocked > "$P/level"; exit 3; }
-XC=(-derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
+XC=(-jobs 6 -derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
 acquire; echo "verify: slot $SLOT"
 step packages swift test --scratch-path .build/swiftpm --cache-path .build/SPM-cache
