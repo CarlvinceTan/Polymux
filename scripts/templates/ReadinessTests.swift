@@ -41,7 +41,7 @@ final class ReadinessTests: XCTestCase {
         let any = app.descendants(matching: .any)
         timed("chats.list") { any["chats.list"].exists }
         timed("sidebar.rows.12") { Self.seededIDs.allSatisfy { any["sidebar.row.\($0)"].exists } }
-        let rows = any.matching(NSPredicate(format: "identifier BEGINSWITH 'sidebar.row.' AND NOT identifier CONTAINS '.unread'"))
+        let rows = any.matching(NSPredicate(format: "identifier MATCHES %@", "^sidebar\\.row\\.[^.]+$"))
         XCTAssertEqual(rows.count, Self.seededIDs.count, "sidebar shows \(rows.count) rows, seed has 12")
         // app.status is required: a missing element fails readiness (never silently skipped).
         let status = any["app.status"]

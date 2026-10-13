@@ -74,7 +74,9 @@ struct ShellView: View {
             .searchable(text: $query, placement: .sidebar, prompt: "Search")
             .background {
                 SearchFocus(sidebar: true).frame(width: 0, height: 0)
+                #if DEBUG
                 SidebarSearchMark().frame(width: 0, height: 0)
+                #endif
             }
             #else
             .navigationBarTitleDisplayMode(.inline)
@@ -520,14 +522,12 @@ struct GroupRow: View {
     var body: some View {
         HStack(spacing: gap) {
             #if os(macOS)
-            AvatarStack(members: members, conversationID: thread.id, runs: thread.runs, activity: activity, connected: connected)
+            AvatarStack(members: members, conversationID: thread.id, runs: thread.runs, activity: activity, connected: connected, accessible: true)
                 .frame(width: 34)
                 .accessibilityIdentifier(UIID.rowAvatars(thread.id))
-                .accessibilityHidden(true)
             #else
-            AvatarStack(members: members, size: 60, conversationID: thread.id, runs: thread.runs, activity: activity, connected: connected)
+            AvatarStack(members: members, size: 60, conversationID: thread.id, runs: thread.runs, activity: activity, connected: connected, accessible: true)
                 .accessibilityIdentifier(UIID.rowAvatars(thread.id))
-                .accessibilityHidden(true)
             #endif
             RowDetails(name: thread.title, preview: preview, thread: thread, active: members.contains { $0.active }, rowID: thread.id)
         }
@@ -670,8 +670,8 @@ private extension View {
     }
 }
 
-#if os(macOS)
-/// Tags the sidebar search field. SwiftUI's `.searchable` does not expose an identifier.
+#if os(macOS) && DEBUG
+/// Debug-only tag for the sidebar search field. `.searchable` has no identifier, and the window-update walk must not run in Release.
 private struct SidebarSearchMark: NSViewRepresentable {
     func makeNSView(context: Context) -> SearchMark { SearchMark() }
     func updateNSView(_ view: SearchMark, context: Context) { view.schedule() }

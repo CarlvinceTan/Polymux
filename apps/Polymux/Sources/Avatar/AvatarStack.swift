@@ -10,6 +10,8 @@ struct AvatarStack: View {
     var activity: ActivityStore?
     var connected = true
     var speakingID: String?
+    /// Group rows keep the stack in the combined VoiceOver element. Other callers stay decorative.
+    var accessible = false
 
     var body: some View {
         ZStack {
@@ -23,7 +25,7 @@ struct AvatarStack: View {
             }
         }
         .compositingGroup().frame(width: size, height: height ?? size)
-        .accessibilityHidden(true)
+        .accessibilityHidden(!accessible)
     }
 
     private var count: Int { min(3, members.count) }
