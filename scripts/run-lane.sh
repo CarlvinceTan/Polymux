@@ -40,7 +40,7 @@ if [ "${1:-}" = "--verify-only" ]; then
   [ -d "$WT" ] || git -C "$REPO" worktree add -q --detach "$WT" "$SHA" || { ev failed verify "worktree add failed"; exit 1; }
   git -C "$WT" checkout -q --detach "$SHA" || { ev failed verify "checkout failed"; exit 1; }
   (cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
-    if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else bash "$SD/verify.sh"; fi) > "$OPS/logs/$ID.log" 2>&1; rc=$?   # LANE_VERIFY_CMD: test hook
+    if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=full bash "$SD/verify.sh"; fi) > "$OPS/logs/$ID.log" 2>&1; rc=$?   # LANE_VERIFY_CMD: test hook
   BODY="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID" 2>>"$OPS/logs/$ID.log")"
   gh_write pr comment "$BR" -R "$SLUG_REPO" --body "Mac proof ($HOST):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
@@ -204,9 +204,9 @@ lock_take "$UL" || { lock_drop "$CAPL" 2>/dev/null; echo "unit '$SLUG' already h
 echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
 for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
 rm -f "$OPS/refusals.tsv"; lock_drop "$OPS/chain-state.lock"   # a unit started: the refusal streak is broken
-trap 'rc=$?; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
-trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; exit 143' TERM
-trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; exit 130' INT
+trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
+trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
+trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
 BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""
@@ -283,6 +283,9 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
        [ $(( $(date +%s) - T0 )) -gt $IDLE_S ]; then IDLE=1
       echo "fast-fail: no commit or file change after ${IDLE_S}s" >> "$LOG"; stop_agent; break; fi
   done; wait $AP; rc=$?; started
+  # Whatever the outcome, end the session: the agent's group, then anything still running in the worktree
+  # (a shared "opencode serve" spawns MCP servers and tools outside our group). A dead attempt must not keep running.
+  pgrep -g "$AP" >/dev/null 2>&1 && stop_agent; reap_wt "$WT" "$LOG"; AP=""
   [ -n "$IDLE" ] && { ev failed "$L" "no commit (fast-fail: idle ${IDLE_S}s)"; continue; }
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
   [ -n "$(git -C "$WT" log --oneline "$START"..HEAD)" ] || { echo "agent made no commit" >> "$LOG"; ev failed "$L" "no commit"; continue; }
@@ -292,7 +295,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
     git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
-  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
+  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
     MISS=$(sed -n 's/^verify: INFRA missing toolchain: *//p' "$LOG" | tail -1)
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" infra "$L" "missing toolchain: ${MISS:-?} (task: $SLUG)" "$LOG" >> "$OPS/failures.tsv"

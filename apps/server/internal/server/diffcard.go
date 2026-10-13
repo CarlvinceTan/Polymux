@@ -70,9 +70,9 @@ func diffHTML(ctx context.Context, dir string) (string, error) {
 	return body.String(), nil
 }
 
-func prStatus(ctx context.Context, dir, thread string) (string, bool) {
+func prStatus(ctx context.Context, dir, agent, thread string) (string, bool) {
 	// gh pr view accepts a branch as its positional selector, not --head.
-	data, err := repoOutput(ctx, dir, "gh", "pr", "view", "polymux/"+thread, "--json", "number,url,state,isDraft,statusCheckRollup,mergeable,headRefOid")
+	data, err := repoOutput(ctx, dir, "gh", "pr", "view", agentruntime.BranchName(agent, thread), "--json", "number,url,state,isDraft,statusCheckRollup,mergeable,headRefOid")
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok && strings.Contains(string(exit.Stderr), "no pull requests found") {
 			return "No PR yet", false
@@ -128,7 +128,7 @@ func (s *Server) diffCard(d agentruntime.Definition, run contract.Run) {
 func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *contract.Message, body string, interval time.Duration) {
 	dir := s.worktrees.Path(d.Agent.ID, agentruntime.WorkspaceThread(d))
 	for {
-		status, pending := prStatus(ctx, dir, agentruntime.WorkspaceThread(d))
+		status, pending := prStatus(ctx, dir, d.Agent.ID, agentruntime.WorkspaceThread(d))
 		source := body + "<p>" + html.EscapeString(status) + "</p>"
 		id := ID()
 		path := filepath.Join(s.config.DataDir, "attachments", id)

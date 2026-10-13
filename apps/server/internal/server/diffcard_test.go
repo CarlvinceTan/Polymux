@@ -77,7 +77,7 @@ func TestDiffCardTruncates(t *testing.T) {
 }
 func TestPRStatusGhMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	status, pending := prStatus(t.Context(), t.TempDir(), "thread")
+	status, pending := prStatus(t.Context(), t.TempDir(), "assistant", "thread")
 	if status != "PR status unavailable: gh not signed in on cvmini" || pending {
 		t.Fatal(status, pending)
 	}
@@ -86,6 +86,7 @@ func TestPRStatusRefreshUpdatesSameMessage(t *testing.T) {
 	dir := t.TempDir()
 	bin := t.TempDir()
 	script := `#!/bin/sh
+[ "$1" = pr ] && [ "$2" = view ] && [ "$3" = polymux/assistant--assistant ] || exit 1
 if [ ! -f seen ]; then touch seen; echo '{"number":84,"state":"OPEN","mergeable":"UNKNOWN","statusCheckRollup":[{"status":"IN_PROGRESS"}]}'
 else echo '{"number":84,"state":"OPEN","mergeable":"MERGEABLE","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}'
 fi
