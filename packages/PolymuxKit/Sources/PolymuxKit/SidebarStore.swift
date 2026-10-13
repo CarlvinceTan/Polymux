@@ -9,9 +9,25 @@ public final class SidebarStore {
     public private(set) var isConnected = false
     public private(set) var error: String?
     public private(set) var editIssues: [String: String] = [:]
+    public let trace = SignpostTrace()
+    /// Holds the row update so a budget test can prove a slow publish misses.
+    var rowStall: Duration = .zero
     @ObservationIgnored private let client: APIClient
-    @ObservationIgnored private let cache: LocalCache
+    @ObservationIgnored public let cacheActor: LocalCacheActor
     @ObservationIgnored private var isFlushing = false
+    @ObservationIgnored private var pinned: [String] = []
+    @ObservationIgnored private var dirty = false
+    @ObservationIgnored private var saving: Task<Void, Never>?
+    @ObservationIgnored private var lastSaveAt: ContinuousClock.Instant?
+    @ObservationIgnored private var renames: [String: String] = [:]
+    @ObservationIgnored private var committedAgents: [Agent] = []
+    @ObservationIgnored private var committedThreads: [Thread] = []
+    @ObservationIgnored private var committedPins: [String] = []
+    @ObservationIgnored private var committedEdits: [String: Thread] = [:]
+    @ObservationIgnored private var staged: [SaveFault] = []
+    @ObservationIgnored private var epoch: UInt64 = 0
+    /// Coalesces disk writes. Tests set this to zero to prove the cap can fail.
+    var saveGap: Duration = .milliseconds(250)
     @ObservationIgnored private var revision: UInt64 = 0
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var acceptedAgents: [String: Agent] = [:]
@@ -20,7 +36,7 @@ public final class SidebarStore {
     @ObservationIgnored private var editTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var editDates: [String: Date] = [:]
     @ObservationIgnored private var editWorkers: [String: Task<Bool, Never>] = [:]
-    @ObservationIgnored private(set) var signposts: [InstantSignpost] = []
+    var deleteStall: Duration = .zero
     /// Agents whose conversation row is hidden while delete is in flight.
     private var deletingAgents: Set<String> = []
     /// Deletes the server accepted. A stale refresh must not put the row back.
@@ -28,14 +44,12 @@ public final class SidebarStore {
 
     public init(client: APIClient, cache: LocalCache) {
         self.client = client
-        self.cache = cache
-        agents = (try? cache.agents()) ?? []
-        threads = (try? cache.threads()) ?? []
-        for thread in (try? cache.threadEdits()) ?? [] {
-            pendingThreads[thread.id] = thread
-            acceptedThreads[thread.id] = thread
-            merge(thread, into: &threads)
-        }
+        cacheActor = LocalCacheActor(cache)
+    }
+
+    /// Fills the sidebar from disk. The read runs on `cacheActor`.
+    public func load() async {
+        await reload()
     }
 
     public func thread(for agent: Agent) -> Thread? {
@@ -50,21 +64,23 @@ public final class SidebarStore {
     }
 
     /// Hides the agent's conversation on this turn. Failure puts the row back.
-    public func removeAgent(id: String) {
+    public func removeAgent(id: String, at tap: ContinuousClock.Instant = ContinuousClock().now) {
         guard !id.isEmpty, !deletedAgents.contains(id), !deletingAgents.contains(id) else { return }
         guard agents.contains(where: { $0.id == id }) || threads.contains(where: { !$0.isGroup && $0.agentID == id }) else { return }
-        let signpost = InstantTrace.measure(InstantTrace.row) {
-            revision &+= 1
-            deletingAgents = deletingAgents.union([id])
+        InstantUI.interval("agentDeleteFeedback", budget: InstantUI.feedbackBudget, trace: trace, from: tap) {
+            InstantUI.interval("agentDeleteState", budget: InstantUI.stateBudget, trace: trace, from: tap) {
+                if deleteStall > .zero { pause(deleteStall) }
+                revision &+= 1
+                deletingAgents.insert(id)
+            }
         }
-        record(signpost)
     }
 
     public func deleteAgent(id: String) async throws {
         removeAgent(id: id)
         do {
             _ = try await client.deleteAgent(id: id)
-            commitDelete(id)
+            await commitDelete(id)
         } catch {
             rollbackDelete(id)
             throw error
@@ -87,40 +103,48 @@ public final class SidebarStore {
         }
     }
 
-    public func accept(_ thread: Thread) {
+    public func accept(_ thread: Thread) async {
         revision &+= 1
+        epoch &+= 1
         acceptedThreads[thread.id] = thread
         merge(thread, into: &threads)
-        persist()
+        isConnected = true
+        error = nil
+        staged.append(.chat)
+        scheduleSave()
+        await settled()
     }
 
-    public func accept(_ agent: Agent) {
+    public func accept(_ agent: Agent) async {
         revision &+= 1
+        epoch &+= 1
         acceptedAgents[agent.id] = agent
         merge(agent, into: &agents)
         if !threads.contains(where: { $0.id == agent.id }) {
-            let cached = try? cache.threads().first { $0.id == agent.id }
-            let thread = cached ?? Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
+            let thread = Thread(id: agent.id, agentID: agent.id, title: agent.name, agentIDs: [agent.id])
             acceptedThreads[thread.id] = thread
             merge(thread, into: &threads)
         }
-        persist()
+        isConnected = true
+        error = nil
+        staged.append(.agent)
+        scheduleSave()
+        await settled()
     }
 
-    public func edit(_ thread: Thread, delay: Duration = .milliseconds(550)) {
+    public func edit(_ thread: Thread, delay: Duration = .milliseconds(550)) async {
         var thread = thread
         thread.runs = []
         revision &+= 1
+        epoch &+= 1
         pendingThreads[thread.id] = thread
         acceptedThreads[thread.id] = thread
         editIssues[thread.id] = nil
         merge(thread, into: &threads)
-        do {
-            try persistEdits()
-        } catch {
-            editIssues[thread.id] = "Changes couldn’t be saved on this device."
-        }
+        staged.append(.edit(thread.id))
         scheduleEdit(thread.id, delay: delay)
+        scheduleSave()
+        await settled()
     }
 
     public func retryEdit(_ id: String) { scheduleEdit(id, delay: .zero) }
@@ -170,7 +194,9 @@ public final class SidebarStore {
                     editIssues[id] = nil
                     acceptedThreads[id] = updated
                     merge(updated, into: &threads)
-                    try persistEdits()
+                    staged.append(.edit(id))
+                    await persistEdits()
+                    if editIssues[id] != nil { return false }
                 }
             } catch {
                 editIssues[id] = "Changes haven’t synced yet."
@@ -180,25 +206,13 @@ public final class SidebarStore {
         return true
     }
 
-    private func persistEdits() throws {
-        try cache.saveEdits(Array(pendingThreads.values))
-        var cached = try cache.threads()
-        for thread in acceptedThreads.values { merge(thread, into: &cached) }
-        try cache.save(agents: try cache.agents(), threads: cached)
-        reload()
+    private func persistEdits() async {
+        scheduleSave()
+        await settled()
     }
 
-    private func persist() {
-        isConnected = true
-        error = nil
-        do {
-            var agents = try cache.agents()
-            var threads = try cache.threads()
-            for agent in acceptedAgents.values { merge(agent, into: &agents) }
-            for thread in acceptedThreads.values { merge(thread, into: &threads) }
-            try cache.save(agents: agents, threads: threads)
-            reload()
-        } catch { self.error = error.localizedDescription }
+    private func persist(agents: [Agent], threads: [Thread], pins: [String], edits: [Thread]) async throws {
+        try await cacheActor.save(agents: agents, threads: threads, pins: pins, edits: edits)
     }
 
     private func merge(_ agent: Agent, into agents: inout [Agent]) {
@@ -224,6 +238,7 @@ public final class SidebarStore {
     }
 
     public func refresh() async {
+        await settled()
         generation &+= 1
         let generation = generation
         let revision = revision
@@ -238,12 +253,27 @@ public final class SidebarStore {
             values.0.removeAll { deletedAgents.contains($0.id) }
             values.1.removeAll { !$0.isGroup && deletedAgents.contains($0.agentID) }
             for pending in pendingThreads.values { merge(pending, into: &values.1) }
-            try cache.save(agents: values.0, threads: values.1)
-            for thread in snapshots where thread.isGroup || !deletedAgents.contains(thread.agentID) {
-                try cache.reconcile(thread)
+            let savedAgents = values.0
+            let savedThreads = values.1
+            self.agents = savedAgents
+            self.threads = savedThreads
+            activity.retain(Set(self.threads.map(\.id)))
+            for thread in self.threads { activity.reconcile(thread) }
+            do {
+                try await cacheActor.save(agents: savedAgents, threads: savedThreads, pins: pinned, edits: Array(pendingThreads.values))
+            } catch {
+                self.agents = committedAgents
+                self.threads = committedThreads
+                self.pinned = committedPins
+                self.error = "Couldn’t save this conversation. Retry"
+                return
             }
-            self.agents = values.0
-            self.threads = try cache.threads()
+            remember()
+            for thread in snapshots where thread.isGroup || !deletedAgents.contains(thread.agentID) {
+                try await cacheActor.call { try $0.reconcile(thread) }
+            }
+            self.threads = try await cacheActor.call { try $0.threads() }
+            remember()
             activity.retain(Set(self.threads.map(\.id)))
             for thread in self.threads { activity.reconcile(thread) }
             acceptedAgents.removeAll()
@@ -266,29 +296,33 @@ public final class SidebarStore {
         defer { isFlushing = false }
         do {
             var blocked: Set<String> = []
-            while let queued = try cache.queued().first(where: { !blocked.contains($0.threadID) }) {
+            while let queued = try await cacheActor.call({ try $0.queued() }).first(where: { !blocked.contains($0.threadID) }) {
                 do { try await syncEdit(queued.threadID) }
                 catch {
                     blocked.insert(queued.threadID)
-                    for pending in try cache.queued() where pending.threadID == queued.threadID {
-                        try cache.setStatus(id: pending.request.id, status: "failed")
+                    for pending in try await cacheActor.call({ try $0.queued() }) where pending.threadID == queued.threadID {
+                        let id = pending.request.id
+                        try await cacheActor.call { try $0.setStatus(id: id, status: "failed") }
                     }
                     continue
                 }
                 do {
                     try await client.send(threadID: queued.threadID, request: queued.request)
-                    try cache.acknowledge(id: queued.request.id)
+                    let id = queued.request.id
+                    try await cacheActor.call { try $0.acknowledge(id: id) }
                 } catch {
-                    if try cache.accepted(id: queued.request.id) {
-                        try cache.acknowledge(id: queued.request.id)
+                    let id = queued.request.id
+                    if try await cacheActor.call({ try $0.accepted(id: id) }) {
+                        try await cacheActor.call { try $0.acknowledge(id: id) }
                         continue
                     }
                     if case let ClientError.response(code, _) = error, (400..<500).contains(code), code != 408, code != 429 {
-                        try cache.setStatus(id: queued.request.id, status: "error")
+                        try await cacheActor.call { try $0.setStatus(id: id, status: "error") }
                         continue
                     }
-                    for pending in try cache.queued() {
-                        try cache.setStatus(id: pending.request.id, status: "failed")
+                    for pending in try await cacheActor.call({ try $0.queued() }) {
+                        let id = pending.request.id
+                        try await cacheActor.call { try $0.setStatus(id: id, status: "failed") }
                     }
                     isConnected = false
                     self.error = error.localizedDescription
@@ -298,19 +332,36 @@ public final class SidebarStore {
         } catch { self.error = error.localizedDescription }
     }
 
-    public func reload() {
-        var agents = (try? cache.agents()) ?? agents
-        var threads = (try? cache.threads()) ?? threads
-        for agent in acceptedAgents.values { merge(agent, into: &agents) }
-        for thread in acceptedThreads.values { merge(thread, into: &threads) }
-        self.agents = agents
-        self.threads = threads
-        for thread in self.threads { activity.reconcile(thread) }
-        applyCommittedDeletes()
+    public func reload() async {
+        await settled()
+        do {
+            let nextAgents = try await cacheActor.call { try $0.agents() }
+            let nextThreads = try await cacheActor.call { try $0.threads() }
+            let nextPins = try await cacheActor.call { try $0.pins() }
+            let edits = try await cacheActor.call { try $0.threadEdits() }
+            epoch &+= 1
+            agents = nextAgents
+            threads = nextThreads
+            pinned = nextPins
+            pendingThreads = Dictionary(uniqueKeysWithValues: edits.map { ($0.id, $0) })
+            for thread in edits {
+                acceptedThreads[thread.id] = thread
+                merge(thread, into: &threads)
+            }
+            // A failed accept is still only in memory. Reloading disk must not drop that row.
+            for agent in acceptedAgents.values { merge(agent, into: &agents) }
+            for thread in acceptedThreads.values { merge(thread, into: &threads) }
+            for thread in threads { activity.reconcile(thread) }
+            applyDeletes()
+            remember()
+        } catch {
+            self.error = "Couldn’t reload conversations. Retry"
+        }
     }
 
-    private func commitDelete(_ id: String) {
+    private func commitDelete(_ id: String) async {
         revision &+= 1
+        epoch &+= 1
         deletingAgents.remove(id)
         deletedAgents.insert(id)
         acceptedAgents.removeValue(forKey: id)
@@ -321,35 +372,287 @@ public final class SidebarStore {
             editDates[thread.id] = nil
             editTasks[thread.id]?.cancel()
             editTasks[thread.id] = nil
+            pinned.removeAll { $0 == thread.id }
         }
-        do {
-            try cache.saveEdits(Array(pendingThreads.values))
-            var nextAgents = try cache.agents().filter { $0.id != id }
-            var nextThreads = try cache.threads().filter { $0.isGroup || $0.agentID != id }
-            for agent in acceptedAgents.values { merge(agent, into: &nextAgents) }
-            for thread in acceptedThreads.values { merge(thread, into: &nextThreads) }
-            try cache.save(agents: nextAgents, threads: nextThreads)
-        } catch { self.error = error.localizedDescription }
-        reload()
+        applyDeletes()
+        // A confirmed server delete must survive a later disk-write rollback.
+        remember()
+        scheduleSave()
+        await settled()
     }
 
     private func rollbackDelete(_ id: String) {
         guard deletingAgents.contains(id) else { return }
-        let signpost = InstantTrace.measure(InstantTrace.rollback) {
+        let tap = ContinuousClock().now
+        InstantUI.interval("agentDeleteRollback", budget: InstantUI.stateBudget, trace: trace, from: tap) {
             revision &+= 1
-            deletingAgents = deletingAgents.subtracting([id])
+            deletingAgents.remove(id)
         }
-        record(signpost)
     }
 
-    private func applyCommittedDeletes() {
-        guard !deletedAgents.isEmpty else { return }
+    private func applyDeletes() {
         agents.removeAll { deletedAgents.contains($0.id) }
         threads.removeAll { !$0.isGroup && deletedAgents.contains($0.agentID) }
     }
 
-    private func record(_ signpost: InstantSignpost) {
-        signposts.removeAll { $0.name == signpost.name }
-        signposts.append(signpost)
+    /// Patches one sidebar row from an event already in hand. Disk follows later.
+    @discardableResult
+    public func note(_ event: Event, at tap: ContinuousClock.Instant = ContinuousClock().now) -> Bool {
+        let changed = InstantUI.interval("sidebarRow", budget: InstantUI.stateBudget, trace: trace, from: tap) {
+            if rowStall > .zero { pause(rowStall) }
+            return patch(event)
+        }
+        if changed {
+            epoch &+= 1
+            scheduleSave()
+        }
+        return changed
+    }
+
+    /// Shows the new title before persistence. A failed save puts the previous title back.
+    public func rename(_ id: String, to title: String) {
+        guard let index = threads.firstIndex(where: { $0.id == id }) else { return }
+        let previous = threads[index].title
+        guard previous != title else { return }
+        if renames[id] == nil { renames[id] = previous }
+        epoch &+= 1
+        threads[index].title = title
+        editIssues[id] = nil
+        staged.append(.rename(id))
+        scheduleSave()
+    }
+
+    /// Moves a chat to the top, then persists with the coalesced writer.
+    public func pin(_ id: String) {
+        guard let index = threads.firstIndex(where: { $0.id == id }) else { return }
+        pinned.removeAll { $0 == id }
+        pinned.insert(id, at: 0)
+        let thread = threads.remove(at: index)
+        threads.insert(thread, at: 0)
+        epoch &+= 1
+        scheduleSave()
+    }
+
+    public func clearUnread(_ id: String, seq: Int64) {
+        guard let index = threads.firstIndex(where: { $0.id == id }) else { return }
+        threads[index].lastReadSeq = max(threads[index].lastReadSeq, seq)
+        threads[index].unreadCount = 0
+    }
+
+    public func lastSeq(_ id: String) -> Int64 {
+        threads.first { $0.id == id }?.lastSeq ?? 0
+    }
+
+    public func settled() async {
+        await saving?.value
+    }
+
+    private func patch(_ event: Event) -> Bool {
+        if event.type == "message.read" {
+            clearUnread(event.conversationID, seq: event.seq)
+            return false
+        }
+        guard let index = threads.firstIndex(where: { $0.id == event.conversationID }) else { return false }
+        var thread = threads[index]
+        let incoming = event.seq > thread.lastSeq
+        let localSend = event.seq == 0 && event.message?.role == "user"
+        guard incoming || localSend else { return false }
+        if incoming { thread.lastSeq = event.seq }
+        if let message = project(event, onto: thread),
+           message.seq >= (thread.lastMessage?.seq ?? 0) || localSend {
+            thread.lastMessage = message
+        }
+        if incoming, event.type == "message.start", (event.message?.role == "assistant"), event.seq > thread.lastReadSeq {
+            thread.unreadCount += 1
+        }
+        threads[index] = thread
+        orderThreads()
+        return true
+    }
+
+    private func project(_ event: Event, onto thread: Thread) -> Message? {
+        if var message = event.message {
+            if message.seq == 0, event.seq > 0 { message.seq = event.seq }
+            return message
+        }
+        guard let id = event.messageID, var message = thread.lastMessage, message.id == id else { return nil }
+        switch event.type {
+        case "message.delta":
+            let text = event.text ?? ""
+            if let index = message.parts.firstIndex(where: { $0.kind == "text" }) {
+                message.parts[index].text = (message.parts[index].text ?? "") + text
+            } else {
+                message.parts.append(Part(kind: "text", text: text))
+            }
+            message.status = "streaming"
+        case "message.done":
+            message.status = "done"
+        case "message.error":
+            message.status = "error"
+        default:
+            break
+        }
+        return message
+    }
+
+    private func orderThreads() {
+        let pins = pinned
+        threads.sort { lhs, rhs in
+            let leftPin = pins.firstIndex(of: lhs.id)
+            let rightPin = pins.firstIndex(of: rhs.id)
+            switch (leftPin, rightPin) {
+            case let (left?, right?) where left != right: return left < right
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: break
+            }
+            let left = lhs.lastMessage?.date ?? .distantPast
+            let right = rhs.lastMessage?.date ?? .distantPast
+            if left == right { return lhs.id < rhs.id }
+            return left > right
+        }
+    }
+
+    private func scheduleSave() {
+        dirty = true
+        guard saving == nil else { return }
+        saving = Task { [weak self] in
+            await self?.drain()
+        }
+    }
+
+    private func drain() async {
+        while dirty {
+            if let lastSaveAt {
+                let elapsed = lastSaveAt.duration(to: ContinuousClock().now)
+                if elapsed < saveGap { try? await Task.sleep(for: saveGap - elapsed) }
+            }
+            dirty = false
+            let agents = self.agents
+            let threads = self.threads
+            let pins = self.pinned
+            let savedEpoch = epoch
+            let pending = renames
+            let faults = staged
+            staged.removeAll()
+            let edits = Array(pendingThreads.values)
+            do {
+                try await persist(agents: agents, threads: threads, pins: pins, edits: edits)
+                lastSaveAt = ContinuousClock().now
+                if epoch == savedEpoch {
+                    remember()
+                } else {
+                    committedAgents = agents
+                    committedThreads = threads
+                    committedPins = pins
+                    committedEdits = Dictionary(uniqueKeysWithValues: edits.map { ($0.id, $0) })
+                }
+                for (id, previous) in pending where renames[id] == previous {
+                    if self.threads.first(where: { $0.id == id })?.title != previous {
+                        renames[id] = nil
+                    }
+                }
+            } catch {
+                // A stream or reload moved the epoch. Keep the faults for the retry.
+                if epoch != savedEpoch {
+                    staged.insert(contentsOf: faults, at: 0)
+                    dirty = true
+                    continue
+                }
+                if keepsRows(faults) { rollbackRenames(faults) }
+                else { restore() }
+                report(faults)
+            }
+        }
+        saving = nil
+        if dirty { scheduleSave() }
+    }
+
+    private enum SaveFault {
+        case rename(String)
+        case agent
+        case chat
+        case edit(String)
+    }
+
+    private func remember() {
+        committedAgents = agents
+        committedThreads = threads
+        committedPins = pinned
+        committedEdits = pendingThreads
+    }
+
+    private func keepsRows(_ faults: [SaveFault]) -> Bool {
+        faults.contains { fault in
+            switch fault {
+            case .agent, .chat, .edit: return true
+            case .rename: return false
+            }
+        }
+    }
+
+    private func rollbackRenames(_ faults: [SaveFault]) {
+        for fault in faults {
+            guard case .rename(let id) = fault else { continue }
+            guard let previous = renames[id], let index = threads.firstIndex(where: { $0.id == id }) else { continue }
+            threads[index].title = previous
+            renames[id] = nil
+        }
+    }
+
+    private func restore() {
+        agents = committedAgents
+        threads = committedThreads
+        pinned = committedPins
+        pendingThreads = committedEdits
+        acceptedAgents = Dictionary(uniqueKeysWithValues: committedAgents.map { ($0.id, $0) })
+        acceptedThreads = Dictionary(uniqueKeysWithValues: committedThreads.map { ($0.id, $0) })
+        for edit in committedEdits.values { merge(edit, into: &threads) }
+        renames.removeAll()
+    }
+
+    private func report(_ faults: [SaveFault]) {
+        if faults.isEmpty {
+            error = "Couldn’t save this conversation. Retry"
+            return
+        }
+        for fault in faults {
+            switch fault {
+            case .rename(let id):
+                editIssues[id] = "Couldn’t save the new name. Retry"
+            case .agent:
+                error = "Couldn’t save this agent. Retry"
+            case .chat:
+                error = "Couldn’t save this chat. Retry"
+            case .edit(let id):
+                editIssues[id] = "Changes couldn’t be saved on this device."
+            }
+        }
+    }
+
+    private func pause(_ duration: Duration) {
+        let clock = ContinuousClock()
+        let start = clock.now
+        while start.duration(to: clock.now) < duration {}
+    }
+}
+
+/// Restores selection only while navigation still belongs to the pending delete.
+public struct DeleteSelection {
+    public let previous: String?
+    public let replacement: String?
+    private var navigated = false
+
+    public init(previous: String?, replacement: String?) {
+        self.previous = previous
+        self.replacement = replacement
+    }
+
+    public mutating func navigate(to selection: String?) {
+        if selection != replacement { navigated = true }
+    }
+
+    public func rollback(current: String?) -> String? {
+        navigated || current != replacement ? current : previous
     }
 }

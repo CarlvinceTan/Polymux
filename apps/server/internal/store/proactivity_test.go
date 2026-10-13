@@ -513,3 +513,53 @@ func TestActiveRoutinesRemainDiscoverable(t *testing.T) {
 		t.Fatal("routine history hid active work", len(routines), err)
 	}
 }
+
+func TestR4NoDuplicateOnRecover(t *testing.T) {
+	s := runStore(t)
+	if err := s.RegisterPush(t.Context(), contract.PushDevice{ID: "fixture-installation", Token: strings.Repeat("ab", 32), Environment: "sandbox", Server: "http://server.test:7337", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	routine, err := s.CreateRoutine(t.Context(), contract.Routine{ID: "morning", AgentID: "a", Prompt: "Morning brief", Status: "active", At: futureTime().Format(time.RFC3339)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := NewRun("morning", "a", "a", "routine")
+	run.RoutineID, run.Status = &routine.ID, "running"
+	if err := s.RunEvent(t.Context(), "run.start", &run, nil); err != nil {
+		t.Fatal(err)
+	}
+	run.Status, run.Error = "failed", &contract.Error{Code: "provider", Message: "500 internal server error"}
+	for range 2 {
+		if err := s.routineNotice(t.Context(), &run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if open, err := s.Run(t.Context(), run.ID); err != nil || open.Status != "running" {
+		t.Fatal("notice commit sealed the run", open.Status, err)
+	}
+	for range 2 {
+		if err := s.Recover(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.routineNotice(t.Context(), &run); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := s.Run(t.Context(), run.ID)
+	messages, msgErr := s.Messages(t.Context(), "a", 0, 100)
+	notices := 0
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if part.Kind == "routine_failed" {
+				notices++
+			}
+		}
+	}
+	var pushes int
+	if err := s.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM notices`).Scan(&pushes); err != nil {
+		t.Fatal(err)
+	}
+	if err != nil || msgErr != nil || sealed.Status != "failed" || sealed.Error == nil || sealed.Error.Code != "provider" || notices != 1 || pushes != 1 {
+		t.Fatalf("recovered %+v notices %d pushes %d %v", sealed, notices, pushes, err)
+	}
+}

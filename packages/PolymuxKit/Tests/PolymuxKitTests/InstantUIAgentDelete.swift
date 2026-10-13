@@ -8,14 +8,19 @@ import Testing
 @Suite("InstantUIAgentDelete", .serialized) @MainActor
 struct InstantUIAgentDelete {
     @Test func rowHidesBeforeServerAnswers() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
+        await rig.sidebar.load()
         defer {
             await rig.gate.resume()
             rig.cleanup()
         }
         rig.sidebar.removeAgent(id: "gone")
-        let row = try #require(rig.sidebar.signposts.first { $0.name == InstantTrace.row })
-        #expect(row.duration <= InstantBudget.rowRemoval)
+        let row = try #require(rig.sidebar.trace.spans.first { $0.name == "agentDeleteState" })
+        #expect(row.withinBudget)
+        let feedback = try #require(rig.sidebar.trace.spans.first { $0.name == "agentDeleteFeedback" })
+        #expect(feedback.budget == InstantUI.feedbackBudget)
+        #expect(feedback.withinBudget)
+        #expect(row.budget == InstantUI.stateBudget)
         #expect(!rig.lists("gone"))
         #expect(rig.lists("kept"))
         #expect(rig.sidebar.threads.contains { $0.id == "gone" })
@@ -32,38 +37,86 @@ struct InstantUIAgentDelete {
         #expect(!rig.sidebar.threads.contains { $0.id == "gone" })
         #expect(rig.lists("kept"))
         #expect(rig.sidebar.threads.contains { $0.id == "group" })
-        #expect(try rig.cache.agents().map(\.id) == ["kept"])
-        #expect(try rig.cache.messages(threadID: "gone").isEmpty)
-        #expect(try rig.cache.messages(threadID: "kept").count == 1)
+        #expect((try await rig.cache.offMain { try $0.agents() }).map(\.id) == ["kept"])
+        #expect((try await rig.cache.offMain { try $0.messages(threadID: "gone") }).isEmpty)
+        #expect((try await rig.cache.offMain { try $0.messages(threadID: "kept") }).count == 1)
     }
 
     @Test func forcedFailureRollsBack() async throws {
-        let rig = try Rig(failing: true)
+        let rig = try await Rig(failing: true)
+        await rig.sidebar.load()
         defer {
             await rig.gate.resume()
             rig.cleanup()
         }
-        let before = try rig.cache.messages(threadID: "gone")
+        let before = try await rig.cache.offMain { try $0.messages(threadID: "gone") }
         rig.sidebar.removeAgent(id: "gone")
         #expect(!rig.lists("gone"))
 
         await #expect(throws: ClientError.self) { try await rig.sidebar.deleteAgent(id: "gone") }
 
-        let rollback = try #require(rig.sidebar.signposts.first { $0.name == InstantTrace.rollback })
-        #expect(rollback.duration <= InstantBudget.rollback)
-        let row = try #require(rig.sidebar.signposts.first { $0.name == InstantTrace.row })
-        #expect(row.duration <= InstantBudget.rowRemoval)
+        let rollback = try #require(rig.sidebar.trace.spans.first { $0.name == "agentDeleteRollback" })
+        #expect(rollback.withinBudget)
+        let row = try #require(rig.sidebar.trace.spans.first { $0.name == "agentDeleteState" })
+        #expect(row.withinBudget)
         #expect(rig.lists("gone"))
         #expect(rig.lists("kept"))
         #expect(rig.sidebar.agents.map(\.id) == ["gone", "kept"])
         #expect(rig.sidebar.threads.contains { $0.id == "group" })
-        #expect(try rig.cache.messages(threadID: "gone") == before)
-        #expect(try rig.cache.messages(threadID: "kept").count == 1)
-        #expect(try rig.cache.agents().map(\.id) == ["gone", "kept"])
+        #expect(try await rig.cache.offMain { try $0.messages(threadID: "gone") } == before)
+        #expect((try await rig.cache.offMain { try $0.messages(threadID: "kept") }).count == 1)
+        #expect((try await rig.cache.offMain { try $0.agents() }).map(\.id) == ["gone", "kept"])
+    }
+
+    @Test func stallMissesBothBudgets() async throws {
+        let rig = try await Rig()
+        await rig.sidebar.load()
+        defer { rig.cleanup() }
+        rig.sidebar.deleteStall = .milliseconds(60)
+        let tap = ContinuousClock().now
+        rig.sidebar.removeAgent(id: "gone", at: tap)
+        let spans = rig.sidebar.trace.spans.filter { $0.name.hasPrefix("agentDelete") }
+        #expect(spans.count == 2)
+        #expect(spans.allSatisfy { !$0.withinBudget })
+        #expect(!rig.sidebar.trace.meetsBudgets)
+    }
+
+    @Test func rollbackRespectsNavigation() {
+        var pending = DeleteSelection(previous: "gone", replacement: "kept")
+        pending.navigate(to: "kept")
+        #expect(pending.rollback(current: "kept") == "gone")
+        pending.navigate(to: nil)
+        #expect(pending.rollback(current: nil) == nil)
+        pending.navigate(to: "kept")
+        #expect(pending.rollback(current: "kept") == "kept")
+        let empty = DeleteSelection(previous: "gone", replacement: nil)
+        #expect(empty.rollback(current: nil) == "gone")
+    }
+
+    @Test func deleteDiskWorkYieldsMainActor() async throws {
+        let rig = try await Rig()
+        await rig.sidebar.load()
+        defer { rig.cleanup() }
+        await rig.sidebar.cacheActor.parkNext()
+        let task = Task { try await rig.sidebar.deleteAgent(id: "gone") }
+        #expect(try await rig.gate.hiddenAtRequest())
+        await rig.gate.resume()
+        for _ in 0..<1000 {
+            if await rig.sidebar.cacheActor.isParked { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let parked = await rig.sidebar.cacheActor.isParked
+        #expect(parked)
+        #expect(!rig.sidebar.threads.contains { $0.id == "gone" })
+        #expect(rig.lists("kept"))
+        await rig.sidebar.cacheActor.release()
+        try await task.value
+        #expect((try await rig.cache.offMain { try $0.agents() }).map(\.id) == ["kept"])
     }
 
     @Test func refreshKeepsRowHiddenUntilFailure() async throws {
-        let rig = try Rig()
+        let rig = try await Rig()
+        await rig.sidebar.load()
         defer {
             await rig.gate.resume()
             rig.cleanup()
@@ -79,11 +132,11 @@ struct InstantUIAgentDelete {
         #expect(rig.sidebar.listedThreads.contains { $0.id == "group" })
         await rig.gate.fail()
         await #expect(throws: ClientError.self) { try await task.value }
-        let rollback = try #require(rig.sidebar.signposts.first { $0.name == InstantTrace.rollback })
-        #expect(rollback.duration <= InstantBudget.rollback)
+        let rollback = try #require(rig.sidebar.trace.spans.first { $0.name == "agentDeleteRollback" })
+        #expect(rollback.withinBudget)
         #expect(rig.lists("gone"))
-        #expect(try rig.cache.messages(threadID: "gone").count == 1)
-        #expect(try rig.cache.messages(threadID: "kept").count == 1)
+        #expect((try await rig.cache.offMain { try $0.messages(threadID: "gone") }).count == 1)
+        #expect((try await rig.cache.offMain { try $0.messages(threadID: "kept") }).count == 1)
     }
 }
 
@@ -95,10 +148,10 @@ private final class Rig {
     private let host: String
     private let directory: URL
 
-    init(failing: Bool = false) throws {
+    init(failing: Bool = false) async throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("polymux-instant-\(UUID())")
         let url = directory.appendingPathComponent("cache.sqlite")
-        cache = try LocalCache(url: url)
+        cache = try await CacheWork.open(url)
         let gone = Agent(id: "gone", name: "Gone")
         let kept = Agent(id: "kept", name: "Kept")
         let threads = [
@@ -106,13 +159,15 @@ private final class Rig {
             Thread(id: "kept", agentID: "kept", title: "Kept", agentIDs: ["kept"]),
             Thread(id: "group", agentID: "kept", title: "Group", agentIDs: ["gone", "kept"])
         ]
-        try cache.save(agents: [gone, kept], threads: threads)
-        for id in ["gone", "kept"] {
-            let message = Message(id: "\(id)-reply", threadID: id, role: "assistant",
-                                  parts: [Part(kind: "text", text: "A notebook in \(id)")],
-                                  createdAt: "2026-10-09T10:00:00Z", status: "done", seq: 1)
-            try cache.apply(Event(seq: 1, conversationID: id, type: "message.start", message: message, createdAt: message.createdAt))
-            try cache.apply(Event(seq: 2, conversationID: id, type: "message.done", messageID: message.id, createdAt: message.createdAt))
+        try await cache.offMain { cache in
+            try cache.save(agents: [gone, kept], threads: threads)
+            for id in ["gone", "kept"] {
+                let message = Message(id: "\(id)-reply", threadID: id, role: "assistant",
+                                      parts: [Part(kind: "text", text: "A notebook in \(id)")],
+                                      createdAt: "2026-10-09T10:00:00Z", status: "done", seq: 1)
+                try cache.apply(Event(seq: 1, conversationID: id, type: "message.start", message: message, createdAt: message.createdAt))
+                try cache.apply(Event(seq: 2, conversationID: id, type: "message.done", messageID: message.id, createdAt: message.createdAt))
+            }
         }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [DeleteProtocol.self]

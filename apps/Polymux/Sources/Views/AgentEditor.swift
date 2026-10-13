@@ -247,7 +247,7 @@ struct AgentEditor: View {
                                             role: role.trimmingCharacters(in: .whitespacesAndNewlines),
                                             prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
             let profile = try await session.client.updateAgent(id: agent.id, request: update)
-            session.sidebar.accept(profile.agent)
+            await session.sidebar.accept(profile.agent)
             await session.sidebar.refresh()
             dismiss()
         } catch {

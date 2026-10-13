@@ -23,6 +23,8 @@ struct ShellView: View {
     @State private var confirmDelete = false
     @State private var deleting: String?
     @State private var deleteError: String?
+    @State private var failedDelete: Agent?
+    @State private var deleteSelection: DeleteSelection?
     @State private var dropped: [URL] = []
     @Environment(\.colorScheme) private var colorScheme
     #if os(macOS)
@@ -43,7 +45,10 @@ struct ShellView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $visibility) {
-            List(selection: listSelection) {
+            List(selection: Binding(get: { selection }, set: { value in
+                deleteSelection?.navigate(to: value)
+                selection = value
+            })) {
                 ForEach(conversations) { thread in
                     chatLink(thread)
                 }
@@ -185,6 +190,7 @@ struct ShellView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .onChange(of: selection, initial: true) { _, value in
+            deleteSelection?.navigate(to: value)
             Notifications.shared.visible(scenePhase == .active ? value : nil, window: windowID)
         }
         .onChange(of: scenePhase) { _, phase in
@@ -252,9 +258,7 @@ struct ShellView: View {
         .alert("Delete agent?", isPresented: $confirmDelete, presenting: deleteTarget) { contact in
             Button("Delete", role: .destructive) {
                 let agent = contact.agent
-                deleting = agent.id
-                session.sidebar.removeAgent(id: agent.id)
-                Task { await delete(agent) }
+                beginDelete(agent)
             }
             Button("Cancel", role: .cancel) {}
         } message: { contact in
@@ -263,7 +267,10 @@ struct ShellView: View {
         .alert("Couldn’t delete agent", isPresented: Binding(
             get: { deleteError != nil }, set: { if !$0 { deleteError = nil } }
         )) {
-            Button("OK") { deleteError = nil }
+            Button("Retry") {
+                if let agent = failedDelete { beginDelete(agent) }
+            }
+            Button("Cancel", role: .cancel) { deleteError = nil }
         } message: { Text(deleteError ?? "") }
         .task {
             while !Task.isCancelled {
@@ -414,12 +421,23 @@ struct ShellView: View {
         else if let agent = participants(thread).first { profiling = AvatarContact(agent: agent) }
     }
 
-    /// The list drops a selection it can no longer see. Hold it until delete finishes so failure restores the row under the open chat.
-    private var listSelection: Binding<String?> {
-        Binding(get: { selection }, set: { value in
-            if value == nil, deleting != nil { return }
-            selection = value
-        })
+    private func beginDelete(_ agent: Agent) {
+        let tap = ContinuousClock().now
+        deleting = agent.id
+        deleteError = nil
+        let visible = conversations.filter { $0.isGroup || $0.agentID != agent.id }
+        if session.sidebar.threads.contains(where: { $0.id == selection && !$0.isGroup && $0.agentID == agent.id }) {
+            let index = conversations.firstIndex { $0.id == selection } ?? 0
+            let replacement = conversations.dropFirst(index + 1).first {
+                $0.isGroup || $0.agentID != agent.id
+            }?.id ?? visible.first?.id
+            deleteSelection = DeleteSelection(previous: selection, replacement: replacement)
+            selection = replacement
+        } else {
+            deleteSelection = nil
+        }
+        session.sidebar.removeAgent(id: agent.id, at: tap)
+        Task { await delete(agent) }
     }
 
     private func requestDelete(_ agent: Agent) {
@@ -429,12 +447,15 @@ struct ShellView: View {
 
     private func delete(_ agent: Agent) async {
         deleting = agent.id
-        defer { deleting = nil }
+        defer { deleting = nil; deleteSelection = nil }
         do {
             try await session.sidebar.deleteAgent(id: agent.id)
             session.avatars.remove(id: agent.id)
-            if !session.sidebar.threads.contains(where: { $0.id == selection }) { selection = conversations.first?.id }
-        } catch { deleteError = error.localizedDescription }
+        } catch {
+            if let pending = deleteSelection { selection = pending.rollback(current: selection) }
+            failedDelete = agent
+            deleteError = "Couldn’t delete \(agent.name). It’s back in your list."
+        }
     }
 }
 
