@@ -41,6 +41,7 @@ VD="$ROOT/.build/verify-data"; rm -rf "$P" "$R" "$VD"; mkdir -p "$P" "$L" "$R" "
 # (verify-polymux-features.md Part 2), passed by ReadinessTests, not an env var. The flag exists
 # only in -tags verifyfixture builds; verify.sh starts no fixture server yet and the app has no
 # --verify-fixture handler, so ReadinessTests cannot use it until wiring lands.
+export POLYMUX_NO_MDNS=1 POLYMUX_TAILSCALE=0 POLYMUX_LISTEN=127.0.0.1:0
 export POLYMUX_DATA_DIR="$VD" TEST_RUNNER_POLYMUX_DATA_DIR="$VD" SIMCTL_CHILD_POLYMUX_DATA_DIR="$VD"
 LOCKS=$(python3 "$SD/lanes.py" get lock_dir); MAX=${VERIFY_MAX_BUILDS:-$(python3 "$SD/lanes.py" get max_builds)}
 mkdir -p "$LOCKS"; SLOT=""; VPID=""

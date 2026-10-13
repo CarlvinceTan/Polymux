@@ -56,7 +56,7 @@ func run() error {
 	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "unauthenticated backend IP:port; should stay on loopback (defaults to 127.0.0.1:7337)")
 	dev := flag.Bool("dev", os.Getenv("POLYMUX_DEV") == "1", "development mode (loopback is always allowed)")
 	dir := flag.String("data", os.Getenv("POLYMUX_DATA_DIR"), "data directory")
-	deviceListen := flag.String("device-listen", "", "TLS device listener (defaults to backend port + 2)")
+	deviceListen := flag.String("device-listen", "", "TLS device IP:port (defaults to loopback, backend port + 2; LAN requires an explicit address)")
 	noMDNS := flag.Bool("no-mdns", os.Getenv("POLYMUX_NO_MDNS") == "1", "disable Bonjour LAN advertisement")
 	tailscale := flag.Bool("tailscale", os.Getenv("POLYMUX_TAILSCALE") == "1", "use Tailscale listeners (requires Tailscale)")
 	verify := fixture.Register(flag.CommandLine)
@@ -110,11 +110,7 @@ func run() error {
 		if err != nil || n > 65533 {
 			return errors.New("backend port must allow two adjacent ports")
 		}
-		address := "0.0.0.0"
-		if *tailscale {
-			address = defaultIP
-		}
-		*deviceListen = net.JoinHostPort(address, strconv.Itoa(n+2))
+		*deviceListen = deviceAddress(defaultIP, n)
 	}
 	if err := validateDevice(*deviceListen); err != nil {
 		return err
@@ -309,4 +305,11 @@ func defaults(model string) []agentruntime.Definition {
 		{Agent: contract.Agent{ID: "research", Name: "Research", Role: "Research assistant", Model: model}, Prompt: "You are a careful research assistant. Distinguish verified facts from uncertainty and provide sources when available. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "bash", "find", "ls"}},
 		coding,
 	}
+}
+
+func deviceAddress(ip string, port int) string {
+	if port == 0 {
+		return net.JoinHostPort(ip, "0")
+	}
+	return net.JoinHostPort(ip, strconv.Itoa(port+2))
 }

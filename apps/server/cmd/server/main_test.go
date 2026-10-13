@@ -238,3 +238,22 @@ func TestBonjourTXT(t *testing.T) {
 		t.Fatalf("TXT = %v, want only v=1 and k=%s", txt, want)
 	}
 }
+
+func TestDeviceAddress(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		ip   string
+		port int
+		want string
+	}{
+		{name: "default", ip: "127.0.0.1", port: 7337, want: "127.0.0.1:7339"},
+		{name: "ephemeral", ip: "127.0.0.1", port: 0, want: "127.0.0.1:0"},
+		{name: "explicit tailnet", ip: "100.64.0.1", port: 7337, want: "100.64.0.1:7339"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deviceAddress(tt.ip, tt.port); got != tt.want {
+				t.Fatalf("device address = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
