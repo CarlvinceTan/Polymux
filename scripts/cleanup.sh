@@ -79,7 +79,7 @@ for d in "$CW"/*/*; do [ -d "$d" ] || continue
 do_ xcrun simctl delete unavailable
 git -C "$REPO" worktree prune --dry-run -v; [ $APPLY = 1 ] && git -C "$REPO" worktree prune
 # proof-media/* branches (one per verify run) older than PROOF_DAYS (default 14): delete on origin.
-NOW=$(date +%s); git -C "$REPO" for-each-ref --format='%(refname:lstrip=3) %(committerdate:unix)' refs/remotes/origin/proof-media/ | \
+NOW=$(date +%s); git -C "$REPO" for-each-ref --format='%(refname:lstrip=3) %(committerdate:unix)' refs/remotes/origin/proof-media/ 'refs/remotes/origin/proof-media-*' | \
   while read -r b t; do [ $(( (NOW - t) / 86400 )) -ge "$PROOF_DAYS" ] && do_ git -C "$REPO" push -q origin --delete "$b"; done
 [ -d "$HOME/verify-evidence" ] && find "$HOME/verify-evidence" -mindepth 2 -maxdepth 2 -type d -mtime +"$DAYS" | \
   while read -r d; do do_ rm -rf "$d"; done
