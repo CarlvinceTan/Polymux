@@ -1,0 +1,12 @@
+{
+  "bundle_id": "com.flarehq.polymux.pasteproof",
+  "launch_state": {
+    "process_running": true,
+    "requested": true,
+    "window_ready": false
+  },
+  "name": "pasteproof",
+  "pid": 82236,
+  "self_activation_suppressed": true,
+  "windows": []
+}

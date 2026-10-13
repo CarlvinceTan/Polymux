@@ -1,0 +1,1 @@
+«class PNGf», 179, «class AVIF», 378, «class 8BPS», 4080, GIF picture, 116, «class jp2 », 3401, JPEG picture, 857, TIFF picture, 15638, «class BMP », 12342, «class TPIC», 274
