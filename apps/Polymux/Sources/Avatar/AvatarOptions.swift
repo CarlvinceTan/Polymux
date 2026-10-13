@@ -67,6 +67,7 @@ struct AvatarOptions: Codable, Equatable, Sendable {
 }
 
 @MainActor @Observable final class AvatarStore {
+    let trace = SignpostTrace()
     private(set) var saved: [String: AvatarOptions] = [:]
     private(set) var dirtyIDs: Set<String> = []
     @ObservationIgnored private let sidebar: SidebarStore
@@ -135,6 +136,16 @@ struct AvatarOptions: Codable, Equatable, Sendable {
         }
     }
 
+    func finish(_ agentID: String, previous: AvatarOptions, client: APIClient) {
+        let request = options(for: agentID).design
+        dirtyIDs.remove(agentID)
+        sidebar.commits.saveAvatar(id: agentID, previous: previous.design, request: request,
+                                   sidebar: sidebar, client: client, apply: { [self] design in
+            guard !removedIDs.contains(agentID) else { return }
+            saved[agentID] = AvatarOptions(design: design)
+        }, close: {})
+    }
+
     func flush(client: APIClient) async {
         guard !flushing else { return }
         flushing = true
@@ -142,7 +153,11 @@ struct AvatarOptions: Codable, Equatable, Sendable {
         for agentID in dirtyIDs.sorted() {
             guard editing[agentID] == nil, knownIDs?.contains(agentID) != false else { continue }
             do { try await commit(for: agentID, client: client, allowEditing: false) }
-            catch { }
+            catch {
+                sidebar.commits.report("Couldn’t save the avatar. Your changes remain on this device.") { [self] in
+                    Task { await flush(client: client) }
+                }
+            }
         }
     }
 

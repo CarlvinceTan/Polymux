@@ -44,6 +44,13 @@ struct ShellView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $visibility) {
             List(selection: $selection) {
+                if let notice = session.sidebar.commits.notice {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(notice)
+                        Button("Try again") { session.sidebar.commits.tryAgain() }
+                    }
+                    .accessibilityIdentifier("profile.failure")
+                }
                 ForEach(conversations) { thread in
                     chatLink(thread)
                 }

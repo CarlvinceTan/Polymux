@@ -636,6 +636,78 @@ struct TransportTests {
         #expect(try await api.registerPush(device).available)
     }
 
+    @Test func profileCommitRestoresFailureAndProtectsNewerPrompt() async throws {
+        let host = ProbeProtocol.routes.add { _ in (500, Data()) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let api = client(host: host)
+        let sidebar = SidebarStore(client: api, cache: try await CacheWork.open(url))
+        let previous = AgentProfile(agent: Agent(id: "profile", name: "Old"), prompt: "Old prompt")
+        let update = UpdateAgentRequest(name: "New", role: "Role", prompt: "First prompt")
+        var closed = false
+        let first = sidebar.commits.save(previous, request: update, sidebar: sidebar, client: api) {
+            closed = true
+        }
+        #expect(closed)
+        #expect(sidebar.agents.first?.name == "New")
+        #expect(sidebar.commits.profiles["profile"]?.prompt == "First prompt")
+        await first.value
+        #expect(sidebar.agents.first?.name == "Old")
+        #expect(sidebar.commits.profiles["profile"] == previous)
+        #expect(sidebar.commits.notice != nil)
+        let older = sidebar.commits.save(previous, request: update, sidebar: sidebar, client: api, close: {})
+        var newer = update
+        newer.prompt = "Second prompt"
+        let latest = sidebar.commits.save(previous, request: newer, sidebar: sidebar, client: api, close: {})
+        await older.value
+        #expect(sidebar.commits.profiles["profile"]?.prompt != "Old prompt")
+        await latest.value
+        // The newer failure restores the state that existed when it was submitted.
+        #expect(sidebar.commits.profiles["profile"]?.prompt == "First prompt")
+        await sidebar.settled()
+    }
+
+    @Test func avatarCommitRestoresFailureAfterClosing() async throws {
+        let host = ProbeProtocol.routes.add { _ in (500, Data()) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let api = client(host: host)
+        let sidebar = SidebarStore(client: api, cache: try await CacheWork.open(url))
+        let previous = AvatarDesign()
+        var next = previous
+        next.shape = "square"
+        var visible = previous
+        var closed = false
+        let task = sidebar.commits.saveAvatar(id: "avatar", previous: previous, request: next,
+                                             sidebar: sidebar, client: api,
+                                             apply: { visible = $0 }, close: { closed = true })
+        #expect(closed && visible == next)
+        await task.value
+        #expect(visible == previous)
+        #expect(sidebar.commits.notice != nil)
+    }
+
+    @Test func profileCommitReportsAStalledClose() async throws {
+        let host = ProbeProtocol.routes.add { _ in (500, Data()) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let api = client(host: host)
+        let sidebar = SidebarStore(client: api, cache: try await CacheWork.open(url))
+        let task = sidebar.commits.save(AgentProfile(agent: Agent(id: "slow")),
+                                       request: UpdateAgentRequest(name: "Slow"),
+                                       sidebar: sidebar, client: api) {
+            let clock = ContinuousClock()
+            let start = clock.now
+            while start.duration(to: clock.now) < .milliseconds(70) {}
+        }
+        #expect(sidebar.commits.trace.meetsBudgets == false)
+        await task.value
+        await sidebar.settled()
+    }
+
     private func client(host: String) -> APIClient {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [ProbeProtocol.self]

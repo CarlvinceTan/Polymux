@@ -4,6 +4,7 @@ import Observation
 @MainActor @Observable
 public final class SidebarStore {
     public let activity = ActivityStore()
+    public let commits = ProfileCommit()
     public private(set) var agents: [Agent] = []
     public private(set) var threads: [Thread] = []
     public private(set) var isConnected = false
@@ -80,6 +81,11 @@ public final class SidebarStore {
     }
 
     public func accept(_ agent: Agent) async {
+        publish(agent)
+        await settled()
+    }
+
+    public func publish(_ agent: Agent) {
         revision &+= 1
         epoch &+= 1
         acceptedAgents[agent.id] = agent
@@ -93,7 +99,6 @@ public final class SidebarStore {
         error = nil
         staged.append(.agent)
         scheduleSave()
-        await settled()
     }
 
     public func edit(_ thread: Thread, delay: Duration = .milliseconds(550)) async {

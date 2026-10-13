@@ -21,12 +21,14 @@ struct AvatarEditor: View {
     @State private var saving = false
     @State private var issue: String?
     @State private var editID = UUID()
+    private let baseline: AvatarOptions
 
     init(agentID: String, name: String, client: APIClient? = nil, store: AvatarStore) {
         self.agentID = agentID
         self.name = name
         self.client = client
         self.store = store
+        baseline = store.options(for: agentID)
         _blocks = State(initialValue: store.options(for: agentID).blocks)
     }
 
@@ -129,9 +131,10 @@ struct AvatarEditor: View {
         .panelDismiss(enabled: !saving, onClose: { dismiss() })
         .onAppear { store.beginEditing(agentID, token: editID) }
         .onDisappear {
+            // Close and swipe dismissal save the live avatar edits too.
             saveBlocks()
             store.endEditing(agentID, token: editID)
-            if let client { Task { await store.flush(client: client) } }
+            if let client { store.finish(agentID, previous: baseline, client: client) }
         }
         .onChange(of: preview) { _, _ in cursor = 0 }
         .onChange(of: duration) { _, value in cursor = min(cursor, value) }
@@ -342,16 +345,8 @@ struct AvatarEditor: View {
     private func finish() async {
         guard !saving else { return }
         saveBlocks()
-        guard let client else { dismiss(); return }
-        saving = true
-        issue = nil
-        defer { saving = false }
-        do {
-            try await store.commit(for: agentID, client: client)
-            dismiss()
-        } catch {
-            issue = "Couldn’t save your avatar to the server. Your changes are still open here. \(error.localizedDescription)"
-        }
+        InstantUI.interval("AvatarSave", budget: InstantUI.stateBudget,
+                           trace: store.trace) { dismiss() }
     }
 
     private func saveBlocks() {

@@ -8,6 +8,7 @@ struct AgentEditor: View {
     @State private var name: String
     @State private var role: String
     @State private var prompt = ""
+    @State private var baseline = ""
     @State private var loaded = false
     @State private var loading = true
     @State private var saving = false
@@ -226,6 +227,7 @@ struct AgentEditor: View {
             if name == agent.name { name = profile.agent.name }
             if role == agent.role { role = profile.agent.role }
             prompt = profile.prompt
+            baseline = profile.prompt
             loaded = true
             async let schedule = session.client.proactivity(agentID: agent.id)
             async let scheduled = session.client.routines(agentID: agent.id)
@@ -239,19 +241,12 @@ struct AgentEditor: View {
 
     private func save() async {
         guard loaded, !saving, !cleanName.isEmpty else { return }
-        saving = true
-        issue = nil
-        defer { saving = false }
-        do {
-            let update = UpdateAgentRequest(name: cleanName,
-                                            role: role.trimmingCharacters(in: .whitespacesAndNewlines),
-                                            prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
-            let profile = try await session.client.updateAgent(id: agent.id, request: update)
-            await session.sidebar.accept(profile.agent)
-            await session.sidebar.refresh()
-            dismiss()
-        } catch {
-            issue = "Couldn’t save this profile. \(error.localizedDescription)"
-        }
+        let tap = ContinuousClock().now
+        let update = UpdateAgentRequest(name: cleanName,
+                                       role: role.trimmingCharacters(in: .whitespacesAndNewlines),
+                                       prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+        session.sidebar.commits.save(AgentProfile(agent: agent, prompt: baseline), request: update,
+                                    sidebar: session.sidebar, client: session.client,
+                                    from: tap, close: { dismiss() })
     }
 }
