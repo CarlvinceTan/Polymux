@@ -15,4 +15,4 @@ verdict_key() { if [ -n "${VERDICT_KEY_CMD:-}" ]; then bash -c "$VERDICT_KEY_CMD
   vault get "${VERDICT_KEY_TITLE:-Polymux review verdict HMAC}" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])'; fi; }
 MAC=$(verdict_key | python3 "$SD/verdict.py" sign "$PR" "$SHA" "$V") || { echo "verdict key unavailable"; exit 1; }
 BODY="Liam: $V — head ${SHA:0:7}.${NOTES:+ $NOTES}"$'\n\n'"<!-- verdict:v1 pr=$PR sha=$SHA v=$V mac=$MAC -->"
-if [ -n "${PRINT_ONLY:-}" ]; then printf '%s\n' "$BODY"; else gh pr comment "$PR" -R "$SLUG" --body "$BODY"; fi
+if [ -n "${PRINT_ONLY:-}" ]; then printf '%s\n' "$BODY"; else gh_write pr comment "$PR" -R "$SLUG" --body "$BODY"; fi

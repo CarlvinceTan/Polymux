@@ -36,7 +36,10 @@ scope_check() {
 lock_holder() { cat "$1/pid" 2>/dev/null; }
 lock_drop() { [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] && rm -rf "$1"; return 0; }
 # Lane scripts changed between BASE and HEAD in the current repo?
-lane_files_changed() { git diff --name-only "$1"...HEAD | grep -qE '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write)\.sh|scripts/(lanes|media-check|verdict)\.py|agents/lanes\.toml)$'; }
+# out_has [grep -E opts] PATTERN: does stdin have a matching line? Reads ALL of stdin first, so the writer
+# never gets SIGPIPE. (`cmd | grep -q` under pipefail returns 141 when grep exits early on a long output.)
+out_has() { local s; s=$(cat); grep -qE "$@" <<< "$s"; }
+lane_files_changed() { git diff --name-only "$1"...HEAD | out_has '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write)\.sh|scripts/(lanes|media-check|verdict)\.py|agents/lanes\.toml)$'; }
 # test-lanes.sh to run: the checkout under test (a PR's own worktree in --verify-only), else ours.
 lane_tests_path() { if [ -f "$1/scripts/test-lanes.sh" ]; then echo "$1/scripts/test-lanes.sh"; else echo "$2/test-lanes.sh"; fi; }
 branch_lock_dir() { echo "${LANES_HOME:-$HOME/ops/lanes}/branches/$(echo "$1" | tr '/' '%').lock"; }
@@ -45,6 +48,57 @@ repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|ht
 # Carl's lane-guard hook; missing = skip, never fatal unless the caller checks rc.
 LANE_GUARD=${LANE_GUARD:-$HOME/.local/bin/lane-guard}
 guard() { [ -x "$LANE_GUARD" ] || return 0; "$LANE_GUARD" "$@"; }
+# --- GitHub labels and Notion-free GitHub writes ---------------------------------------------------
+# Shared label set: exactly one type:*, at least one area:*, plus dogfood / flake. Priority is a
+# Project field, never a label.
+LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines server ui lanes"
+# brief_labels FILE [NAME] -> comma-separated labels for a gh issue/PR made from this brief.
+# type:/area: headers win ("area: ui, server"; the "type:"/"area:" value prefix is optional). Else
+# inferred: title with FIX or "bug" -> bug, else feature; needs: xcode -> ui; a server/ or .go path
+# -> server; a scripts/ or lanes path -> lanes; nothing matched -> lanes (logged by the caller's gh).
+# dogfood: NAME starts 00NN-- or the brief says dogfood. flake: the brief is a deflake task.
+brief_labels() {
+  local f=$1 n=${2:-$(basename "$1")} t a title needs body x out
+  title=$(grep -m1 '^# ' "$f" | sed 's/^# *//'); [ -n "$title" ] || title=$(head -1 "$f")
+  t=$(sed -n 's/^type: *//p' "$f" | head -1 | sed 's/^type://; s/[ ,]*$//')
+  a=$(sed -n 's/^area: *//p' "$f" | head -1 | tr ',' ' ' | sed 's/area://g')
+  needs=$(sed -n 's/^needs: *//p' "$f" | head -1 | tr 'A-Z' 'a-z')
+  body=$(grep -vE '^(needs|type|area):' "$f")
+  if [ -z "$t" ]; then
+    if echo "$title" | grep -qE '(^|[^A-Za-z])FIX([^A-Za-z]|$)' || echo "$title" | grep -qiE '(^|[^a-z])bugs?([^a-z]|$)'; then t=bug; else t=feature; fi; fi
+  if [ -z "$(echo $a)" ]; then a=""
+    case ",$needs," in *xcode*) a="$a ui";; esac
+    echo "$body" | grep -qE '(^|[^A-Za-z0-9_])(apps/)?server/|[A-Za-z0-9_]\.go([^A-Za-z]|$)' && a="$a server"
+    echo "$body" | grep -qE '(^|[^A-Za-z0-9_])scripts/|(^|[^A-Za-z0-9_])lanes?([^A-Za-z0-9_]|$)' && a="$a lanes"
+    [ -n "$a" ] || a=lanes; fi
+  out="type:$t"; for x in $a; do case ",$out," in *",area:$x,"*) ;; *) out="$out,area:$x";; esac; done
+  { echo "$n" | grep -qE '^00[0-9][0-9]--' || grep -qi 'dogfood' "$f"; } && out="$out,dogfood"
+  grep -qiE 'de-?flake' "$f" && out="$out,flake"
+  echo "$out"; }
+# Nothing written to GitHub may carry a Notion link or a Notion page id. Narrow on purpose:
+#  - links: notion.so / notion.site / app.notion.com URLs (a markdown link keeps its text, a bare URL
+#    becomes "[Notion link removed]");
+#  - ids: 32-hex or dashed 8-4-4-4-12 ids ONLY when "notion" is within 40 characters on the same line.
+#    Other UUIDs, device UDIDs, MD5s and git SHAs pass through untouched.
+# Lines are never dropped and writes are never refused: only the link or id itself is scrubbed.
+NOTION_PERL='
+  my $H = qr/(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{32}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(?![0-9A-Fa-f])/;
+  my $U = qr{(?:https?://)?(?:[\w-]+\.)*(?:notion\.so|notion\.site)(?:/[^\s)\]>"`]*)?|(?:https?://)?app\.notion\.com(?:/[^\s)\]>"`]*)?}i;
+  sub scrub { my $l = shift;
+    $l =~ s{\[([^\]]*)\]\(\s*$U\s*\)}{$1}g;      # [text](notion url) -> text
+    $l =~ s{$U}{[Notion link removed]}g;
+    1 while $l =~ s{(notion.{0,40}?)$H}{$1\[id removed\]}is;   # id after "notion" (case-insensitive)
+    1 while $l =~ s{$H(?=.{0,40}?notion)}{[id removed]}is;     # id before "notion"
+    return $l; }'
+notion_ref() { perl -e "$NOTION_PERL"'; my $hit = 0; while (my $l = <STDIN>) { $hit = 1 if scrub($l) ne $l } exit($hit ? 0 : 1)'; }   # stdin has a Notion link/id?
+notion_scrub() { perl -e "$NOTION_PERL"'; while (my $l = <STDIN>) { print scrub($l) }'; }   # stdin -> stdout, only links/ids replaced
+# gh_write <gh args...>: the only way lane scripts write to GitHub. Every argument and any --body-file
+# text is scrubbed (notion_scrub) and the write always goes ahead. GH_CMD: test hook.
+gh_write() { local -a a=(); local v tmp=""
+  while [ $# -gt 0 ]; do case $1 in
+    -F|--body-file) tmp=$(mktemp); if [ "$2" = - ]; then notion_scrub; else notion_scrub < "$2"; fi > "$tmp"; a+=("$1" "$tmp"); shift 2;;
+    *) v=$(printf '%s\n' "$1" | notion_scrub); a+=("$v"); shift;; esac; done
+  ${GH_CMD:-gh} "${a[@]}"; local rc=$?; [ -n "$tmp" ] && rm -f "$tmp"; return $rc; }
 # Worktree in-use checks (cleanup.sh, run-lane.sh free_branch): live verify lock or fresh verify marker,
 # a build slot naming it, a live unit lock for it, or any process with the path in its args.
 fresh() { [ -e "$1" ] && [ $(( $(date +%s) - $(_mtime "$1") )) -lt $(( ${VERIFY_FRESH_MIN:-120} * 60 )) ]; }
@@ -62,4 +116,4 @@ in_use() {  # $1 worktree path. Needs LOCKS (lanes.toml lock_dir) and OPS; same 
 # cwd_in_use PATH: 0 = a process has its cwd in PATH, 1 = none, 2 = can't tell (lsof missing/failed): callers fail closed.
 cwd_in_use() { local out rc r; command -v lsof >/dev/null 2>&1 || return 2
   out=$(lsof -d cwd -Fn 2>/dev/null); rc=$?; [ $rc != 0 ] && [ -z "$out" ] && return 2
-  r=$(cd "$1" 2>/dev/null && pwd -P); printf '%s\n' "$out" | grep -qE "^n($1|${r:-$1})(/|\$)" && return 0; return 1; }
+  r=$(cd "$1" 2>/dev/null && pwd -P); printf '%s\n' "$out" | out_has "^n($1|${r:-$1})(/|\$)" && return 0; return 1; }
