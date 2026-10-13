@@ -15,8 +15,8 @@ public struct PushStatus: Codable, Hashable, Sendable {
 }
 
 public struct Notice: Codable, Hashable, Sendable {
-    public var body: String
-    public var outcome: String
+    public var body: String?
+    public var outcome: String?
     public var seq: Int64
     public var conversationID: String
     public var messageID: String
@@ -24,8 +24,8 @@ public struct Notice: Codable, Hashable, Sendable {
     public var createdAt: String
 
     public init(
-        body: String = "",
-        outcome: String = "",
+        body: String? = nil,
+        outcome: String? = nil,
         seq: Int64 = 0,
         conversationID: String = "",
         messageID: String = "",

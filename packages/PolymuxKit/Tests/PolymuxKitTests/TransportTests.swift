@@ -1212,3 +1212,11 @@ struct TransportTests {
         #expect(cursors.starts(with: [0, 1000, 2000, 2100]))
     }
 }
+
+@Test func legacyNoticePage() throws {
+    let data = Data(#"{"cursor":7,"notices":[{"seq":7,"conversationID":"chat","messageID":"reply","title":"Polymux","createdAt":"2026-10-13T08:00:00Z"}]}"#.utf8)
+    let page = try JSONDecoder().decode(NoticePage.self, from: data)
+    #expect(page.cursor == 7)
+    #expect(page.notices.first?.body == nil)
+    #expect(page.notices.first?.outcome == nil)
+}

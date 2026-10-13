@@ -112,7 +112,7 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
                       abs(date.timeIntervalSinceNow) < 600 else { continue }
                 let content = UNMutableNotificationContent()
                 content.title = notice.title
-                content.body = notice.body
+                content.body = notice.body ?? "New message in Polymux"
                 content.sound = .default
                 content.threadIdentifier = notice.conversationID
                 content.userInfo = ["server": client.baseURL.absoluteString, "conversationID": notice.conversationID,

@@ -15,7 +15,7 @@ import (
 func (s *Store) migrateNotices(ctx context.Context) error {
 	_, err := s.DB.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS notices(
  seq INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
- message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE, data TEXT NOT NULL);
+ message_id TEXT REFERENCES messages(id) ON DELETE CASCADE, notice_key TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS push_devices(id TEXT PRIMARY KEY,token TEXT NOT NULL,environment TEXT NOT NULL,server TEXT NOT NULL,enabled INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS push_queue(
  notice_seq INTEGER NOT NULL REFERENCES notices(seq) ON DELETE CASCADE,
@@ -155,7 +155,7 @@ func turnNotice(ctx context.Context, tx *sql.Tx, run *contract.Run) error {
 		title = name
 	}
 	id, _ := messageID.(string)
-	return saveNotice(ctx, tx, contract.Notice{ConversationID: run.ConversationID, MessageID: id, Title: title, Body: noticeBody(body), Outcome: outcome, CreatedAt: Now()}, messageID, run.ID)
+	return saveNotice(ctx, tx, contract.Notice{ConversationID: run.ConversationID, MessageID: id, Title: title, Body: noticeBody(body), Outcome: outcome, CreatedAt: Now()}, messageID, run.ID+":"+outcome)
 }
 
 func noticeBody(body string) string {

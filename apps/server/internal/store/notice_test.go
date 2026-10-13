@@ -205,8 +205,15 @@ func TestNoticeOncePerTurn(t *testing.T) {
 		}
 	}
 	page, err = s.Notices(t.Context(), &zero)
-	if err != nil || len(page.Notices) != 1 {
+	want := 1
+	if status == "waiting_input" {
+		want = 2
+	}
+	if err != nil || len(page.Notices) != want {
 		t.Fatalf("notices: %+v %v", page, err)
+	}
+	if want == 2 && (page.Notices[1].Outcome != "done" || page.Notices[1].Body != "Finished") {
+		t.Fatalf("finished notice: %+v", page.Notices[1])
 	}
 	if n := page.Notices[0]; n.Body != "three" || n.Outcome != "done" || n.MessageID != "three" {
 		t.Fatalf("notice: %+v", n)
@@ -238,8 +245,15 @@ func noticeOutcome(t *testing.T, status, body string) {
 	}
 	zero := int64(0)
 	page, err := s.Notices(t.Context(), &zero)
-	if err != nil || len(page.Notices) != 1 {
+	want := 1
+	if status == "waiting_input" {
+		want = 2
+	}
+	if err != nil || len(page.Notices) != want {
 		t.Fatalf("notices: %+v %v", page, err)
+	}
+	if want == 2 && (page.Notices[1].Outcome != "done" || page.Notices[1].Body != "Finished") {
+		t.Fatalf("finished notice: %+v", page.Notices[1])
 	}
 	if n := page.Notices[0]; n.Body != body || n.Outcome != status {
 		t.Fatalf("notice: %+v", n)
@@ -286,5 +300,51 @@ func TestNoticeTriggerRules(t *testing.T) {
 				t.Fatalf("notices: %+v %v", page, err)
 			}
 		})
+	}
+}
+
+func TestNoticeMigrationPendingPush(t *testing.T) {
+	s := runStore(t)
+	ctx := t.Context()
+	text := "Reply"
+	m := contract.Message{ID: "legacy", ThreadID: "a", Role: "assistant", Status: "done", CreatedAt: Now(), Parts: []contract.Part{{Kind: "text", Text: &text}}}
+	if _, err := s.Append(ctx, contract.Event{ConversationID: "a", Type: "message.done"}, &m); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.DB.ExecContext(ctx, `DROP TABLE push_queue; DROP TABLE notices;
+CREATE TABLE notices(seq INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE, data TEXT NOT NULL);
+CREATE TABLE push_queue(notice_seq INTEGER NOT NULL REFERENCES notices(seq) ON DELETE CASCADE, device_id TEXT NOT NULL REFERENCES push_devices(id) ON DELETE CASCADE, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER, PRIMARY KEY(notice_seq,device_id));
+INSERT INTO push_devices VALUES('legacy-device','token','sandbox','server',1);
+INSERT INTO notices VALUES(7,'a','legacy',json_object('seq',7,'conversationID','a','messageID','legacy','title','Polymux','createdAt',strftime('%Y-%m-%dT%H:%M:%SZ','now')));
+INSERT INTO push_queue VALUES(7,'legacy-device','pending',1,123);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := s.migrateNotices(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var seq, attempts, retry int
+	var state string
+	if err := s.DB.QueryRowContext(ctx, `SELECT notice_seq,state,attempts,retry_at FROM push_queue`).Scan(&seq, &state, &attempts, &retry); err != nil || seq != 7 || state != "pending" || attempts != 1 || retry != 123 {
+		t.Fatalf("queue: %d %s %d %d: %v", seq, state, attempts, retry, err)
+	}
+	zero := int64(0)
+	page, err := s.Notices(ctx, &zero)
+	if err != nil || len(page.Notices) != 1 || page.Notices[0].Body != "New message in Polymux" || page.Notices[0].Outcome != "done" {
+		t.Fatalf("migrated notices: %+v %v", page, err)
+	}
+	var violations int
+	rows, err := s.DB.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		violations++
+	}
+	if err := rows.Err(); err != nil || violations != 0 {
+		t.Fatalf("foreign keys: %d %v", violations, err)
 	}
 }
