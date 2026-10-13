@@ -6,7 +6,7 @@ PASS=0; FAILS=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAILS=$((FAILS+1)); echo "FAIL $1"; fi; }
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/repo"; cd "$T/repo"
 git config user.name "MQ Test"; git config user.email mq@test.invalid
-mkdir -p scripts; cp "$SRC"/scripts/{merge-queue,lanelib}.sh "$SRC"/scripts/verdict.py scripts/
+mkdir -p scripts; cp "$SRC"/scripts/{merge-queue,lanelib,queue-write}.sh "$SRC"/scripts/verdict.py scripts/
 echo base > README; printf 'a\nb\nc\n' > f.txt; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
 mkdir -p "$T/bin"; cat > "$T/bin/gh" <<GH
 #!/bin/bash
@@ -94,4 +94,11 @@ S=$(mkpr p12); cp "$SRC/scripts/review-verdict.sh" scripts/
 printf '#!/bin/bash\necho "$*" >> "%s/gh.log"\ncase "$1 $2" in "pr view") echo %s;; "api repos"*) cat "%s/comments.jsonl";; esac; exit 0\n' "$T" "$S" "$T" > "$T/bin/gh"
 OUTV=$(PRINT_ONLY=1 bash scripts/review-verdict.sh 12 PASS "docs ok"); cm 1 "$OUTV" > "$T/comments.jsonl"; enq 12 p12; run
 check "review-verdict.sh comment is accepted; the key never appears in output or logs" 'merged 12 && ! echo "$OUTV" | grep -q test-verdict-key && ! grep -rq test-verdict-key "$LANES_HOME" "$T/gh.log"'
+# fix briefs: every one the merge lane wrote passes queue-write --check (title first, needs:/type:/expected_min:)
+check "every generated fix brief passes queue-write --check" 'ls "$LANES_HOME"/queue/*-fix-pr*.task >/dev/null 2>&1 && bash scripts/queue-write.sh --check "$LANES_HOME"/queue/*-fix-pr*.task && for f in "$LANES_HOME"/queue/*-fix-pr*.task; do head -1 "$f" | grep -q "^# " && grep -q "^needs: " "$f" && grep -q "^type: " "$f" && grep -qE "^expected_min: [0-9]+$" "$f" || exit 1; done'
+# a task file with branch: above the title and no type:/expected_min: still yields a valid brief that keeps its title and needs
+S=$(mkpr p20); printf 'branch: p20\n# P20: Thing\nneeds: xcode\n\nDo the thing.\n' > "$T/p20.task"
+printf 'pr: 20\nbranch: p20\nlane: lane3\nunit: \ntask: %s\n' "$T/p20.task" > "$MQ/2026-pr20"; cm 1 "$(verdict 20 "$S" PASS)" > "$T/comments.jsonl"
+MERGE_VERIFY_CMD='exit 1' run; F=$(ls "$LANES_HOME"/queue/*-fix-pr20.task 2>/dev/null | head -1)
+check "fix brief from a header-first task file: valid, title first, needs kept, type/expected_min defaulted" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && [ "$(head -1 "$F")" = "# P20: Thing" ] && grep -qx "needs: xcode" "$F" && grep -qx "type: bug" "$F" && grep -qx "expected_min: 60" "$F" && grep -q "Do the thing." "$F" && [ "$(grep -c "^branch:" "$F")" = 1 ]'
 echo "test-merge-queue: $PASS passed, $FAILS failed"; [ $FAILS = 0 ]
