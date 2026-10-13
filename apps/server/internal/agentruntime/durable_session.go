@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -211,8 +212,145 @@ func durableModels(baseURL, key, model string, client Client) *ai.Models {
 // passthrough adapts an ai.Provider to the models runtime stream signature.
 func passthrough(provider ai.Provider) ai.ModelsStreamFunction {
 	return func(ctx context.Context, _ *ai.Model, transcript ai.TranscriptContext, opts ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
+		// Upstream owns the summarizer prompt, so pin facts here; the summary entry stores the copy.
+		if pinned, ok := pinFacts(transcript.Messages()); ok {
+			transcript = ai.NormalizeContext(ai.Context{Messages: pinned})
+		}
 		return provider.Stream(ctx, transcript, opts)
 	}
+}
+
+const maxFactBytes = 2048
+
+var factCue = regexp.MustCompile(`(?i)\d|my name is|\bdecided\b|\bdecision\b|\bagreed to\b`)
+
+func pinFacts(messages []ai.Message) ([]ai.Message, bool) {
+	summary := false
+	for _, message := range messages {
+		if strings.Contains(textOf(message), "You are a context summarization assistant") {
+			summary = true
+		}
+	}
+	if !summary {
+		return nil, false
+	}
+	for i, message := range messages {
+		user, ok := message.(ai.UserMessage)
+		if !ok {
+			continue
+		}
+		block := factBlock(textOf(message))
+		if block == "" {
+			continue
+		}
+		messages[i] = appendUserText(user, "\n\n"+block)
+		return messages, true
+	}
+	return nil, false
+}
+
+// factBlock appends a Facts section of user-stated lines. Oldest stay; newest drop past 2KB.
+func factBlock(prompt string) string {
+	open := strings.Index(prompt, "<conversation>\n")
+	close := strings.Index(prompt, "\n</conversation>")
+	if open < 0 || close < open {
+		return ""
+	}
+	facts := []string{}
+	seen := map[string]bool{}
+	rest := prompt[open:close]
+	for {
+		at := strings.Index(rest, "[User]: ")
+		if at < 0 {
+			break
+		}
+		rest = rest[at+len("[User]: "):]
+		cut := len(rest)
+		for _, next := range []string{"\n\n[Assistant", "\n\n[Tool", "\n\n[User]:"} {
+			if j := strings.Index(rest, next); j >= 0 && j < cut {
+				cut = j
+			}
+		}
+		for _, line := range strings.Split(rest[:cut], "\n") {
+			line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- "))
+			if line == "" || strings.HasPrefix(line, "Current UTC time:") || len(line) > 240 {
+				continue
+			}
+			if seen[line] || !factCue.MatchString(line) {
+				continue
+			}
+			seen[line] = true
+			facts = append(facts, line)
+		}
+		rest = rest[cut:]
+	}
+	var b strings.Builder
+	b.WriteString("Facts:")
+	for _, fact := range facts {
+		line := "\n- " + fact
+		if b.Len()+len(line) > maxFactBytes {
+			break
+		}
+		b.WriteString(line)
+	}
+	if b.Len() == len("Facts:") {
+		return ""
+	}
+	return "Carry this Facts section forward verbatim in every summary. " +
+		"It lists user-stated facts (names, numbers, dates, decisions). " +
+		"Drop the newest facts first so the section stays within 2048 bytes.\n\n" + b.String()
+}
+
+func textOf(message ai.Message) string {
+	switch typed := message.(type) {
+	case ai.SystemMessage:
+		switch content := typed.Content.(type) {
+		case ai.SystemText:
+			return string(content)
+		case ai.SystemTextBlocks:
+			var b strings.Builder
+			for _, block := range content {
+				b.WriteString(block.Text)
+			}
+			return b.String()
+		}
+	case ai.UserMessage:
+		switch content := typed.Content.(type) {
+		case ai.UserText:
+			return string(content)
+		case ai.UserContentBlocks:
+			var b strings.Builder
+			for _, block := range content {
+				if text, ok := block.(ai.TextContent); ok {
+					if b.Len() > 0 {
+						b.WriteByte('\n')
+					}
+					b.WriteString(text.Text)
+				}
+			}
+			return b.String()
+		}
+	}
+	return ""
+}
+
+func appendUserText(message ai.UserMessage, extra string) ai.UserMessage {
+	blocks, ok := message.Content.(ai.UserContentBlocks)
+	if !ok {
+		message.Content = ai.UserText(textOf(message) + extra)
+		return message
+	}
+	copied := append(ai.UserContentBlocks{}, blocks...)
+	if n := len(copied); n > 0 {
+		if text, ok := copied[n-1].(ai.TextContent); ok {
+			text.Text += extra
+			copied[n-1] = text
+			message.Content = copied
+			return message
+		}
+	}
+	message.Content = append(copied, ai.TextContent{Text: extra})
+	return message
 }
 
 func modelID(d Definition, fallback string) string {
