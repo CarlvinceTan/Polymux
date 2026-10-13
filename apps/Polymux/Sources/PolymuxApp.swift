@@ -160,7 +160,6 @@ struct AppRoot: View {
             }
         }
     }
-
 }
 
 struct ConnectionView: View {

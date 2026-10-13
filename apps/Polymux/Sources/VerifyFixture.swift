@@ -26,6 +26,10 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
         return PolymuxKit.Thread(id: id, agentID: members[0], title: direct == nil ? id : "",
                                  agentIDs: members)
     }
+    private static let answers = Answers()
+
+    static func failAnswers() { answers.fail() }
+
     static func session() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [VerifyFixture.self]
@@ -35,10 +39,7 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         if request.url?.lastPathComponent == "answer" {
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in
-                guard let self else { return }
-                self.client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
-            }
+            Self.answers.add(self)
             return
         }
         do {
@@ -56,7 +57,39 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
             client?.urlProtocolDidFinishLoading(self)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
-    override func stopLoading() {}
+    override func stopLoading() { Self.answers.remove(self) }
+
+    private func fail() {
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+
+    private final class Answers: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending: [VerifyFixture] = []
+        private var failed = false
+
+        func add(_ fixture: VerifyFixture) {
+            let fail = lock.withLock {
+                if failed { return true }
+                pending.append(fixture)
+                return false
+            }
+            if fail { fixture.fail() }
+        }
+
+        func remove(_ fixture: VerifyFixture) {
+            lock.withLock { pending.removeAll { $0 === fixture } }
+        }
+
+        func fail() {
+            let requests = lock.withLock {
+                failed = true
+                defer { pending.removeAll() }
+                return pending
+            }
+            for request in requests { request.fail() }
+        }
+    }
 }
 
 struct ApprovalFixture: View {
@@ -68,7 +101,10 @@ struct ApprovalFixture: View {
     private let client = APIClient(baseURL: URL(string: "http://approval.invalid")!, session: VerifyFixture.session())
 
     var body: some View {
-        FocusCard(part: part, client: client, agentID: "t-approval", bubble: BubbleStyle.incoming(scheme))
+        VStack(spacing: 16) {
+            FocusCard(part: part, client: client, agentID: "t-approval", bubble: BubbleStyle.incoming(scheme))
+            Button("Fail answer") { VerifyFixture.failAnswers() }
+        }
             .frame(maxWidth: 340)
             .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)

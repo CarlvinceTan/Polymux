@@ -34,6 +34,7 @@ final class ReadinessTests: XCTestCase {
             XCTAssertTrue(app.staticTexts["Plan my day"].waitForExistence(timeout: 2))
             XCTAssertFalse(option.exists)
             capture(app, theme: theme, state: "optimistic")
+            app.buttons["Fail answer"].tap()
             XCTAssertTrue(app.staticTexts["Couldn’t record that choice."].waitForExistence(timeout: 10))
             XCTAssertTrue(option.exists)
             capture(app, theme: theme, state: "rollback")
