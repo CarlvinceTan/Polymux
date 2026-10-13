@@ -1,9 +1,11 @@
 # Polymux local agent lanes (read by scripts/run-lane.sh, verify.sh, bootstrap-mac.sh).
 # cvmini (13 Oct 2026): hw.memsize 17179869184 (16 GB), 12 CPU, Xcode 27.0 (27A266a),
-# macOS 27.0.1, / 228Gi size, 49Gi free. Measured numbers: see PR body for infra/local-lanes.
+# macOS 27.0.1, / 228Gi size, 49Gi free.
+# 2 concurrent cold verify.sh (13 Oct): used 7.5 -> 11.0 GB peak, swap +0, pressure normal,
+# min free 59%. Recommendation: 3 lanes, 2 build slots; lane-gate still gates each start.
 # Secrets are NEVER stored here: `key` is a vault entry title read at run time.
 
-max_builds = 1          # concurrent xcodebuild slots (shared lock dir below)
+max_builds = 2          # concurrent xcodebuild slots (verify.sh drops to 1 while ~/ops/pr-verify builds)
 lock_dir = "~/ops/lanes/locks"
 sim_device = "iPhone 17"
 sim_template = "polymux-template"

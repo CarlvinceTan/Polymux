@@ -26,7 +26,7 @@ if [ "${1:-}" = "--verify-only" ]; then
   BR=$2; ID="verify-${BR//\//-}"; WT="$HOME/code/wt/$ID"; ev running verify "$BR"
   git -C "$REPO" fetch -q origin "$BR" && { [ -d "$WT" ] || git -C "$REPO" worktree add -q --detach "$WT" FETCH_HEAD; }
   git -C "$WT" checkout -q --detach FETCH_HEAD
-  (cd "$WT" && bash scripts/wt-setup.sh && bash scripts/verify.sh) > "$OPS/logs/$ID.log" 2>&1; rc=$?
+  (cd "$WT" && bash "$REPO/scripts/wt-setup.sh" && bash "$REPO/scripts/verify.sh") > "$OPS/logs/$ID.log" 2>&1; rc=$?
   BODY="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID")"
   gh pr comment "$BR" -R CarlvinceTan/Polymux --body "Mac proof (cvmini):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
@@ -37,7 +37,7 @@ SLUG=$(echo "$TASK" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | cut -c1-32 | sed 's
 ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
 PROMPT="Task: $TASK
 Rules: work only in this worktree. Keep the change small and scoped. Build and test ONLY via
-'bash scripts/verify.sh' and iterate until it exits 0. Commit your work with a clear message.
+'bash "$REPO/scripts/verify.sh"' and iterate until it exits 0. Commit your work with a clear message.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
 needs a test change (or a 'No-test-reason: ...' line in the commit). Keep it under ~300 changed lines. If you cannot make verify.sh pass, say why and stop."
 run_agent() {  # $1 lane, $2 worktree, $3 log
@@ -65,7 +65,7 @@ for L in $(cfg order "$LANE"); do
   B=$BRANCH; [ $N -gt 1 ] && B="$BRANCH-$L"; WT="$HOME/code/wt/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
   TRIED="$TRIED $L"; ev running "$L" "$WT"
   [ -d "$WT" ] || git -C "$REPO" worktree add -q -b "$B" "$WT" "$BASE" >> "$LOG" 2>&1
-  (cd "$WT" && bash scripts/wt-setup.sh) >> "$LOG" 2>&1
+  (cd "$WT" && bash "$REPO/scripts/wt-setup.sh") >> "$LOG" 2>&1
   [ -n "${LANE_PREV:-}" ] && sleep "${LANE_STAGGER:-20}"   # stagger agent launches (keychain race)
   LANE_PREV=$L
   run_agent "$L" "$WT" "$LOG"; rc=$?
@@ -75,7 +75,7 @@ for L in $(cfg order "$LANE"); do
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
     git -C "$WT" log --format=%B "$BASE"..HEAD | grep -qE '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
-  (cd "$WT" && TI_BASE=$BASE bash scripts/verify.sh) >> "$LOG" 2>&1 || { ev failed "$L" "verify failed"; continue; }
+  (cd "$WT" && TI_BASE=$BASE bash "$REPO/scripts/verify.sh") >> "$LOG" 2>&1 || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
   BODY="Task: $TASK"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
   BODY+="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID")"

@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v brew >/dev/null || { echo "install Homebrew first"; exit 1; }
-for f in gh xcbeautify; do command -v $f >/dev/null || brew install $f; done
+for f in gh xcbeautify tmux; do command -v $f >/dev/null || brew install $f; done
 command -v opencode >/dev/null || brew install opencode || echo "warn: opencode not installed"
 [ -x ~/.local/bin/cursor-agent ] || command -v cursor-agent >/dev/null || \
   { curl -fsS https://cursor.com/install | bash; }

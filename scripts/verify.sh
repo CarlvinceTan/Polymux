@@ -3,12 +3,13 @@
 # screenshots/video, write .build/proof/summary.md. Exit 0 only when everything passed.
 # Builds wait for a slot in the shared lock dir (max_builds; 1 while ~/ops/pr-verify builds).
 set -uo pipefail
+SD=$(cd "$(dirname "$0")" && pwd)   # scripts may live in another checkout (cloud PRs)
 ROOT=$(git rev-parse --show-toplevel); cd "$ROOT"
-[ -f .build/env ] || bash scripts/wt-setup.sh >/dev/null
+[ -f .build/env ] || bash "$SD/wt-setup.sh" >/dev/null
 . .build/env
 P=.build/proof; L=.build/logs; R=.build/results
 rm -rf "$P" "$R"; mkdir -p "$P" "$L" "$R"
-LOCKS=$(python3 scripts/lanes.py get lock_dir); MAX=${VERIFY_MAX_BUILDS:-$(python3 scripts/lanes.py get max_builds)}
+LOCKS=$(python3 "$SD/lanes.py" get lock_dir); MAX=${VERIFY_MAX_BUILDS:-$(python3 "$SD/lanes.py" get max_builds)}
 mkdir -p "$LOCKS"; SLOT=""; VPID=""
 cleanup() { [ -n "$VPID" ] && kill -INT "$VPID" 2>/dev/null
   pkill -f "derivedDataPath $DD" 2>/dev/null; xcrun simctl shutdown "$SIM_UDID" >/dev/null 2>&1
@@ -39,7 +40,7 @@ step() {  # step NAME cmd...
     END{if(p+f) printf "%d passed, %d failed", p, f}' "$L/$n.log")
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
-step test-integrity bash scripts/test-integrity.sh "${TI_BASE:-origin/main}"
+step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 || { echo "fetch_cua failed"; FAIL=1; }
 XC=(-derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
