@@ -88,7 +88,35 @@ G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight r
 # One writer per unit and per branch.
 UL="$OPS/units/$SLUG.lock"; BLS=""
 lock_take "$UL" || { echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
-trap 'lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done' EXIT
+# Continuous dispatch: when this unit ends (after verify + the task-end hook, locks dropped), ask
+# lane-guard once to start the next queued card so a freed lane never idles until the 10-min launchd tick.
+# Background, non-fatal, never changes our exit code. LANE_NO_CHAIN=1 disables it.
+# No chain when: stopped by SIGINT/SIGTERM (Ctrl-C, launchd stop); a failed unit ran < LANE_CHAIN_MIN_S
+# (default 120 s); or this is the 2nd+ failed unit end in a row ($OPS/chain-fails, reset by a success),
+# so an outage can't drain the queue into NEEDS_CODY.
+# The call runs under the lanelib lock $OPS/dispatch-chain.lock (one chained dispatch at a time; if it
+# is held, one is already running and we skip). lane-guard --dispatch also takes its own
+# $OPS/dispatch.lock, shared with the launchd tick, and exits 0 if that is held. When no slot is free
+# (units/*.lock count >= max_builds) or every lane is busy, lane-guard logs that and exits 0 before
+# touching the queue: a no-op. Our unit/branch locks are dropped first, so this unit isn't counted.
+# The freed lane is passed as --free-lane only if lane-guard supports that flag (today it doesn't;
+# the positional 'lane-guard --dispatch <lane>' forces that lane with no busy check, so we don't use it).
+UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE
+chain_ok() { local rc=$1 n k
+  [ -n "$SIGNALED" ] && return 1
+  for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
+  if [ "$rc" = 0 ]; then echo 0 > "$OPS/chain-fails"; lock_drop "$OPS/chain-state.lock"; return 0; fi
+  n=$(( $(cat "$OPS/chain-fails" 2>/dev/null || echo 0) + 1 )); echo $n > "$OPS/chain-fails"; lock_drop "$OPS/chain-state.lock"
+  [ $(( $(date +%s) - UNIT_T0 )) -ge "${LANE_CHAIN_MIN_S:-120}" ] && [ $n -lt 2 ]; }
+next_dispatch() { { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
+  chain_ok "$1" || { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (signal, short failure or fail streak)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
+  local fl=""; grep -q -- '--free-lane' "$LANE_GUARD" 2>/dev/null && fl="--free-lane $FREED"
+  nohup bash -c '. "$1"; lock_take "$2" || exit 0; trap "lock_drop \"$2\"" EXIT; shift 2; "$@"' _ \
+    "$SD/lanelib.sh" "$OPS/dispatch-chain.lock" "$LANE_GUARD" --dispatch $fl >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null &
+  return 0; }
+trap 'rc=$?; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
+trap 'SIGNALED=1; [ -n "${AP:-}" ] && kill $AP 2>/dev/null; exit 143' TERM
+trap 'SIGNALED=1; [ -n "${AP:-}" ] && kill $AP 2>/dev/null; exit 130' INT
 BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""; N=0
@@ -104,7 +132,7 @@ for L in $(cfg order "$LANE"); do
   fi
   [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash "$SD/wt-setup.sh") >> "$LOG" 2>&1
   [ -n "${LANE_PREV:-}" ] && sleep "${LANE_STAGGER:-20}"   # stagger agent launches (keychain race)
-  LANE_PREV=$L
+  LANE_PREV=$L; FREED=$L
   run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; LAST=$(date +%s); SIG=""
   while kill -0 $AP 2>/dev/null; do sleep "${LANE_POLL:-30}"   # liveness = new commit/push/change, not log mtime
     S=$(git -C "$WT" rev-parse HEAD; git -C "$WT" ls-remote origin "$B" 2>/dev/null; git -C "$WT" status --porcelain | shasum)
