@@ -83,3 +83,5 @@ Attempt 1d (lane4, 14 Oct 03:34 SGT)
 - PR #42 body confirmed against pr42-body-7e30aff.md with gh pr view 42 (open, head 7e30aff, ready
   for review): the live body is identical apart from the trailing blank line GitHub appends. No body
   rewrite needed.
+- verify.sh PASS at 67987d7 (run 20261014-033811-67987d7, full targets): level UI-verified, packages
+  35 passed, 0 failed; the packages PolymuxKitTests target-failure note from attempt 1c did not recur.
