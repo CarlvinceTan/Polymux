@@ -80,6 +80,7 @@ step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 # Lane scripts changed -> run their hermetic tests too.
 # From the worktree under test, so --verify-only checks the PR's own scripts and tests.
 lane_files_changed "${TI_BASE:-origin/main}" && step lane-tests bash "$(lane_tests_path "$ROOT" "$SD")"
+lane_files_changed "${TI_BASE:-origin/main}" && [ -f "$ROOT/scripts/test-merge-queue.sh" ] && step merge-queue-tests bash "$ROOT/scripts/test-merge-queue.sh"
 [ -d apps/server ] && { step go-vet sh -c 'cd apps/server && go vet -tags sqlite_fts5 ./... && go vet -tags "sqlite_fts5 verifyfixture" ./...'
   step go-test sh -c 'cd apps/server && go test -tags "sqlite_fts5 verifyfixture" -count=1 ./...'
   # Opt-in fixture: a default-tag build must compile and must not advertise --verify-fixture.
