@@ -115,7 +115,9 @@ prune_wt() {  # $1 entry, $2 pr, $3 branch, $4 lane, $5 unit, $6 merged|closed -
   if n=$(git -C "$wt" status --porcelain 2>/dev/null) && [ -n "$n" ]; then
     SUMM="PR #$2 $6: kept $wt (dirty: $(printf '%s\n' "$n" | wc -l | tr -d ' ') file(s))"; return 0; fi
   if wt_unpushed "$wt"; then SUMM="PR #$2 $6: kept $wt (unpushed commits)"; return 0; fi
-  if git -C "$REPO" worktree remove "$wt" >> "$LOG" 2>&1; then [ -n "$5" ] && rm -f "$OPS/cards/$5.wt"
+  if git -C "$REPO" worktree remove "$wt" >> "$LOG" 2>&1; then
+    git -C "$REPO" worktree prune >> "$LOG" 2>&1
+    [ -n "$5" ] && rm -f "$OPS/cards/$5.wt"
     SUMM="PR #$2 $6: pruned task worktree $wt (no branch touched)"
   else SUMM="PR #$2 $6: kept $wt (git worktree remove refused; see $LOG)"; fi
   return 0; }
@@ -177,7 +179,10 @@ run)
       echo "main moved during verify; round $((round+1))" >> "$LOG"
     done
     [ $OK = 0 ] && [ -z "$WHY" ] && WHY="main kept moving (3 rounds)"
-    lock_drop "$BLK"; git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
+    lock_drop "$BLK"
+    if git -C "$REPO" worktree remove --force "$WT" >> "$LOG" 2>&1; then
+      git -C "$REPO" worktree prune >> "$LOG" 2>&1
+    fi
     if [ $OK = 1 ]; then
       BU merged "$UNIT"; ev "pr$PR" merged "$SHA"
       prune_wt "$E" "$PR" "$BR" "$LN" "$UNIT" merged; say "$SUMM"; ev "pr$PR" prune "$SUMM"

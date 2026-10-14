@@ -95,18 +95,22 @@ enqwt() {  # $1 pr, $2 branch, $3 unit: the worktree run-lane leaves behind, plu
   mkdir -p "$LANES_HOME/cards"
   git worktree add -q --detach "$LANES_WT/lane3-$3" "$2" && echo "lane3-$3" > "$LANES_HOME/cards/$3.wt"
   printf 'pr: %s\nbranch: %s\nlane: lane3\nunit: %s\ntask: \n' "$1" "$2" "$3" > "$MQ/2026-pr$1"; }
+registered() { git worktree list --porcelain | grep -Fqx "worktree $1"; }
+stale() { git worktree add -q --detach "$T/stale" main; rm -rf "$T/stale"; }
 state() { printf '%s\n' "$1" > "$T/prstate"; }   # fake gh: pr view -> CLOSED / MERGED
 # 23 merged PR: the task worktree is pruned, the local and remote branch stay
 S=$(mkpr p23); enqwt 23 p23 sa23-thing; rm -f "$T/prstate"; cm 1 "$(verdict 23 "$S" PASS)" > "$T/comments.jsonl"; run
 check "merged PR: task worktree pruned, branches untouched" '[ ! -d "$LANES_WT/lane3-sa23-thing" ] && git show-ref -q --verify refs/heads/p23 && git ls-remote --exit-code origin refs/heads/p23 >/dev/null 2>&1 && grep -q "pruned task worktree" "$LANES_HOME/logs/merge-pr23.log" && merged 23'
 # 24 closed PR: nothing to merge; the worktree goes, the entry is done, the branches stay
-mkpr p24 >/dev/null; enqwt 24 p24 sa24-thing; state CLOSED; run
+mkpr p24 >/dev/null; enqwt 24 p24 sa24-thing; stale; state CLOSED; run
 check "closed PR: task worktree pruned, entry done, nothing merged, branches kept" '[ ! -d "$LANES_WT/lane3-sa24-thing" ] && [ -f "$MQ/done/2026-pr24" ] && ! merged 24 && git show-ref -q --verify refs/heads/p24 && git ls-remote --exit-code origin refs/heads/p24 >/dev/null 2>&1 && grep -q "pruned task worktree" "$LANES_HOME/logs/merge-pr24.log"'
+check "task removal: removed worktree and stale registration gone" '! registered "$LANES_WT/lane3-sa24-thing" && ! registered "$T/stale"'
 # 25 skip: a live unit lock names the unit, so a lane is running it (merged path)
 S=$(mkpr p25); enqwt 25 p25 sa25-thing
 mkdir -p "$LANES_HOME/units/sa25-thing.lock"; echo $$ > "$LANES_HOME/units/sa25-thing.lock/pid"
-rm -f "$T/prstate"; cm 1 "$(verdict 25 "$S" PASS)" > "$T/comments.jsonl"; run
+stale; rm -f "$T/prstate"; cm 1 "$(verdict 25 "$S" PASS)" > "$T/comments.jsonl"; run
 check "running lane: worktree kept, merge still happens" '[ -d "$LANES_WT/lane3-sa25-thing" ] && merged 25 && grep -q "kept $LANES_WT/lane3-sa25-thing (a lane is running it)" "$LANES_HOME/logs/merge-pr25.log"'
+check "merge worktree removal: stale registration gone even when task kept" '! registered "$T/stale" && registered "$LANES_WT/lane3-sa25-thing" && ! git worktree list --porcelain | grep -q "/merge-pr25$"'
 rm -rf "$LANES_HOME/units/sa25-thing.lock"
 # 26 skip: the brief is still started (queue/started) -> kept
 mkpr p26 >/dev/null; enqwt 26 p26 sa26-thing
