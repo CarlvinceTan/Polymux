@@ -124,6 +124,15 @@ struct ChatPane: View {
                 }
             }
             .sharedBackgroundVisibility(.hidden)
+            #if DEBUG && os(macOS)
+            if CommandLine.arguments.contains("--verify-header-reference") {
+                ToolbarItem(placement: .automatic) {
+                    Button("Native glass") {}
+                        .buttonStyle(.glass)
+                }
+                .sharedBackgroundVisibility(.hidden)
+            }
+            #endif
             ToolbarItem(placement: .primaryAction) {
                 if showSearch {
                     Button("Close search", systemImage: "xmark", action: closeSearch)

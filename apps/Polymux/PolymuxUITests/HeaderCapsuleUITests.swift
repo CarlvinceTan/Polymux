@@ -62,6 +62,9 @@ final class HeaderCapsuleUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--verify-fixture", "-AppleInterfaceStyle", theme] + (five ? ["--verify-header-five"] : [])
         app.launchArguments += stall ? ["--verify-header-stall"] : []
+        #if os(macOS)
+        app.launchArguments += ["--verify-header-reference"]
+        #endif
         app.launch()
         #if os(macOS)
         app.activate()
