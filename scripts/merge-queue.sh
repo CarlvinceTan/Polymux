@@ -91,6 +91,12 @@ run)
     if [ -z "$H0" ] || ! approved "$PR" "$H0"; then
       echo "BLOCKED: no valid signed Liam PASS for head ${H0:0:7}; not merging (re-enqueue after review)" >> "$LOG"
       ev "pr$PR" blocked "no signed PASS for ${H0:0:7}"; lock_drop "$BLK"; mv "$E" "$MQ/blocked/"; continue; fi
+    HELD=$(git -C "$REPO" worktree list --porcelain | awk -v b="refs/heads/$BR" '
+      /^worktree / { p=substr($0,10) } /^branch / && substr($0,8)==b { print p }')
+    case "$HELD" in "${WT_TRASH:-$HOME/code/wt-trash}"/*)
+      echo "branch $BR held by trashed worktree $HELD; remove its registration before retry" >> "$LOG"
+      ev "pr$PR" blocked "branch $BR held by trashed worktree $HELD"
+      lock_drop "$BLK"; continue;; esac
     echo "approval: signed PASS for ${RS:0:7}; head ${H0:0:7}" >> "$LOG"
     for round in 1 2 3; do
       git -C "$REPO" fetch -q origin main "$BR" >> "$LOG" 2>&1 || { WHY="fetch failed"; break; }

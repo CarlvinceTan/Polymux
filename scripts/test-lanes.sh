@@ -199,7 +199,7 @@ check "cleanup would prune old proof branch only" 'echo "$OUT" | grep -q "would:
 check "dry run kept the old proof branch" 'git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null'
 check "cleanup would remove merged" 'echo "$OUT" | grep -q "remove: $HOME/code/wt/merged (merged=1"'
 check "cleanup dry run deleted nothing" '[ -d "$HOME/code/wt/merged" ] && echo "$OUT" | grep -q "dry run"'
-check "cleanup dry run would trash (move), not delete" 'echo "$OUT" | grep -q "would: git -C .* worktree move $HOME/code/wt/merged $HOME/code/wt-trash/merged"'
+check "cleanup dry run would unregister the saved tree" 'echo "$OUT" | grep -q "would: git -C .* worktree remove --force $HOME/code/wt/merged"'
 PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1
 # 8b cleanup never deletes a shut-down sim whose verify is still running (live verify.lock or fresh marker)
 SB="$T/simbin"; mkdir -p "$SB" "$LANES_HOME/locks/active"; git worktree add -q --detach "$HOME/code/wt/vlive" main
@@ -212,11 +212,13 @@ rm -rf "$HOME/code/wt/vlive/.build"; git worktree remove "$HOME/code/wt/vlive"
 check "--apply prunes old proof branch, keeps recent" '! git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null && [ "$(git ls-remote origin "refs/heads/proof-media-verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
 # 8c trashed worktrees: a removable tree goes to ~/code/wt-trash with build output (read-only Go
 # module cache included) stripped; the purge deletes old pushed+clean entries and keeps dirty ones.
-git worktree add -q --detach "$HOME/code/wt/trashme" main
+git worktree add -q -b c/trashme "$HOME/code/wt/trashme" main
+echo saved > "$HOME/code/wt/trashme/untracked.txt"
 mkdir -p "$HOME/code/wt/trashme/.build/lanehome/go/pkg/mod/x@v"; echo x > "$HOME/code/wt/trashme/.build/lanehome/go/pkg/mod/x@v/x.go"
 chmod -R a-w "$HOME/code/wt/trashme/.build"   # like GOMODCACHE: a plain rm -rf fails until chmod -R u+w
 PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1
 check "cleanup trashes a removable tree: source kept, read-only build output stripped" '[ ! -d "$HOME/code/wt/trashme" ] && [ -f "$HOME/code/wt-trash/trashme/README" ] && [ ! -e "$HOME/code/wt-trash/trashme/.build" ]'
+check "trash releases the branch and saves untracked files in evidence" '! git worktree list --porcelain | grep -qx "branch refs/heads/c/trashme" && [ ! -e "$HOME/code/wt-trash/trashme/.git" ] && [ "$(cat "$HOME"/verify-evidence/trashme/trash-*/untracked.txt)" = saved ] && [ "$(cat "$HOME/code/wt-trash/trashme/untracked.txt")" = saved ] && git worktree add -q "$T/released" c/trashme'
 mkdir -p "$HOME/code/wt-trash"
 git worktree add -q --detach "$HOME/code/wt-trash/oldclean" main && mkdir -p "$HOME/code/wt-trash/oldclean/.build"
 git worktree add -q --detach "$HOME/code/wt-trash/olddirty" main && mkdir -p "$HOME/code/wt-trash/olddirty/.build" && echo dirty >> "$HOME/code/wt-trash/olddirty/README"

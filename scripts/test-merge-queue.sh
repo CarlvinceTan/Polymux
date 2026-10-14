@@ -89,6 +89,13 @@ check "merge whose tree equals a CONFLICTED merge-tree result (exit 1) voids the
 S=$(mkpr p18); enq 18 p18; cm 1 "$(verdict 18 "$S" PASS)" > "$T/comments.jsonl"
 : > "$T/gh.log"; VERIFY_TARGETS=affected MERGE_VERIFY_CMD='echo "VT=$VERIFY_TARGETS" > "$HOME/vt18"; mkdir -p .build/proof && echo unit-test-verified > .build/proof/level' bash scripts/merge-queue.sh run >/dev/null 2>&1
 check "merge lane forces VERIFY_TARGETS=full (inherited affected ignored)" 'merged 18 && [ "$(cat "$HOME/vt18")" = VT=full ]'
+# A legacy trashed registration is reported and retried without touching its files.
+S=$(mkpr p19); enq 19 p19; cm 1 "$(verdict 19 "$S" PASS)" > "$T/comments.jsonl"
+TRASHED="$HOME/code/wt-trash/held branch"; git worktree add -q "$TRASHED" p19
+echo dirty >> "$TRASHED/p19.txt"; run
+check "trashed branch holder is reported, preserved, and left queued" '[ -f "$MQ/2026-pr19" ] && ! merged 19 && grep -qF "branch p19 held by trashed worktree $TRASHED" "$LANES_HOME/logs/merge-pr19.log" && [ "$(tail -1 "$TRASHED/p19.txt")" = dirty ] && [ "$(git -C "$TRASHED" branch --show-current)" = p19 ]'
+git worktree remove --force "$TRASHED"; git worktree prune; run
+check "merge retries successfully after the trashed registration is removed" 'merged 19 && [ -f "$MQ/done/2026-pr19" ]'
 # 12 review-verdict.sh output is accepted by the checker; key never printed
 S=$(mkpr p12); cp "$SRC/scripts/review-verdict.sh" scripts/
 printf '#!/bin/bash\necho "$*" >> "%s/gh.log"\ncase "$1 $2" in "pr view") echo %s;; "api repos"*) cat "%s/comments.jsonl";; esac; exit 0\n' "$T" "$S" "$T" > "$T/bin/gh"

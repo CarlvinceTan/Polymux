@@ -2,9 +2,8 @@
 # cleanup.sh [--days N] [--proof-days M] [--apply]   (default: dry run, N=7, M=14)
 # pstack-style worktree + simulator cleanup: merged or stale lane worktrees, their cloned sims,
 # per-worktree DerivedData, unavailable sims, and ~/verify-evidence older than N days.
-# A removable tree is trashed (moved to ~/code/wt-trash, or $WT_TRASH) with .build/DerivedData
-# stripped first, never deleted; trash entries older than 24 h are purged on later runs unless
-# they are dirty or unpushed.
+# A removable tree is saved to ~/code/wt-trash (or $WT_TRASH), then unregistered.
+# Build output is stripped first; dirty files are also saved to ~/verify-evidence.
 # Scans ~/code/wt and ~/.cursor/worktrees; age = last activity (commit, index, newest file).
 # Never touches: the main checkout, dirty or unpushed worktrees, anything holding a build slot
 # or unit lock, a running verify/agent (live .build/verify.lock, or a verify marker newer than
@@ -18,15 +17,22 @@ REPO=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel); MAIN=$(git -C "$R
 OPS=${LANES_HOME:-$HOME/ops/lanes}; LOCKS=$(python3 "$REPO/scripts/lanes.py" get lock_dir)
 do_() { if [ $APPLY = 1 ]; then echo "+ $*"; "$@"; else echo "would: $*"; fi; }
 keep() { echo "keep: $1 ($2)"; }
-# Removable trees are moved to $WT_TRASH (default ~/code/wt-trash), never deleted, so a wrong removal is
-# recoverable for 24 h (purge below). Build output goes first: .build holds DerivedData and the Go caches,
-# and the module cache is read-only, so chmod -R u+w before rm; only the source tree goes to the trash.
+# Save source before removing the registration so trash cannot hold a branch.
 TRASH=${WT_TRASH:-$HOME/code/wt-trash}
 strip_build() { local x; for x in .build DerivedData; do [ -e "$1/$x" ] || continue
   do_ chmod -R u+w "$1/$x"; do_ rm -rf "$1/$x"; done; }
-trash_move() {  # git worktree move keeps branch refs and git status working in the trash; never overwrite
-  local d="$TRASH/${1##*/}"; [ -e "$d" ] && d="$d-$(date +%Y%m%d%H%M%S)"
-  do_ mkdir -p "$TRASH"; do_ git -C "$REPO" worktree move "$1" "$d"; }
+trash_move() {
+  local d="$TRASH/${1##*/}" e
+  [ -e "$d" ] && d="$d-$(date +%Y%m%d%H%M%S)-$$"
+  if [ -n "$(git -C "$1" status --porcelain --untracked-files=all)" ]; then
+    e="$HOME/verify-evidence/${1##*/}/trash-$(date +%Y%m%d-%H%M%S)-$$"
+    do_ mkdir -p "$e" && do_ cp -R "$1/." "$e/" || return 1
+    do_ rm -f "$e/.git" || return 1
+  fi
+  do_ mkdir -p "$TRASH" && do_ cp -R "$1" "$d" || return 1
+  do_ rm -f "$d/.git" || return 1
+  do_ git -C "$REPO" worktree remove --force "$1" || return 1
+  do_ git -C "$REPO" worktree prune; }
 board_merged() {  # --apply only: card whose .wt is exactly this worktree, PR (results.tsv) merged per gh
   local c u n=$(basename "$1"); [ $APPLY = 1 ] || return 0
   for c in "$OPS"/cards/*.wt; do [ -f "$c" ] && [ "$(cat "$c")" = "$n" ] || continue; c=$(basename "$c" .wt)
