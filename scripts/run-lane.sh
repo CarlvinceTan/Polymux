@@ -110,6 +110,9 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
       # gh keeps its token in the login keychain (hosts.yml has none); with HOME=$LH the keychain is
       # not found and every gh call 401s (14 Oct 02:14-02:48). Keychains is not TCC-protected.
       mkdir -p "$LH/Library"; [ -e "$LH/Library/Keychains" ] || [ -L "$LH/Library/Keychains" ] || ln -s "$RH/Library/Keychains" "$LH/Library/Keychains"
+      # Codex Computer Use needs Sky's group containers and the real cua-driver socket under the scratch HOME (#237).
+      [ -e "$LH/Library/Group Containers" ] || [ -L "$LH/Library/Group Containers" ] || ln -s "$RH/Library/Group Containers" "$LH/Library/Group Containers"
+      mkdir -p "$LH/Library/Caches"; [ -e "$LH/Library/Caches/cua-driver" ] || [ -L "$LH/Library/Caches/cua-driver" ] || ln -s "$RH/Library/Caches/cua-driver" "$LH/Library/Caches/cua-driver"
       (cd "$2" && HOME="$LH" CODEX_HOME="${CODEX_HOME:-$RH/.codex}" \
         GH_CONFIG_DIR="${GH_CONFIG_DIR:-$RH/.config/gh}" GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$RH/.gitconfig}" \
         GOMODCACHE="$GC/gomod" GOCACHE="$GC/gobuild" \

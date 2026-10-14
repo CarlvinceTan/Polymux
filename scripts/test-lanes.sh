@@ -397,6 +397,7 @@ mac_hosts = ["testmac"]
 agent = "codex"
 cmd = "$CXC/codex"
 TOML
+mkdir -p "$HOME/Library/Group Containers" "$HOME/Library/Caches/cua-driver"   # fake RH: Sky's group container + driver socket (#237)
 : > "$T/codex.rec"
 OUT=$(env -u CODEX_HOME -u GH_CONFIG_DIR -u GIT_CONFIG_GLOBAL LANES_TOML="$T/codex.toml" REC="$T/codex.rec" LANE_NO_CHAIN=1 LANE_DRY=1 $RL laneC "$(task 'Codex home' cx1)" 2>&1); RC=$?
 CWT="$LANES_WT/laneC-codex-home"
@@ -405,6 +406,9 @@ check "codex lane: CODEX_HOME/GH_CONFIG_DIR/GIT_CONFIG_GLOBAL point at the real 
 check "codex lane: Go caches are shared outside the scratch HOME and created" 'grep -qx "GOMODCACHE=$HOME/Library/Caches/polymux-lanes/gomod" "$T/codex.rec" && grep -qx "GOCACHE=$HOME/Library/Caches/polymux-lanes/gobuild" "$T/codex.rec" && [ -d "$HOME/Library/Caches/polymux-lanes/gomod" ] && [ -d "$HOME/Library/Caches/polymux-lanes/gobuild" ]'
 check "codex lane: scratch HOME is ignored, worktree git status stays clean" '[ -z "$(git -C "$CWT" status --porcelain)" ] && { [ -e "$CWT/.build/lanehome/.local" ] || [ -L "$CWT/.build/lanehome/.local" ]; }'
 check "codex lane: scratch HOME links shared state back (ops/lanes, keychains) and .local to the real home" '[ -L "$CWT/.build/lanehome/ops/lanes" ] && [ -L "$CWT/.build/lanehome/.local" ] && [ -L "$CWT/.build/lanehome/Library/Keychains" ] && [ "$(cd "$CWT/.build/lanehome/ops/lanes" && pwd -P)" = "$(cd "$LANES_HOME" && pwd -P)" ]'
+check "codex lane: scratch HOME links Group Containers and the cua-driver cache to the fake RH" '[ -L "$CWT/.build/lanehome/Library/Group Containers" ] && [ "$(cd "$CWT/.build/lanehome/Library/Group Containers" && pwd -P)" = "$(cd "$HOME/Library/Group Containers" && pwd -P)" ] && [ -L "$CWT/.build/lanehome/Library/Caches/cua-driver" ] && [ "$(cd "$CWT/.build/lanehome/Library/Caches/cua-driver" && pwd -P)" = "$(cd "$HOME/Library/Caches/cua-driver" && pwd -P)" ]'
+OUT=$(env -u CODEX_HOME -u GH_CONFIG_DIR -u GIT_CONFIG_GLOBAL LANES_TOML="$T/codex.toml" REC="$T/codex.rec" LANE_NO_CHAIN=1 LANE_DRY=1 $RL laneC "$T/cx1.task" 2>&1); RC=$?
+check "codex lane: second run keeps both links, no nested link inside the targets" '[ $RC = 0 ] && [ -L "$CWT/.build/lanehome/Library/Group Containers" ] && [ -L "$CWT/.build/lanehome/Library/Caches/cua-driver" ] && [ ! -e "$HOME/Library/Group Containers/Group Containers" ] && [ ! -e "$HOME/Library/Caches/cua-driver/cua-driver" ]'
 # 23 main-account key guard up front (#72 round 3): exit 5 before claim/worktree/vault, case-insensitive
 cat >> "$T/gate.toml" <<TOML
 [lane6]
