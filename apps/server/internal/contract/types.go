@@ -140,6 +140,7 @@ type Message struct {
 }
 
 type Error struct {
+	Detail  string `json:"detail,omitempty"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }

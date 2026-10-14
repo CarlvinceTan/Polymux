@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -90,7 +91,12 @@ func run() error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logFile, err := serverLog(*dir)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	log := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, logFile), nil))
 	lock, err := lockData(*dir, ".server.lock")
 	if err != nil {
 		return err

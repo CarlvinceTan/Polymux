@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1582,7 +1583,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				run.Summary = "Background work timed out"
 			}
 		}
-		run.Error = &contract.Error{Code: code, Message: message}
+		detail := redactError(err.Error())
+		run.Error = &contract.Error{Code: code, Message: message, Detail: detail}
+		s.config.Log.Error("reply failed", "run_id", run.ID, "agent", run.AgentID, "code", code, "detail", detail)
 	}
 	now = store.Now()
 	run.Activity, run.FinishedAt = "", &now
@@ -1765,4 +1768,14 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeFile(w, r, path+".jpg")
+}
+
+var errorSecrets = regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer\s+|basic\s+)?|bearer\s+|(?:api_key|apikey|key|token)["']?\s*[:=]\s*["']?)[^\s"',;&}]+|sk-[a-z0-9_-]+`)
+
+func redactError(detail string) string {
+	detail = errorSecrets.ReplaceAllString(detail, "[redacted]")
+	if len(detail) > 1024 {
+		detail = strings.ToValidUTF8(detail[:1024], "")
+	}
+	return detail
 }
