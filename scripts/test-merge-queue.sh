@@ -47,10 +47,14 @@ git checkout -q p6; echo more >> p6.txt; git commit -qam more; git push -q origi
 check "new commit after PASS (stale approval): blocked" 'blocked 6'
 # 7 valid PASS, main moved: merge-main pushed (fast-forward, no force), then merged at the new head
 S=$(mkpr p7); enq 7 p7; cm 1 "$(verdict 7 "$S" PASS)" > "$T/comments.jsonl"
+git worktree add -q "$T/occupied" p7; echo local > "$T/occupied/local.txt"
 echo main2 > m.txt; git add -A; git commit -qm main2; git push -q origin main; run; H=$(git ls-remote origin refs/heads/p7 | cut -f1)
 check "valid signed PASS + main moved: clean merge-only head accepted and squash-merged at that head" 'merged 7 && grep -q -- "--match-head-commit $H" "$T/gh.log" && [ "$H" != "$S" ]'
 check "no force-push: reviewed head is an ancestor of the pushed head" 'git fetch -q origin && git merge-base --is-ancestor "$S" "$H" && git merge-base --is-ancestor origin/main "$H"'
 check "queue posts no PR comments (logs instead)" '! grep -rq "^pr comment" "$T/gh.log" && grep -q "Squash-merging" "$LANES_HOME/logs/merge-pr7.log"'
+check "branch held by another worktree: merge succeeds detached, local work preserved" 'merged 7 && ! git -C "$LANES_WT/merge-pr7" symbolic-ref -q HEAD && [ "$(git -C "$T/occupied" rev-parse HEAD)" = "$S" ] && [ "$(cat "$T/occupied/local.txt")" = local ]'
+enq 7 p7; run
+check "existing detached merge worktree can be reused while the branch stays occupied" 'merged 7 && ! git -C "$LANES_WT/merge-pr7" symbolic-ref -q HEAD && [ "$(git ls-remote origin refs/heads/p7 | cut -f1)" = "$H" ] && [ "$(git -C "$T/occupied" rev-parse HEAD)" = "$S" ]'
 # 8 PASS then a merge of main WITH a manual edit: not merge-only
 S=$(mkpr p8); enq 8 p8; cm 1 "$(verdict 8 "$S" PASS)" > "$T/comments.jsonl"
 echo main3 > m3.txt; git add -A; git commit -qm main3; git push -q origin main

@@ -95,7 +95,7 @@ run)
     for round in 1 2 3; do
       git -C "$REPO" fetch -q origin main "$BR" >> "$LOG" 2>&1 || { WHY="fetch failed"; break; }
       [ -d "$WT" ] || git -C "$REPO" worktree add -q --detach "$WT" "origin/$BR" >> "$LOG" 2>&1 || { WHY="worktree add failed"; break; }
-      git -C "$WT" checkout -q -B "$BR" "origin/$BR" >> "$LOG" 2>&1 || { WHY="checkout failed"; break; }
+      git -C "$WT" checkout -q --detach "origin/$BR" >> "$LOG" 2>&1 || { WHY="checkout failed"; break; }
       git -C "$WT" merge -q --no-edit origin/main >> "$LOG" 2>&1 || { git -C "$WT" merge --abort; WHY="merge of main conflicts"; break; }
       git -C "$WT" push -q origin "HEAD:$BR" >> "$LOG" 2>&1 || { WHY="push failed"; break; }
       SHA=$(git -C "$WT" rev-parse HEAD)
