@@ -18,7 +18,6 @@ struct ChatPane: View {
     @State private var showSearch = false
     @State private var searchQuery = ""
     @State private var paneWidth: CGFloat = 720
-    @State private var headerHeight: CGFloat = 0
     @State private var toolbarHeight: CGFloat?
     @FocusState private var searchFocused: Bool
     @State private var showVoice = false
@@ -26,6 +25,7 @@ struct ChatPane: View {
     @State private var openingVoice = false
     @State private var voiceIssue: String?
     @State private var showProfile = false
+    @State private var headerBudget = ""
     @State private var profileTap: ContinuousClock.Instant?
     @State private var headerTrace = SignpostTrace()
     @State private var target: ReplyTarget?
@@ -115,15 +115,13 @@ struct ChatPane: View {
             ToolbarItem(placement: .principal) {
                 if showSearch {
                     searchField
-                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { headerHeight = $0 }
                 } else {
                     HeaderCapsule(title: chatTitle, members: members,
                                   conversationID: thread.id, runs: store.runs,
                                   activity: store.activity, connected: store.isConnected,
                                   speakingID: showVoice && voiceStore?.phase == .speaking ? voiceStore?.agentID : nil,
                                   height: toolbarHeight, edit: openProfile)
-                        .accessibilityLabel(thread.isGroup ? "Edit chat" : "Edit \(agent.name)’s profile")
-                        .help(thread.isGroup ? "Edit chat" : "Edit agent profile")
+                        .accessibilityHint(thread.isGroup ? "Edit chat" : "Edit \(agent.name)’s profile")
                 }
             }
             .sharedBackgroundVisibility(.hidden)
@@ -145,10 +143,13 @@ struct ChatPane: View {
                 if thread.isGroup { GroupEditor(thread: thread, session: session) }
                 else { AgentEditor(agent: agent, session: session) }
             }
+            .accessibilityIdentifier("header.profile")
+            .accessibilityValue(headerBudget)
             .onAppear {
                 if let profileTap {
                     InstantUI.interval("HeaderFeedback", budget: InstantUI.feedbackBudget,
                                        trace: headerTrace, from: profileTap) {}
+                    headerBudget = headerTrace.meetsBudgets ? "met" : "miss"
                 }
             }
         }
@@ -169,8 +170,17 @@ struct ChatPane: View {
     private func openProfile() {
         let tap = ContinuousClock().now
         profileTap = tap
-        InstantUI.interval("HeaderState", budget: InstantUI.stateBudget,
-                           trace: headerTrace, from: tap) { showProfile = true }
+        let publish = {
+            InstantUI.interval("HeaderState", budget: InstantUI.stateBudget,
+                               trace: headerTrace, from: tap) { showProfile = true }
+        }
+        #if DEBUG
+        if CommandLine.arguments.contains("--verify-header-stall") {
+            Task { try? await Task.sleep(for: .milliseconds(100)); publish() }
+            return
+        }
+        #endif
+        publish()
     }
 
     private var members: [Agent] {
@@ -227,7 +237,7 @@ struct ChatPane: View {
     private var edgeFades: some View {
         VStack(spacing: 0) {
             Rectangle().fill(.background)
-                .frame(height: max(headerHeight + 24, 72))
+                .frame(height: 72)
                 .mask {
                     LinearGradient(stops: [.init(color: .black, location: 0),
                                            .init(color: .black.opacity(0.9), location: 0.35),

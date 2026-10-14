@@ -1,6 +1,5 @@
 import SwiftUI
 import PolymuxKit
-
 struct HeaderCapsule: View {
     let title: String
     let members: [Agent]
@@ -11,7 +10,6 @@ struct HeaderCapsule: View {
     var speakingID: String?
     var height: CGFloat?
     let edit: () -> Void
-
     var body: some View {
         Button(action: edit) {
             HStack(spacing: 6) {
@@ -26,7 +24,6 @@ struct HeaderCapsule: View {
                 .accessibilityHidden(true)
                 if members.count > 3 {
                     Text("+\(members.count - 3)")
-                        .accessibilityIdentifier("header.overflow")
                 }
                 Text(title).lineLimit(1).truncationMode(.tail)
             }

@@ -22,8 +22,7 @@ final class HeaderCapsuleUITests: XCTestCase {
     func testGroupPlusN() {
         for theme in ["Light", "Dark"] {
             let app = open("grp-trip", five: true, theme: theme)
-            XCTAssertTrue(app.staticTexts["header.overflow"].waitForExistence(timeout: 5))
-            XCTAssertEqual(app.staticTexts["header.overflow"].label, "+2")
+            XCTAssertTrue(app.buttons["header.capsule"].label.contains("+2"))
             XCTAssertEqual(app.buttons["header.capsule"].value as? String, "3 avatars")
             capture(app, name: "group-five-" + theme)
         }
@@ -35,13 +34,22 @@ final class HeaderCapsuleUITests: XCTestCase {
             capture(app, name: "chief-" + theme)
             press(app.buttons["header.capsule"])
             XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 2))
+            XCTAssertEqual(app.descendants(matching: .any)["header.profile"].value as? String, "met")
             capture(app, name: "profile-" + theme)
         }
     }
 
-    private func open(_ id: String, five: Bool = false, theme: String) -> XCUIApplication {
+    func testStallMissesBudget() {
+        let app = open("t-chief", theme: "Light", stall: true)
+        press(app.buttons["header.capsule"])
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 2))
+        XCTAssertEqual(app.descendants(matching: .any)["header.profile"].value as? String, "miss")
+    }
+
+    private func open(_ id: String, five: Bool = false, theme: String, stall: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--verify-fixture", "-AppleInterfaceStyle", theme] + (five ? ["--verify-header-five"] : [])
+        app.launchArguments += stall ? ["--verify-header-stall"] : []
         app.launch()
         #if os(macOS)
         app.activate()
