@@ -38,7 +38,7 @@ echo Backlog > "$T/cur"; PATH=$BP $BU start fake-unit
 check "board: no BOARD_LIVE -> dry run logs the write, zero gh calls" 'grep -q "fake-unit start: DRY-RUN would set Status of the issue #42 item -> .In progress." "$BLOG" && [ ! -s "$T/ghb.log" ]'
 touch "$LANES_HOME/BOARD_LIVE"; PATH=$BP $BU start fake-unit
 check "board: live start from Backlog = add issue item (map node, no lookup) + one Status write" \
-  '[ "$(NA "c=I_node42")" = 1 ] && [ "$(NW "o=65b9edf8")" = 1 ] && [ "$(NW "f=PVTSSF_lAHOCDGEdM4Bmy5szhlabM8")" = 1 ] && ! grep -q "issue(number" "$T/ghb.log" && grep -q "p=PVT_kwHOCDGEdM4Bmy5s" "$T/ghb.log"'
+  '[ "$(NA "c=I_node42")" = 1 ] && [ "$(NW "o=65b9edf8")" = 1 ] && [ "$(NW "f=PVTSSF_lADOEFHK5c4Bm7iszhlifJg")" = 1 ] && ! grep -q "issue(number" "$T/ghb.log" && grep -q "p=PVT_kwDOEFHK5c4Bm7is" "$T/ghb.log"'
 : > "$T/ghb.log"; for s in "In review" Done; do echo "$s" > "$T/cur"; PATH=$BP $BU start fake-unit; done
 check "board: start never moves In review/Done backwards (Status from the add result, no extra read)" '[ "$(NW)" = 0 ] && [ "$(NA)" = 2 ] && [ "$(grep -c "never backwards" "$BLOG")" = 2 ]'
 echo Done > "$T/cur"; : > "$T/ghb.log"; PATH=$BP $BU merged fake-unit
@@ -51,7 +51,7 @@ echo Backlog > "$T/cur"; : > "$T/ghb.log"; PATH=$BP $BU pr fake-unit https://git
 check "board: pr adds the PR as an item, PR field + In review on the issue item" \
   '[ "$(NA "c=PRNODE_1")" = 1 ] && [ "$(NA "c=I_node42")" = 1 ] && [ "$(NW "t=https://github.com/o/r/pull/9")" = 1 ] && [ "$(NW "o=abdef12c")" = 2 ] && [ "$(cat "$C/fake-unit.pr")" = PRNODE_1 ]'
 : > "$T/ghb.log"; PATH=$BP $BU verify fake-unit UI-verified; PATH=$BP $BU verify fake-unit bogus >/dev/null
-check "board: Verification exact option; unknown level refused" '[ "$(NW "f=PVTSSF_lAHOCDGEdM4Bmy5szhlabeg.*o=f9b24fa7")" = 1 ] && [ "$(NW)" = 1 ] && grep -q "board_error	verify	level .bogus. is not a board option" "$LANES_HOME/events.tsv"'
+check "board: Verification exact option; unknown level refused" '[ "$(NW "f=PVTSSF_lADOEFHK5c4Bm7iszhlifKc.*o=f9b24fa7")" = 1 ] && [ "$(NW)" = 1 ] && grep -q "board_error	verify	level .bogus. is not a board option" "$LANES_HOME/events.tsv"'
 for l in unit-test-verified:38201913 build-only:0f2c4aa2 blocked:b8e8ce46 failed:77449e23; do : > "$T/ghb.log"; PATH=$BP $BU verify fake-unit ${l%:*}
   [ "$(NW "o=${l#*:}")" = 1 ] || echo "level ${l%:*} wrong" >> "$T/lvbad"; done
 check "board: every Verification level maps to its Project option" '[ ! -f "$T/lvbad" ]'
