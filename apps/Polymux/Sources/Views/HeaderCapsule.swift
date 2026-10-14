@@ -27,13 +27,10 @@ struct HeaderCapsule: View {
                 Text(title).lineLimit(1).truncationMode(.tail)
             }
             .font(.headline)
-            .frame(height: 24)
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .glassEffect(.regular, in: Capsule())
             .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.glass)
         .accessibilityIdentifier("header.capsule")
         .accessibilityValue("\(min(3, members.count)) avatars")
     }

@@ -74,7 +74,7 @@ final class HeaderCapsuleUITests: XCTestCase {
     }
 
     private func capture(_ app: XCUIApplication, name: String) {
-        let shot = XCTAttachment(screenshot: app.screenshot())
+        let shot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
         shot.name = "CL1-\(name)"
         shot.lifetime = .keepAlways
         add(shot)

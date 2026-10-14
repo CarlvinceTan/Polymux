@@ -153,6 +153,7 @@ struct AppRoot: View {
 
     private var appearance: String {
         #if DEBUG
+        if VerifyFixture.enabled { return UserDefaults.standard.string(forKey: "AppleInterfaceStyle")?.lowercased() ?? "system" }
         if CommandLine.arguments.contains("--verify-approval") {
             return CommandLine.arguments.contains("--approval-dark") ? "dark" : "light"
         }

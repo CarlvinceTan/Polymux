@@ -131,14 +131,10 @@ struct ChatPane: View {
                 } else {
                     Button { showSearch = true } label: {
                         Image(systemName: "magnifyingglass")
-                            .frame(width: 24, height: 24)
-                            .padding(6)
-                            .glassEffect(.regular, in: Capsule())
                     }
                         .accessibilityLabel("Search conversation")
                         .keyboardShortcut("f", modifiers: .command)
                         .accessibilityIdentifier("header.search")
-                        .buttonStyle(.plain)
                 }
             }
             }
