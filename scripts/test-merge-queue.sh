@@ -125,6 +125,9 @@ check "dirty worktree: kept and reported" '[ -f "$LANES_WT/lane3-sa28-thing/dirt
 # 29 skip: unpushed commit (detached head on no remote branch) -> kept and reported
 mkpr p29 >/dev/null; enqwt 29 p29 sa29-thing; (cd "$LANES_WT/lane3-sa29-thing" && git commit -q --allow-empty -m local-only); state CLOSED; run
 check "unpushed commits: kept and reported" '[ -d "$LANES_WT/lane3-sa29-thing" ] && grep -q "kept $LANES_WT/lane3-sa29-thing (unpushed commits)" "$LANES_HOME/logs/merge-pr29.log"'
+# 30 merged at the source (not by this queue): nothing left to merge; prune and close the entry out
+mkpr p30 >/dev/null; enqwt 30 p30 sa30-thing; state MERGED; run
+check "PR merged at the source: task worktree pruned, entry done, nothing merged, branches kept" '[ ! -d "$LANES_WT/lane3-sa30-thing" ] && [ -f "$MQ/done/2026-pr30" ] && ! merged 30 && git show-ref -q --verify refs/heads/p30 && git ls-remote --exit-code origin refs/heads/p30 >/dev/null 2>&1 && grep -q "pruned task worktree" "$LANES_HOME/logs/merge-pr30.log"'
 rm -f "$T/prstate" "$LANES_HOME/queue/started/"*.task
 # 12 review-verdict.sh output is accepted by the checker; key never printed
 S=$(mkpr p12); cp "$SRC/scripts/review-verdict.sh" scripts/
