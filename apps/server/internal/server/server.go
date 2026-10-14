@@ -1626,7 +1626,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		s.cancelTree(writeCtx, run.ID)
 	}
 	if err != nil {
-		s.config.Log.Warn("agent reply", "id", user.ID, "error", err)
+		s.config.Log.Warn("agent reply", "id", user.ID, "error", redactError(err.Error()))
 	}
 	a.mu.Lock()
 	a.cancel = nil
