@@ -296,6 +296,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /threads", s.createThread)
 	s.mux.HandleFunc("PATCH /threads/{id}", s.updateThread)
 	s.mux.HandleFunc("GET /threads/{id}/messages", s.messages)
+	s.mux.HandleFunc("GET /threads/{id}/tool-runs", s.toolRuns)
 	s.mux.HandleFunc("POST /threads/{id}/messages", s.send)
 	s.mux.HandleFunc("POST /threads/{id}/voice", s.voice)
 	s.mux.HandleFunc("GET /threads/{id}/events", s.events)
@@ -522,6 +523,19 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	v, err := s.Store.Messages(r.Context(), t.ID, before, limit(r))
 	s.respond(w, v, err)
 }
+func (s *Server) toolRuns(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.thread(w, r)
+	if !ok {
+		return
+	}
+	before, ok := cursor(w, r, "before")
+	if !ok {
+		return
+	}
+	v, err := s.Store.PageRuns(r.Context(), t.ID, before, limit(r))
+	s.respond(w, v, err)
+}
+
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.thread(w, r)
 	if !ok {

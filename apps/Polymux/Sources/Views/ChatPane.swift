@@ -439,7 +439,9 @@ struct ChatPane: View {
 
     /// Tool call rows for an assistant turn, drawn between the user's message and the reply.
     @ViewBuilder private func toolRows(for message: Message) -> some View {
-        if message.role != "user", let runID = message.runID, !store.activity.toolRows(for: runID).isEmpty {
+        if message.role != "user", let runID = message.runID,
+           store.messages.first(where: { $0.role != "user" && $0.runID == runID })?.id == message.id,
+           !store.activity.toolRows(for: runID).isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(store.activity.toolRows(for: runID)) { ToolRowView(row: $0) }
             }

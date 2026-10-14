@@ -248,6 +248,12 @@ public struct APIClient: Sendable {
         return try await get("threads/\(threadID)/messages", query: query)
     }
 
+    public func toolRuns(threadID: String, before: Int64? = nil) async throws -> [Run] {
+        var query = [URLQueryItem(name: "limit", value: "100")]
+        if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
+        return try await get("threads/\(threadID)/tool-runs", query: query)
+    }
+
     public func events(threadID: String, after: Int64) async throws -> [Event] {
         try await get("threads/\(threadID)/events", query: [URLQueryItem(name: "after", value: String(after)), URLQueryItem(name: "limit", value: "1000")])
     }

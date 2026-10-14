@@ -711,7 +711,15 @@ func (s *Store) sealRoutineFailure(ctx context.Context, run *contract.Run) (bool
 		run.Error = &contract.Error{Code: "provider", Message: "The agent could not complete this reply."}
 	}
 	run.Status, run.Activity, run.Summary, run.FinishedAt = "failed", "", "Routine failed", &now
-	run.Tools, run.ToolID = nil, nil
+	for i := range run.Tools {
+		if run.Tools[i].Status == "running" {
+			run.Tools[i].Status = run.Status
+			if err := s.RunEvent(ctx, "tool.done", run, &run.Tools[i]); err != nil {
+				return false, err
+			}
+		}
+	}
+	run.ToolID = nil
 	return true, s.RunEvent(ctx, "run.done", run, nil)
 }
 

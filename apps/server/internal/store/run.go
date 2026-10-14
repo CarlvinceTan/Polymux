@@ -125,7 +125,7 @@ func (s *Store) Run(ctx context.Context, id string) (contract.Run, error) {
 
 func (s *Store) Runs(ctx context.Context, thread string) ([]contract.Run, error) {
 	const query = `SELECT r.data FROM runs r WHERE r.thread_id=? AND
-(r.status IN('queued','running','waiting_input','waiting_peer') OR json_array_length(r.data,'$.tools')>0 OR NOT EXISTS(
+(r.status IN('queued','running','waiting_input','waiting_peer') OR NOT EXISTS(
 SELECT 1 FROM runs newer WHERE newer.thread_id=r.thread_id AND newer.agent_id=r.agent_id AND
 (json_extract(newer.data,'$.createdAt')>json_extract(r.data,'$.createdAt') OR
 (json_extract(newer.data,'$.createdAt')=json_extract(r.data,'$.createdAt') AND
@@ -147,9 +147,31 @@ WHEN 'queued' THEN 1 ELSE 2 END,json_extract(r.data,'$.createdAt') DESC`
 		if err := json.Unmarshal([]byte(data), &run); err != nil {
 			return nil, err
 		}
+		run.Tools = []contract.ToolActivity{}
 		out = append(out, run)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) PageRuns(ctx context.Context, thread string, before int64, limit int) ([]contract.Run, error) {
+	page, err := s.Messages(ctx, thread, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := []contract.Run{}
+	seen := map[string]bool{}
+	for _, message := range page {
+		if message.RunID == nil || seen[*message.RunID] {
+			continue
+		}
+		seen[*message.RunID] = true
+		run, err := s.Run(ctx, *message.RunID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, run)
+	}
+	return out, nil
 }
 
 func (s *Store) RunEvent(ctx context.Context, kind string, run *contract.Run, tool *contract.ToolActivity) error {

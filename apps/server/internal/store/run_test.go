@@ -334,8 +334,12 @@ func TestToolRunsSurviveNewerTurns(t *testing.T) {
 		if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil {
 			t.Fatal(err)
 		}
+		message := contract.Message{ID: id + "-reply", ThreadID: "a", AgentID: ptr("a"), Role: "assistant", RunID: &run.ID, Status: "done", CreatedAt: Now()}
+		if _, err := s.Append(t.Context(), contract.Event{ConversationID: "a", Type: "message.done", Message: &message}, &message); err != nil {
+			t.Fatal(err)
+		}
 	}
-	runs, err := s.Runs(t.Context(), "a")
+	runs, err := s.PageRuns(t.Context(), "a", 0, 100)
 	if err != nil || len(runs) != 2 {
 		t.Fatalf("relaunch rows: %d runs, %v", len(runs), err)
 	}
@@ -343,6 +347,18 @@ func TestToolRunsSurviveNewerTurns(t *testing.T) {
 		if len(run.Tools) != 1 || run.Tools[0].Status != "failed" || *run.Tools[0].Output != "failed" {
 			t.Fatal("failed tool row lost on replay")
 		}
+	}
+	latest, err := s.PageRuns(t.Context(), "a", 0, 1)
+	if err != nil || len(latest) != 1 || latest[0].ID != NewRun("second", "a", "a", "message").ID {
+		t.Fatalf("latest page runs: %+v, %v", latest, err)
+	}
+	page, err := s.Messages(t.Context(), "a", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	earlier, err := s.PageRuns(t.Context(), "a", page[0].Seq, 2)
+	if err != nil || len(earlier) != 1 || earlier[0].ID != NewRun("first", "a", "a", "message").ID {
+		t.Fatalf("earlier page runs: %+v, %v", earlier, err)
 	}
 }
 

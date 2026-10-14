@@ -10,13 +10,17 @@ import (
 )
 
 func endRun(ctx context.Context, tx *sql.Tx, run *contract.Run) error {
-	for _, tool := range run.Tools {
+	for i := range run.Tools {
+		tool := &run.Tools[i]
+		if tool.Status != "running" {
+			continue
+		}
 		tool.Status = run.Status
-		if _, err := appendTx(ctx, tx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &tool}, nil); err != nil {
+		if _, err := appendTx(ctx, tx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: tool}, nil); err != nil {
 			return err
 		}
 	}
-	run.Tools, run.ToolID, run.Activity = []contract.ToolActivity{}, nil, ""
+	run.ToolID, run.Activity = nil, ""
 	now := Now()
 	run.FinishedAt = &now
 	if run.MessageID != nil {

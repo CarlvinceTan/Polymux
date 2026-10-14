@@ -221,6 +221,12 @@ public final class ChatStore {
                 try await cacheActor.call { try $0.merge(fetched) }
                 earlier = try await cacheActor.call { try $0.messages(threadID: threadID, before: first, limit: 100) }
             }
+            let history = try await client.toolRuns(threadID: threadID, before: first)
+            for run in history {
+                runs.removeAll { $0.id == run.id }
+                runs.append(run)
+            }
+            activity.restore(runs)
             for message in earlier { update(message) }
             hasEarlier = earlier.count == 100
         } catch { self.error = error.localizedDescription }
@@ -304,6 +310,11 @@ public final class ChatStore {
                 messages = try await cacheActor.call { try $0.messages(threadID: threadID, limit: visibleCount) }
                 for message in queued.values { update(message) }
                 runs = try await cacheActor.call { try $0.runs(threadID: threadID) }
+                let history = try await client.toolRuns(threadID: threadID)
+                for run in history {
+                    runs.removeAll { $0.id == run.id }
+                    runs.append(run)
+                }
                 activity.restore(runs)
                 isConnected = true
                 error = nil
