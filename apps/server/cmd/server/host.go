@@ -27,7 +27,7 @@ func runHost(args []string) error {
 	mode := args[0]
 	flags := flag.NewFlagSet("host", flag.ContinueOnError)
 	dir := flags.String("data", os.Getenv("POLYMUX_DATA_DIR"), "server data directory")
-	listen := flags.String("listen", os.Getenv("POLYMUX_LISTEN"), "unauthenticated backend listener; should stay on loopback (defaults to 127.0.0.1:7337)")
+	listen := flags.String("listen", os.Getenv("POLYMUX_LISTEN"), "authenticated backend listener (loopback, private LAN or Tailscale; defaults to 127.0.0.1:7337)")
 	control := flags.String("control", "", "unauthenticated controller listener; should stay on loopback (defaults to 127.0.0.1:7338)")
 	dev := flags.Bool("dev", false, "development mode (loopback is always allowed)")
 	tailscale := flags.Bool("tailscale", os.Getenv("POLYMUX_TAILSCALE") == "1", "use Tailscale listeners (requires Tailscale)")

@@ -1,32 +1,33 @@
 #!/bin/bash
-# board-update.sh [--dry-run] <event> <unit> [arg...]   Polymux Notion board, written by the lanes.
-#   card   <unit> <task-file>          remember the brief's "card:" line (Notion URL or page id)
-#   start  <unit>                      Status -> "In Progress", only from Backlog/Proposals/Not started/empty
-#   pr     <unit> <pr-url>             PR (url)
-#   verify <unit> <level> [proof-dir url-base]   Verification (exact option) + proof media: files in
-#          proof-dir that pass media-check.py, deduped by sha256 (ledger $OPS/board/<unit>.media and
-#          a "proof sha256:" caption on the card), appended as image/video blocks at url-base/<file>.
-#          Only files listed (one name per line) in proof-dir/approved are appended; no list = no media;
-#          .mov is never appended; only files publish_proof uploaded (proof-dir/uploaded) are appended.
-#          media-check exit != 0 (missing Pillow/ffmpeg) -> board_error, nothing appended.
-#   merged <unit>                      Status -> "Completed" (caller confirms mergedAt first)
-#   review <unit>                      Status -> "Review" (approved, in the merge queue)
-#   requeued <unit>                    Status -> "In Progress" (post-approval re-verify failed; fix attempt)
-#   drop   <unit> [reason]             forget an abandoned unit: its card mapping and card-ledger rows go, so a
-#          shared card no longer waits on it; if the remaining units have all merged/verified, that is
-#          written now. Called by run-lane.sh when a unit ends in NEEDS_CODY; a unit whose task file sits
-#          in $OPS/queue/archive/ is dropped automatically the next time its card is evaluated.
-# merged/verify on a card shared by several units wait for all of them (see "Shared cards" below).
-# Ships disabled: live only when $OPS/BOARD_LIVE exists AND $GOAL_LOOP_HOME/RELAY_HOLD exists (old relay
-# held, so never two writers); otherwise logs the exact intended write. Read-before-write: a failed read
-# skips the write. One write per event, per-unit lanelib lock. Always exits 0; errors become board_error
-# events (events.tsv + stdout for the lane log). Token: vault "Notion - Polymux integration token" (as
-# goal-loop relay.sh), held in a shell variable and given to curl on stdin (-K -), never argv/files/logs.
+# board-update.sh [--dry-run] <event> <unit> [arg...]   Polymux GitHub Project 3 (users/CarlvinceTan/projects/3),
+# written by the lanes with `gh api graphql`. Event-driven only: one call per lane event, no polling.
+#   card   <unit> <task-file>   map the unit to an issue: the brief's "issue: N" header, else its legacy
+#          "card:" id looked up in the local map $BOARD_MAP (id<TAB>issue<TAB>issue-node; built from
+#          board-migration.json, lives on cvmini only, never written to GitHub). Stored in $OPS/cards/<unit>.
+#   issue  <unit>               print the unit's issue number (no network); run-lane adds "Closes #N".
+#   start  <unit>               Status -> "In progress", only from Backlog/Proposals/empty
+#   pr     <unit> <pr-url>      the PR becomes a Project item (Status "In review"); the issue item gets the
+#          PR text field and Status "In review". A unit with no issue is tracked through its PR item.
+#   verify <unit> <level> [..]  Verification (exact option: UI-verified|unit-test-verified|build-only|blocked|failed)
+#   review <unit>               Status -> "In review" (approved, in the merge queue)
+#   requeued <unit>             Status -> "In progress" (post-approval re-verify failed; fix attempt)
+#   merged <unit>               Status -> "Done" (caller confirms mergedAt first)
+#   drop   <unit> [reason]      forget an abandoned unit (mapping + shared-issue ledger rows)
+# Shared issues: several units on one issue; merged/verify write only once every unit got there, and
+# Verification is the weakest level. Ledger $OPS/board/card-<issue>.tsv, per-issue lock.
+# Kill switch: live only while $OPS/BOARD_LIVE exists (rm it = dry run, the exact write is logged).
+# Reads: only what finds the item (issue/PR node id when not in the map). addProjectV2ItemById is
+# idempotent and returns the item's current Status, so "start never moves backwards" costs no extra read.
+# Guard: Notion URLs and Notion page ids are scrubbed from every value sent (notion_scrub, lanelib.sh, shared with gh_write).
+# Always exits 0; errors become board_error events (events.tsv + stdout for the lane log). Auth: gh's own.
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd); . "$SD/lanelib.sh"
-OPS=${LANES_HOME:-$HOME/ops/lanes}; GL=${GOAL_LOOP_HOME:-$HOME/ops/goal-loop}; mkdir -p "$OPS/cards" "$OPS/board"
-VAULT_ITEM=${BOARD_VAULT_ITEM:-"Notion - Polymux integration token"}
-API=${NOTION_API:-https://api.notion.com/v1}; NV=2022-06-28
+OPS=${LANES_HOME:-$HOME/ops/lanes}; mkdir -p "$OPS/cards" "$OPS/board"
+BOARD_MAP=${BOARD_MAP:-$OPS/board-map.tsv}; REPO_SLUG=${BOARD_REPO:-CarlvinceTan/polymux}
+PROJ=${BOARD_PROJECT_ID:-PVT_kwHOCDGEdM4Bmy5s}
+: ${F_STATUS:=PVTSSF_lAHOCDGEdM4Bmy5szhlabM8}; : ${F_VER:=PVTSSF_lAHOCDGEdM4Bmy5szhlabeg}; : ${F_PR:=PVTF_lAHOCDGEdM4Bmy5szhlabjc}
+opt() { case $1 in Proposals) echo 5acdac3d;; Backlog) echo 483c23c2;; "In progress") echo 65b9edf8;; "In review") echo abdef12c;; Done) echo c1f2c7d6;;
+  UI-verified) echo f9b24fa7;; unit-test-verified) echo 38201913;; build-only) echo 0f2c4aa2;; blocked) echo b8e8ce46;; failed) echo 77449e23;; esac; }
 DRY=0; DA=""; [ "${1:-}" = --dry-run ] && { DRY=1; DA=--dry-run; shift; }
 [ -f "$OPS/BOARD_LIVE" ] || DRY=1
 EVT=${1:-}; UNIT=${2:-}; shift 2 2>/dev/null || true
@@ -35,110 +36,96 @@ _ev() { local m; m=$(printf '%s' "$2" | tr '\t\n' '  ')
   printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$UNIT" "$1" "$EVT" "$m" >> "$OPS/events.tsv"; }
 log() { _ev board "$*"; }
 err() { _ev board_error "$*"; echo "board_error: $UNIT $EVT: $*"; }
-[ -n "$EVT" ] && [ -n "$UNIT" ] || { echo "usage: board-update.sh [--dry-run] card|start|pr|verify|merged|drop <unit> [arg]" >&2; exit 0; }
-page_id() { echo "${1%%\?*}" | grep -oiE '[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}' | tail -1 | tr -d - | tr A-F a-f | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/'; }
+[ -n "$EVT" ] && [ -n "$UNIT" ] || { echo "usage: board-update.sh [--dry-run] card|issue|start|pr|verify|review|requeued|merged|drop <unit> [arg]" >&2; exit 0; }
+legacy_id() { echo "${1%%\?*}" | grep -oiE '[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}' | tail -1 | tr -d - | tr A-F a-f; }
+map_issue() { [ -n "$1" ] && awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$BOARD_MAP" 2>/dev/null; }
+# issue_of UNIT: issue number from cards/<unit> (a number; a legacy id there is translated through the map)
+issue_of() { local v; v=$(cat "$OPS/cards/$1" 2>/dev/null); case $v in ""|*[!0-9]*) map_issue "$(legacy_id "$v")";; *) echo "$v";; esac; }
 if [ "$EVT" = card ]; then
-  C=$(sed -n 's/^card: *//p' "${1:-/dev/null}" 2>/dev/null | head -1); P=$(page_id "$C")
-  if [ -n "$P" ]; then echo "$P" > "$OPS/cards/$UNIT"; log "card $P"; else rm -f "$OPS/cards/$UNIT"; log "skip: no card: line in brief"; fi
+  N=$(sed -n 's/^[Ii]ssue: *#\{0,1\}\([0-9][0-9]*\).*/\1/p' "${1:-/dev/null}" 2>/dev/null | head -1)
+  [ -n "$N" ] || N=$(map_issue "$(legacy_id "$(sed -n 's/^card: *//p' "${1:-/dev/null}" 2>/dev/null | head -1)")")
+  if [ -n "$N" ]; then echo "$N" > "$OPS/cards/$UNIT"; log "issue #$N"; else rm -f "$OPS/cards/$UNIT"; log "skip: no issue: header (or mapped card:) in brief"; fi
   exit 0; fi
-PAGE=$(cat "$OPS/cards/$UNIT" 2>/dev/null); PDIR=""; PBASE=""
-# archived <unit>: its task was archived ($OPS/queue/archive/*.task with 'unit: <u>' or named *-<u>.task)
+[ "$EVT" = issue ] && { issue_of "$UNIT"; exit 0; }
+ISSUE=$(issue_of "$UNIT"); PRNODE=$(cat "$OPS/cards/$UNIT.pr" 2>/dev/null)
 archived() { local f; for f in "$OPS"/queue/archive/*.task; do [ -f "$f" ] || continue
-  case ${f##*/} in *-"$1".task) return 0;; esac; grep -qx "unit: *$(printf '%s' "$1" | sed 's/[][\\.*^$]/\\&/g')" "$f" && return 0; done; return 1; }   # unit names are literal (dots escaped)
-forget() { awk -F'\t' -v u="$1" '$1!=u' "$CLED" > "$CLED.tmp" && mv "$CLED.tmp" "$CLED"; rm -f "$OPS/cards/$1"; }  # caller holds the card lock
+  case ${f##*/} in *-"$1".task) return 0;; esac; grep -qx "unit: *$(printf '%s' "$1" | sed 's/[][\\.*^$]/\\&/g')" "$f" && return 0; done; return 1; }
+forget() { awk -F'\t' -v u="$1" '$1!=u' "$CLED" > "$CLED.tmp" && mv "$CLED.tmp" "$CLED"; rm -f "$OPS/cards/$1" "$OPS/cards/$1.pr"; }  # caller holds the card lock
 if [ "$EVT" = drop ]; then
-  [ -n "$PAGE" ] || { log "skip: unit has no card"; exit 0; }
-  CL="$OPS/board/card-$PAGE.lock"; CLED="$OPS/board/card-$PAGE.tsv"; n=0
+  [ -n "$ISSUE" ] || { rm -f "$OPS/cards/$UNIT.pr"; log "skip: unit has no issue"; exit 0; }
+  CL="$OPS/board/card-$ISSUE.lock"; CLED="$OPS/board/card-$ISSUE.tsv"; n=0
   until lock_take "$CL"; do n=$((n+1)); [ $n -ge "${BOARD_LOCK_TRIES:-10}" ] && { err "card lock busy (pid $(lock_holder "$CL")); not dropped"; exit 0; }; sleep 1; done
   touch "$CLED"; forget "$UNIT"; RE=$(awk -F'\t' '$2=="merged"||$2=="verify"{print $2"\t"$1"\t"$3}' "$CLED" | sort -u -k1,1); lock_drop "$CL"
-  log "dropped from card $PAGE (${1:-abandoned}); card no longer waits for it"
-  # Re-evaluate held events with one remaining unit each (the event re-checks every member).
+  log "dropped from issue #$ISSUE (${1:-abandoned}); it no longer waits for this unit"
   while IFS=$'\t' read -r e u v; do [ -n "$u" ] && [ -f "$OPS/cards/$u" ] || continue
     if [ "$e" = merged ]; then bash "$0" $DA merged "$u"; else bash "$0" $DA verify "$u" "$v"; fi; done <<< "$RE"
   exit 0; fi
-[ -n "$PAGE" ] || { log "skip: no card for unit (brief had no card: line)"; exit 0; }
+PRURL=""
 case $EVT in
-  start)  PROP=Status; KIND=select; VAL="In Progress";;
-  merged) PROP=Status; KIND=select; VAL=Completed;;
-  review) PROP=Status; KIND=select; VAL=Review;;              # merge lane: approved PR queued for the post-approval gate
-  requeued) PROP=Status; KIND=select; VAL="In Progress";;     # merge lane: re-verify failed, fix attempt back on its lane
-  pr)     PROP=PR; KIND=url; VAL=${1:-}; [ -n "$VAL" ] || { err "no PR url given"; exit 0; };;
-  verify) PROP=Verification; KIND=select; VAL=${1:-}; PDIR=${2:-}; PBASE=${3:-}
+  start|requeued) FID=$F_STATUS; VAL="In progress";;
+  review) FID=$F_STATUS; VAL="In review";;
+  merged) FID=$F_STATUS; VAL=Done;;
+  pr)     FID=$F_STATUS; VAL="In review"; PRURL=${1:-}; [ -n "$PRURL" ] || { err "no PR url given"; exit 0; };;
+  verify) FID=$F_VER; VAL=${1:-}
           case $VAL in UI-verified|unit-test-verified|build-only|blocked|failed) ;;
             *) err "level '$VAL' is not a board option; not written"; exit 0;; esac;;
   *) err "unknown event"; exit 0;;
 esac
-# Shared cards: several units can map to one card (cards/<unit> holds the same page id). 'merged' and
-# 'verify' write only once every unit on the card has reached that state, and Verification is the
-# weakest level (failed/blocked < build-only < unit-test-verified < UI-verified). 'start'/'pr' write
-# on the first unit. Ledger: $OPS/board/card-<page>.tsv (unit<TAB>event<TAB>value), per-card lock.
+[ -n "$ISSUE" ] || [ -n "$PRNODE" ] || [ -n "$PRURL" ] || { log "skip: no issue for unit (brief had no issue: header or mapped card:)"; exit 0; }
+[ -n "$PRURL" ] && PRURL=$(printf '%s\n' "$PRURL" | notion_scrub)   # scrub, never refuse
 rank() { case $1 in UI-verified) echo 3;; unit-test-verified) echo 2;; build-only) echo 1;; *) echo 0;; esac; }
-HOLD=""
-if [ "$EVT" = merged ] || [ "$EVT" = verify ]; then
-  CL="$OPS/board/card-$PAGE.lock"; CLED="$OPS/board/card-$PAGE.tsv"; n=0
+if [ -n "$ISSUE" ] && { [ "$EVT" = merged ] || [ "$EVT" = verify ]; }; then
+  CL="$OPS/board/card-$ISSUE.lock"; CLED="$OPS/board/card-$ISSUE.tsv"; n=0
   until lock_take "$CL"; do n=$((n+1)); [ $n -ge "${BOARD_LOCK_TRIES:-10}" ] && { err "card lock busy (pid $(lock_holder "$CL")); not written"; exit 0; }; sleep 1; done
   touch "$CLED"; { awk -F'\t' -v u="$UNIT" -v e="$EVT" '!($1==u&&$2==e)' "$CLED"; printf '%s\t%s\t%s\n' "$UNIT" "$EVT" "$VAL"; } > "$CLED.tmp" && mv "$CLED.tmp" "$CLED"
   WAITU=""; LOW=""; MEM=()
-  for f in "$OPS"/cards/*; do case $f in *.wt) continue;; esac; [ -f "$f" ] && [ "$(cat "$f")" = "$PAGE" ] || continue
-    m=${f##*/}; if [ "$m" != "$UNIT" ] && archived "$m"; then forget "$m"; log "dropped archived unit $m from card $PAGE"; continue; fi; MEM+=("$m"); done
+  for f in "$OPS"/cards/*; do case $f in *.wt|*.pr) continue;; esac; [ -f "$f" ] || continue; m=${f##*/}
+    [ "$(issue_of "$m")" = "$ISSUE" ] || continue
+    if [ "$m" != "$UNIT" ] && archived "$m"; then forget "$m"; log "dropped archived unit $m from issue #$ISSUE"; continue; fi; MEM+=("$m"); done
   for m in "${MEM[@]}"; do v=$(awk -F'\t' -v u="$m" -v e="$EVT" '$1==u&&$2==e{print $3}' "$CLED")
     if [ -z "$v" ]; then WAITU="$WAITU $m"; elif [ -z "$LOW" ] || [ "$(rank "$v")" -lt "$(rank "$LOW")" ]; then LOW=$v; fi; done
   lock_drop "$CL"
-  if [ -n "$WAITU" ]; then HOLD=1; log "hold: $PROP not written; card $PAGE waits for unit(s):$WAITU"
-    [ "$EVT" = verify ] && [ -n "$PDIR" ] || exit 0
-  elif [ "$EVT" = verify ] && [ "$LOW" != "$VAL" ]; then log "card $PAGE shared by ${#MEM[@]} units: Verification '$LOW' (weakest), not '$VAL'"; VAL=$LOW; fi
+  if [ -n "$WAITU" ]; then log "hold: not written; issue #$ISSUE waits for unit(s):$WAITU"; exit 0
+  elif [ "$EVT" = verify ] && [ "$LOW" != "$VAL" ]; then log "issue #$ISSUE shared by ${#MEM[@]} units: Verification '$LOW' (weakest), not '$VAL'"; VAL=$LOW; FID=$F_VER; fi
 fi
-[ $DRY = 0 ] && [ ! -f "$GL/RELAY_HOLD" ] && { err "refusing live write: $GL/RELAY_HOLD is missing (old relay may be writing)"; exit 0; }
-TOK=$(vault get "$VAULT_ITEM" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || TOK=""
-[ -n "$TOK" ] || { err "vault read failed ($VAULT_ITEM); nothing read or written"; exit 0; }
-api() {  # api METHOD PATH [curl args]; token via stdin config (-K -), body via --data (not secret)
-  local m=$1 p=$2; shift 2
-  printf 'header = "Authorization: Bearer %s"\n' "$TOK" | curl -sS -f -m 20 -K - -X "$m" \
-    -H "Notion-Version: $NV" -H "Content-Type: application/json" "$@" "$API/$p"; }
-blocks() { local cur="" j; while :; do   # every child block, following next_cursor; rc 1 on any failure
-  j=$(api GET "blocks/$PAGE/children?page_size=100${cur:+&start_cursor=$cur}") || return 1; printf '%s\n' "$j"
-  cur=$(printf '%s' "$j" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("next_cursor") or "" if d.get("has_more") else "")') || return 1
-  [ -n "$cur" ] || return 0; done; }
 L="$OPS/board/$UNIT.lock"; n=0
 until lock_take "$L"; do n=$((n+1)); [ $n -ge "${BOARD_LOCK_TRIES:-10}" ] && { err "unit lock busy (pid $(lock_holder "$L")); not written"; exit 0; }; sleep 1; done
 trap 'lock_drop "$L"' EXIT
-if [ -z "$HOLD" ]; then
-CUR=$(api GET "pages/$PAGE" | python3 -c '
-import json,sys; p=json.load(sys.stdin)["properties"][sys.argv[1]]
-v=p.get("select") if p["type"]=="select" else p.get(p["type"])
-print((v or {}).get("name","") if isinstance(v,dict) else (v or ""))' "$PROP" 2>/dev/null) || { err "read of $PROP failed; write skipped"; exit 0; }
-if [ "$KIND" = select ]; then BODY="{\"properties\":{\"$PROP\":{\"select\":{\"name\":\"$VAL\"}}}}"
-else BODY=$(python3 -c 'import json,sys; print(json.dumps({"properties":{sys.argv[1]:{"url":sys.argv[2]}}}))' "$PROP" "$VAL"); fi
-if [ "$CUR" = "$VAL" ]; then log "skip: $PROP already '$VAL'"
-elif [ "$EVT" = start ] && case $CUR in Backlog|Proposals|"Not started"|"") false;; *) true;; esac; then
-  log "skip: Status is '$CUR'; start only moves cards out of Backlog/Proposals, never backwards"
-elif [ $DRY = 1 ]; then log "DRY-RUN would PATCH pages/$PAGE $PROP: '$CUR' -> '$VAL' body=$BODY"
-else api PATCH "pages/$PAGE" --data "$BODY" >/dev/null && log "wrote $PROP: '$CUR' -> '$VAL'" || err "write $PROP='$VAL' failed"; fi
-fi
-[ -n "$PDIR" ] || exit 0
-[ -d "$PDIR" ] && case $PBASE in https://*) true;; *) false;; esac || { log "no proof media (dir '$PDIR', base '$PBASE')"; exit 0; }
-LED="$OPS/board/$UNIT.media"; touch "$LED"; CAND=()
-MC=$(python3 "$SD/media-check.py" "$PDIR" 2>&1); MRC=$?
-[ $MRC = 0 ] || { err "media-check failed (rc=$MRC): $(echo "$MC" | tail -1); no media appended"; exit 0; }
-while IFS=$'\t' read -r st x f; do [ -n "$f" ] || continue
-  if [ "$st" != PASS ]; then log "held media (pre-publish check failed: $x): $f"; continue; fi
-  case $f in *.[mM][oO][vV]) log "held media (.mov is not uploaded by publish_proof): $f"; continue;; esac
-  grep -qxF "$f" "$PDIR/approved" 2>/dev/null || { log "held media (not in $PDIR/approved): $f"; continue; }
-  grep -qxF "$f" "$PDIR/uploaded" 2>/dev/null || { log "held media (not uploaded by publish_proof, $PDIR/uploaded): $f"; continue; }
-  grep -qx "$x" "$LED" && { log "skip media: sha256 $x already published ($f)"; continue; }
-  CAND+=("$x $f"); done <<< "$MC"
-[ ${#CAND[@]} -gt 0 ] || exit 0
-HAVE=$(blocks) || { err "blocks read failed; media skipped (nothing appended)"; exit 0; }
-NEW=(); for c in "${CAND[@]}"; do printf '%s' "$HAVE" | grep -qF "proof sha256:${c%% *}" && { log "skip media: sha256 ${c%% *} already on card"; continue; }; NEW+=("$c"); done
-[ ${#NEW[@]} -gt 0 ] || exit 0
-MB=$(python3 -c 'import json,sys
-base=sys.argv[1]; out=[]
-for c in sys.argv[2:]:
-  sha,f=c.split(" ",1); t="video" if f.lower().endswith((".mp4",".mov")) else "image"
-  out.append({"type":t,t:{"type":"external","external":{"url":base+"/"+f},"caption":[{"type":"text","text":{"content":"proof sha256:"+sha+" "+f}}]}})
-print(json.dumps({"children":out}))' "$PBASE" "${NEW[@]}")
-if [ $DRY = 1 ]; then for c in "${NEW[@]}"; do log "DRY-RUN would append to blocks/$PAGE/children $PBASE/${c#* } sha256=${c%% *}"; done
-elif api PATCH "blocks/$PAGE/children" --data "$MB" >/dev/null; then
-  for c in "${NEW[@]}"; do echo "${c%% *}" >> "$LED"; done; log "appended ${#NEW[@]} proof item(s): ${NEW[*]}"
-else err "proof append failed"; fi
+gql() { gh api graphql "$@"; }
+# add_item NODE -> "<item-id>\t<Status>" (idempotent: an existing item is returned as is)
+add_item() { gql -f query='mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}' \
+  -f p="$PROJ" -f c="$1" --jq '.data.addProjectV2ItemById.item | "\(.id)\t\(.fieldValueByName.name // "")"'; }
+set_select() { gql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}' \
+  -f p="$PROJ" -f i="$1" -f f="$2" -f o="$3" >/dev/null; }
+set_text() { local t; t=$(printf '%s\n' "$3" | notion_scrub)   # scrub Notion links/ids, never refuse
+  gql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$t:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{text:$t}}){projectV2Item{id}}}' \
+  -f p="$PROJ" -f i="$1" -f f="$2" -f t="$t" >/dev/null; }
+issue_node() { local n; n=$(awk -F'\t' -v k="$1" '$2==k && $3!=""{print $3; exit}' "$BOARD_MAP" 2>/dev/null)
+  [ -n "$n" ] || n=$(cat "$OPS/board/issue-$1.node" 2>/dev/null)
+  [ -n "$n" ] || { n=$(gql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){id}}}' \
+    -f o="${REPO_SLUG%%/*}" -f r="${REPO_SLUG#*/}" -F n="$1" --jq .data.repository.issue.id) && [ -n "$n" ] && echo "$n" > "$OPS/board/issue-$1.node"; }
+  [ -n "$n" ] && echo "$n"; }
+NAME="the issue #$ISSUE item"; [ -n "$ISSUE" ] || NAME="the PR item"
+if [ $DRY = 1 ]; then
+  [ -n "$PRURL" ] && log "DRY-RUN would add PR $PRURL to project 3 (Status 'In review')${ISSUE:+; PR field of #$ISSUE = $PRURL}"
+  if [ "$EVT" = start ]; then log "DRY-RUN would set Status of $NAME -> '$VAL' (only from Backlog/Proposals/empty)"
+  else log "DRY-RUN would set $([ "$FID" = "$F_VER" ] && echo Verification || echo Status) of $NAME -> '$VAL'"; fi
+  exit 0; fi
+if [ -n "$PRURL" ]; then
+  PN=$(gh pr view "$PRURL" --json id -q .id 2>/dev/null) && [ -n "$PN" ] || { err "PR node lookup failed ($PRURL); nothing written"; exit 0; }
+  echo "$PN" > "$OPS/cards/$UNIT.pr"; PRNODE=$PN
+  R=$(add_item "$PN") || { err "adding the PR to project 3 failed"; exit 0; }
+  [ "${R#*$'\t'}" = "In review" ] || set_select "${R%%$'\t'*}" "$F_STATUS" "$(opt "In review")" || err "PR item Status write failed"
+  log "PR item ${R%%$'\t'*} on project 3"
+  [ -n "$ISSUE" ] || exit 0; fi
+if [ -n "$ISSUE" ]; then NODE=$(issue_node "$ISSUE") || { err "issue #$ISSUE node lookup failed; nothing written"; exit 0; }
+else NODE=$PRNODE; fi
+R=$(add_item "$NODE") || { err "adding $NAME to project 3 failed; nothing written"; exit 0; }
+ITEM=${R%%$'\t'*}; CUR=${R#*$'\t'}
+[ -n "$PRURL" ] && { set_text "$ITEM" "$F_PR" "$PRURL" && log "wrote PR field: $PRURL" || err "PR field write failed"; }
+if [ "$FID" = "$F_STATUS" ] && [ "$CUR" = "$VAL" ]; then log "skip: Status already '$VAL'"
+elif [ "$EVT" = start ] && case $CUR in Backlog|Proposals|"") false;; *) true;; esac; then
+  log "skip: Status is '$CUR'; start only moves items out of Backlog/Proposals, never backwards"
+elif set_select "$ITEM" "$FID" "$(opt "$VAL")"; then log "wrote $([ "$FID" = "$F_VER" ] && echo Verification || echo Status) of $NAME: '$VAL'"
+else err "write '$VAL' failed"; fi
 exit 0

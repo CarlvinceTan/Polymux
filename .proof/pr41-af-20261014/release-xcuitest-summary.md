@@ -1,0 +1,19 @@
+## verify.sh: PASS
+commit `70d498c` on cvmini, 2026-10-14 02:53:04 +08, worktree lane3-df7-fix-pr-41-af-at-db9ca15-rele
+targets: full
+level: **UI-verified**, ready (chats.list + 12 sidebar rows + waits): yes
+
+| step | result | tests | time |
+|---|---|---|---|
+| test-integrity | PASS | - | 0s |
+| affected-tests | PASS | - | 2s |
+| go-vet | PASS | - | 47s |
+| go-test | PASS | - | 59s |
+| fixture-off | PASS | - | 10s |
+| packages | PASS | 193 passed, 0 failed | 22s |
+| macos-build | PASS | - | 15s |
+| ios-test | PASS | 2 passed, 0 failed | 123s |
+| ios-ready | PASS | 2 passed, 0 failed | 32s |
+
+media: ready-05C6D4CF-106E-4103-91EE-F71B36D65DE7.png ready-33E5D5F8-5524-43C4-9100-D34748195631.png ready-4EE3AE7C-B152-4E1F-9D8B-84160762C07A.png ready-664DEDA9-1209-40A7-A5D4-1F1A3940E67D.png ready-8DBD777D-D463-45A3-822A-18B3909D0AD9.png ready-95B588F5-E030-4C2D-B822-AA7BD3EB0BE1.png ready-AFFA8C4B-B2DB-40D6-B3A8-A1F7CFF2080A.png ready-E1ED0242-522C-4578-B779-5578C8037D47.png 
+evidence: /Users/carlvincetan/code/wt/lane3-df7-fix-pr-41-af-at-db9ca15-rele/.build/lanehome/verify-evidence/lane3-df7-fix-pr-41-af-at-db9ca15-rele/20261014-025304-70d498c

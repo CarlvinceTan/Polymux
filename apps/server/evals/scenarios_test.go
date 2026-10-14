@@ -399,12 +399,11 @@ func TestTR1QueuedMessage(t *testing.T) {
 				if !hasToolResult(req, "tr1q-call", "effect-ok") {
 					return fmt.Errorf("resume missing tool result")
 				}
-				if strings.Contains(requestText(req), "queued-second") {
-					return fmt.Errorf("resume included the queued message")
+				if !strings.Contains(requestText(req), "queued-second") {
+					return fmt.Errorf("resume missing pending steer")
 				}
 				return nil
 			}, TextReply("RESUMED_OWN")),
-			Fixed(nil, TextReply("SECOND_LATER")),
 		},
 	})
 	if code := h.Send(agentID, "tr1q-user", "effect then queue"); code != 202 && code != 200 {
@@ -419,7 +418,7 @@ func TestTR1QueuedMessage(t *testing.T) {
 	runID := RunID("tr1q-user", agentID)
 	h.Restart()
 	run := h.WaitRunID(runID, deadline)
-	if err := h.Emulator.DoneAllowExtra(); err != nil {
+	if err := h.Emulator.Done(); err != nil {
 		fail(t, "TR1Q", err.Error())
 		return
 	}
@@ -439,7 +438,7 @@ func TestTR1QueuedMessage(t *testing.T) {
 	case !strings.Contains(resumed, "RESUMED_OWN"):
 		fail(t, "TR1Q", "missing resumed text: "+resumed)
 	default:
-		pass(t, "TR1Q", "queued message stayed out of the resumed turn")
+		pass(t, "TR1Q", "pending steer reached the resumed turn")
 	}
 }
 
@@ -922,58 +921,76 @@ func countPeerReceipts(messages []contract.Message) int {
 }
 
 func TestT3MidTurnUserMessage(t *testing.T) {
-	opened := make(chan struct{})
-	release := make(chan struct{})
-	h := Start(t, Options{ID: "T3", Steps: []Step{
-		Fixed(nil, HoldReply("turn-one-partial", release, func() { close(opened) }, nil)),
-		Fixed(nil, TextReply("reply includes second: ALPHA_T3")),
+	opened, release := make(chan struct{}), make(chan struct{})
+	h := Start(t, Options{ID: "T3", Extras: map[string][]agent.AgentTool{agentID: {&typedTool{ran: &atomic.Int32{}}}}, Steps: []Step{
+		{Response: func(*ChatRequest) Response {
+			close(opened)
+			<-release
+			return ToolReply("t3-tool", "typed_tool", map[string]any{"value": "first"})
+		}},
+		Fixed(func(req *ChatRequest) error {
+			if !strings.Contains(requestText(req), "ALPHA_T3") {
+				return fmt.Errorf("second request missing steer")
+			}
+			return nil
+		}, TextReply("reply includes second: ALPHA_T3")),
 	}})
 	if code := h.Send(agentID, "t3-one", "first message"); code != 202 && code != 200 {
-		fail(t, "T3", fmt.Sprintf("send1 status %d", code))
-		return
+		t.Fatalf("send: %d", code)
 	}
 	WaitHold(t, "T3", opened, holdWait)
 	if code := h.Send(agentID, "t3-two", "second message ALPHA_T3"); code != 202 && code != 200 {
-		fail(t, "T3", fmt.Sprintf("send2 status %d", code))
-		return
+		t.Fatalf("steer: %d", code)
 	}
 	close(release)
-	run1 := h.WaitRun(agentID, "t3-one", agentID, deadline)
-	run2 := h.WaitRun(agentID, "t3-two", agentID, deadline)
-	replies := h.AssistantDone(agentID)
-	joined := ""
-	for _, m := range replies {
-		joined += messageText(m)
+	run := h.WaitRun(agentID, "t3-one", agentID, deadline)
+	if err := h.Emulator.Done(); err != nil {
+		t.Fatal(err)
 	}
-	users := 0
-	for _, m := range h.Messages(agentID) {
-		if m.Role == "user" {
-			users++
-		}
+	var runs int
+	err := h.Store.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM runs WHERE thread_id=?`, agentID).Scan(&runs)
+	if err != nil {
+		t.Fatal(err)
 	}
-	reachedModel := false
-	for _, req := range h.Emulator.Requests() {
-		if strings.Contains(requestText(req), "second message ALPHA_T3") {
-			reachedModel = true
-			break
-		}
+	if runs != 1 || run.Status != "completed" || len(h.AssistantDone(agentID)) != 1 {
+		t.Fatalf("runs=%v replies=%d", runs, len(h.AssistantDone(agentID)))
 	}
-	if err := h.Emulator.DoneAllowExtra(); err != nil {
-		fail(t, "T3", err.Error())
-		return
+	pass(t, "T3", "second request contains steer with one run and reply")
+}
+
+func TestSTLateSteer(t *testing.T) {
+	opened, release := make(chan struct{}), make(chan struct{})
+	h := Start(t, Options{ID: "ST-late", Steps: []Step{
+		Fixed(nil, HoldReply("first answer", release, func() { close(opened) }, nil)),
+		Fixed(func(req *ChatRequest) error {
+			if !strings.Contains(requestText(req), "ALPHA_LATE") {
+				return fmt.Errorf("follow-up missing message")
+			}
+			return nil
+		}, TextReply("answered ALPHA_LATE")),
+	}})
+	if code := h.Send(agentID, "late-one", "first"); code != 202 && code != 200 {
+		t.Fatalf("send: %d", code)
 	}
-	switch {
-	case users < 2:
-		fail(t, "T3", "second user message dropped before persist")
-	case !reachedModel:
-		fail(t, "T3", "second user message never reached a model request")
-	case len(replies) == 2 && store.Terminal(run1.Status) && store.Terminal(run2.Status):
-		pass(t, "T3", "both messages produced replies")
-	case len(replies) == 1 && strings.Contains(joined, "ALPHA_T3") && run2.Status == "completed":
-		pass(t, "T3", "second message steered into single reply")
-	default:
-		fail(t, "T3", fmt.Sprintf("both messages not answered (replies=%d run1=%s run2=%s)", len(replies), run1.Status, run2.Status))
+	WaitHold(t, "ST-late", opened, holdWait)
+	if code := h.Send(agentID, "late-two", "ALPHA_LATE"); code != 202 && code != 200 {
+		t.Fatalf("steer: %d", code)
 	}
+	close(release)
+	h.WaitRun(agentID, "late-one", agentID, deadline)
+	run := h.WaitRun(agentID, "late-two", agentID, deadline)
+	if err := h.Emulator.Done(); err != nil {
+		t.Fatal(err)
+	}
+	var runs int
+	err := h.Store.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM runs WHERE thread_id=?`, agentID).Scan(&runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 || run.Status != "completed" || len(h.AssistantDone(agentID)) != 2 {
+		t.Fatalf("runs=%v replies=%d", runs, len(h.AssistantDone(agentID)))
+	}
+	pass(t, "ST-late", "late steer answered by one follow-up run")
 }
 
 func TestC5ApprovalGate(t *testing.T) {

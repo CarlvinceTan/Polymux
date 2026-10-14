@@ -25,10 +25,9 @@ struct MediaView: View {
                 switch attachment.kind {
                 case "image":
                     Button { download(previewing: true) } label: {
-                        AsyncImage(url: client.resolve(attachment.thumbnailURL ?? attachment.url)) { image in
-                            image.resizable().scaledToFit()
-                        } placeholder: {
-                            ProgressView().frame(width: 180, height: 140)
+                        LocalImage(url: client.resolve(attachment.thumbnailURL ?? attachment.url)) { phase in
+                            if let image = phase.image { image.resizable().scaledToFit() }
+                            else { ProgressView().frame(width: 180, height: 140) }
                         }
                         .frame(maxWidth: 320, maxHeight: 280)
                         .clipShape(RoundedRectangle(cornerRadius: BubbleStyle.radius))
@@ -118,14 +117,20 @@ struct MovieView: View {
                 NativeMovie(player: player)
             } else {
                 Button {
-                    let next = AVPlayer(url: url)
-                    player = next
-                    next.play()
+                    Task {
+                        guard let file = try? await MediaCache.shared.file(url: url, name: "video") else { return }
+                        let next = AVPlayer(url: file)
+                        player = next
+                        next.play()
+                    }
                 } label: {
                     ZStack {
                         Color.black.opacity(0.85)
                         if let poster {
-                            AsyncImage(url: poster) { image in image.resizable().scaledToFit() } placeholder: { Color.clear }
+                            LocalImage(url: poster) { phase in
+                                if let image = phase.image { image.resizable().scaledToFit() }
+                                else { Color.clear }
+                            }
                         }
                         Image(systemName: "play.circle.fill").font(.system(size: 42)).foregroundStyle(.white)
                     }
@@ -203,7 +208,9 @@ actor MediaCache {
             try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)
             return file
         }
-        let (temporary, response) = try await URLSession.shared.download(from: url)
+        var request = URLRequest(url: url)
+        if let token = APIClient.localToken(url) { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let (temporary, response) = try await URLSession.shared.download(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw URLError(.badServerResponse) }
         try FileManager.default.moveItem(at: temporary, to: file)
         try evict(root: support.appending(path: "Polymux/Media"), keeping: file)

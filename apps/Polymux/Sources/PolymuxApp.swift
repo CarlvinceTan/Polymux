@@ -28,7 +28,13 @@ struct PolymuxApp: App {
     init() {
         _ = Notifications.shared
         #if os(macOS)
+        #if DEBUG
+        if !VerifyFixture.enabled && !CommandLine.arguments.contains("--verify-approval") {
+            ControlCoordinator.shared.start()
+        }
+        #else
         ControlCoordinator.shared.start()
+        #endif
         #endif
     }
     var body: some Scene {
@@ -59,16 +65,24 @@ final class AppSession {
     let avatars: AvatarStore
 
     init(address: String) async throws {
-        guard let url = ServerAddress.parse(address) else {
+        guard let url = ServerAddress.resolve(address, defaults: .standard) else {
             throw URLError(.badURL)
         }
+        #if DEBUG
+        client = APIClient(baseURL: url, session: VerifyFixture.local ? VerifyFixture.session() : .shared,
+                           token: VerifyFixture.local ? "" : nil)
+        #else
         client = APIClient(baseURL: url)
+        #endif
         let key = address.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
         cache = try await Task.detached {
             let support = try FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
             )
-            let directory = support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
+            let directory = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"].map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+                    .appending(path: "app-\(key)", directoryHint: .isDirectory)
+            } ?? support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             return try LocalCache(url: directory.appending(path: "cache.sqlite"))
         }.value
@@ -87,29 +101,33 @@ struct AppRoot: View {
 
     var body: some View {
         Group {
-            if let session {
-                ShellView(session: session, showSettings: $showSettings)
-                    .id(address)
+            #if DEBUG
+            if CommandLine.arguments.contains("--verify-approval") {
+                ApprovalFixture()
             } else {
-                ContentUnavailableView {
-                    Label("Connect to Polymux", systemImage: "network")
-                } description: {
-                    Text(error ?? "Opening your conversations…")
-                } actions: {
-                    Button("Connection settings") { showSettings = true }
-                }
+                content
             }
+            #else
+            content
+            #endif
         }
         #if os(macOS)
         .allowsWindowActivationEvents()
         #endif
         .neutralBackground()
         .task(id: address) {
+            #if DEBUG
+            guard !CommandLine.arguments.contains("--verify-approval") else { return }
+            #endif
             do {
                 session = try await AppSession(address: address)
                 error = nil
                 if let session {
+                    #if DEBUG
+                    if !VerifyFixture.local { Notifications.shared.connect(session.client) }
+                    #else
                     Notifications.shared.connect(session.client)
+                    #endif
                     while !Task.isCancelled {
                         await session.settings.refresh()
                         do { try await Task.sleep(for: .seconds(3)) }
@@ -127,10 +145,36 @@ struct AppRoot: View {
         }
         .panelHost()
         .environment(session?.avatars)
-        .appAppearance(session?.settings.value?.appearance ?? "system")
+        .appAppearance(appearance)
         #if os(macOS)
         .background { InputFocus().frame(width: 0, height: 0).accessibilityHidden(true) }
         #endif
+    }
+
+    private var appearance: String {
+        #if DEBUG
+        if CommandLine.arguments.contains("--verify-approval") {
+            return CommandLine.arguments.contains("--approval-dark") ? "dark" : "light"
+        }
+        #endif
+        return session?.settings.value?.appearance ?? "system"
+    }
+
+    private var content: some View {
+        Group {
+            if let session {
+                ShellView(session: session, showSettings: $showSettings)
+                    .id(address)
+            } else {
+                ContentUnavailableView {
+                    Label("Connect to Polymux", systemImage: "network")
+                } description: {
+                    Text(error ?? "Opening your conversations…")
+                } actions: {
+                    Button("Connection settings") { showSettings = true }
+                }
+            }
+        }
     }
 }
 

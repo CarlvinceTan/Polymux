@@ -265,13 +265,14 @@ struct ChatPane: View {
             ZStack(alignment: .bottom) {
                 ComposerView(client: session.client,
                              isVoiceActive: showVoice || showSearch || openingVoice,
-                             send: { text, attachments, quote, mentions in
-                                 await store.send(text: text, attachments: attachments, reply: quote, mentions: mentions)
+                             send: { text, files, quote, mentions, tap in
+                                 await store.send(text: text, files: files, reply: quote, mentions: mentions, at: tap)
                                  if reply == quote { reply = nil }
                                  if store.error == nil { onSent?() }
                              },
                              reply: reply, agentName: reply.flatMap { quote in session.sidebar.agents.first { $0.id == quote.agentID }?.name } ?? agent.name,
-                             clearReply: { reply = nil }, drops: drops, members: thread.isGroup ? members : [])
+                             clearReply: { reply = nil }, drops: drops, members: thread.isGroup ? members : [],
+                             trace: store.trace)
                     .frame(height: showVoice ? 0 : nil)
                     .opacity(showVoice ? 0 : 1)
                     .allowsHitTesting(!showVoice)
@@ -327,7 +328,8 @@ struct ChatPane: View {
                                       sending: store.isSending, retry: { await store.retry(messageID: message.id) },
                                       respond: { reply = $0 }, jump: { jump(to: $0.messageID, part: $0.partIndex) },
                                       ask: { text in Task { await store.send(text: text) } },
-                                       highlight: highlight, activity: bubbleActivity(message))
+                                       highlight: highlight, activity: bubbleActivity(message),
+                                       uploads: store.uploads)
                         .id(message.id)
                         .modifier(JumpGlow(active: highlight == ReplyTarget(id: message.id, part: nil)))
                         .background {
@@ -545,6 +547,8 @@ struct MessageBubble: View {
     let ask: (String) -> Void
     var highlight: ReplyTarget?
     var activity: ActivityView?
+    /// Per-file upload progress keyed by local attachment id.
+    var uploads: [String: Double] = [:]
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 36) {
@@ -617,8 +621,13 @@ struct MessageBubble: View {
 
     @ViewBuilder private func partView(_ part: Part, index: Int) -> some View {
         if let attachment = part.attachment {
-            MediaView(attachment: attachment, client: client, bubbleColor: bubble,
-                      respond: { respond(to: index) }, action: ask)
+            if let local = attachment.localURL {
+                AttachmentPreview(attachment: attachment, client: client, localURL: local,
+                                  progress: uploads[attachment.id])
+            } else {
+                MediaView(attachment: attachment, client: client, bubbleColor: bubble,
+                          respond: { respond(to: index) }, action: ask)
+            }
         } else if part.kind == "choice" {
             FocusCard(part: part, client: client, agentID: message.agentID ?? "", bubble: bubble)
         } else if let text = part.text {

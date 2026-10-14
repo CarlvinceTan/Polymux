@@ -9,14 +9,13 @@ struct NewChatView: View {
     @State private var query = ""
     @State private var recipients: [Agent] = []
     @State private var title = ""
-    @State private var creating = false
-    @State private var starting = false
+    @State private var opened = false
     @State private var error: String?
     @State private var focused = false
     @State private var recipientHeight: CGFloat = 28
 
     var body: some View {
-        PanelView("New Chat", enabled: !working, onClose: close, header: AnyView(recipientBar)) {
+        PanelView("New Chat", onClose: close, header: AnyView(recipientBar)) {
             List {
                 if let error {
                     Text(error).font(.caption).foregroundStyle(.secondary)
@@ -48,18 +47,21 @@ struct NewChatView: View {
             .listStyle(.plain)
             .contentMargins(.horizontal, 0, for: .scrollContent)
             .scrollIndicators(.hidden)
-            .disabled(working)
         } actions: {
-            Button { Task { await start() } } label: {
-                if starting { ProgressView().controlSize(.small) }
-                else { Text("Create") }
+            Button { start() } label: {
+                Text("Create")
             }
-            .disabled(recipients.isEmpty || working || !validTitle)
+            .disabled(recipients.isEmpty || opened || !validTitle || recipients.contains { $0.id.hasPrefix("local-") })
             .keyboardShortcut(.defaultAction)
         }
-        .interactiveDismissDisabled(working)
-        .panelDismiss(enabled: !working, onClose: close)
+        .panelDismiss(onClose: close)
         .task { focused = true }
+        #if DICTATION_CHECK
+        .task {
+            // The simulator check harness cannot post touches; it runs the real actions instead.
+            if NewChatCheck.autoAgent { NewChatCheck.autoAgent = false; create() }
+        }
+        #endif
     }
 
     private var recipientBar: some View {
@@ -83,14 +85,12 @@ struct NewChatView: View {
                                         .buttonStyle(.plain)
                                         .frame(maxWidth: 170)
                                         .accessibilityLabel("Remove \(agent.name)")
-                                        .disabled(working)
                                     }
                                     RecipientField(text: $query, focused: $focused,
                                                    placeholder: recipients.isEmpty ? "Name" : "",
                                                    onSubmit: { chooseFirst() }, onDelete: { removeLast() })
                                         .frame(minWidth: 80, minHeight: 28)
                                         .accessibilityLabel("To")
-                                        .disabled(working)
                                         .id("recipientInput")
                                 }
                                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { recipientHeight = $0 }
@@ -108,17 +108,16 @@ struct NewChatView: View {
                     .padding(.horizontal, 14).padding(.vertical, 8)
                     .frame(maxWidth: .infinity, minHeight: 44)
                     .glassEffect(.regular, in: .rect(cornerRadius: 22))
-                    Button { Task { await create() } } label: {
-                        if creating { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "plus").font(.system(size: 17)) }
+                    Button { create() } label: {
+                        Image(systemName: "plus").font(.system(size: 17))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.primary)
                     .frame(width: 44, height: 44)
                     .contentShape(Circle())
-                    .glassEffect(.regular.interactive(!working), in: Circle())
+                    .glassEffect(.regular.interactive(), in: Circle())
                     .accessibilityLabel("Create new agent")
-                    .disabled(working || recipients.count >= 16)
+                    .disabled(recipients.count >= 16)
                 }
             }
             if recipients.count > 1 {
@@ -129,7 +128,6 @@ struct NewChatView: View {
                         .padding(.horizontal, 14).padding(.vertical, 10)
                         .frame(minHeight: 44)
                         .glassEffect(.regular, in: Capsule())
-                        .disabled(working)
                     if !validTitle {
                         Text("Choose a shorter chat name.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -138,7 +136,6 @@ struct NewChatView: View {
         }
     }
 
-    private var working: Bool { creating || starting }
     private var cleanTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var validTitle: Bool { recipients.count < 2 || cleanTitle.utf8.count <= 128 }
 
@@ -158,9 +155,8 @@ struct NewChatView: View {
     }
 
     private func chooseFirst() {
-        guard !working else { return }
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if !recipients.isEmpty { Task { await start() } }
+            if !recipients.isEmpty { start() }
             return
         }
         guard let first = contacts.first else { return }
@@ -168,7 +164,7 @@ struct NewChatView: View {
     }
 
     private func choose(_ agent: Agent) {
-        guard !working, !recipients.contains(where: { $0.id == agent.id }) else { return }
+        guard !recipients.contains(where: { $0.id == agent.id }) else { return }
         guard recipients.count < 16 else {
             error = "A chat can have up to 16 agents."
             return
@@ -180,67 +176,73 @@ struct NewChatView: View {
     }
 
     private func remove(_ id: String) {
-        guard !working else { return }
         recipients.removeAll { $0.id == id }
         focused = true
     }
 
     private func removeLast() {
-        guard !working, !recipients.isEmpty else { return }
+        guard !recipients.isEmpty else { return }
         recipients.removeLast()
         focused = true
     }
 
-    private func start() async {
-        guard !working, !recipients.isEmpty, validTitle else { return }
-        starting = true
-        error = nil
-        focused = false
-        defer { starting = false }
-        do {
-            let thread: PolymuxKit.Thread
-            if recipients.count == 1 {
-                let agent = recipients[0]
-                if session.sidebar.thread(for: agent) == nil { await session.sidebar.refresh() }
-                guard let existing = session.sidebar.thread(for: agent) else {
-                    error = "This agent’s chat isn’t available yet. Try again."
-                    return
-                }
-                thread = existing
-            } else {
-                thread = try await session.client.createThread(agentIDs: recipients.map(\.id),
-                                                                title: cleanTitle.isEmpty ? nil : cleanTitle)
-                await session.sidebar.accept(thread)
-                await session.sidebar.refresh()
-            }
+    private func start() {
+        guard !opened, !recipients.isEmpty, validTitle, !recipients.contains(where: { $0.id.hasPrefix("local-") }) else { return }
+        let launch = InstantChat.start(agents: recipients, title: cleanTitle.isEmpty ? nil : cleanTitle,
+                                       sidebar: session.sidebar, client: session.client, begin: {
+            opened = true
+            error = nil
+        }) { thread in
+            focused = false
             select(thread)
-        } catch {
-            self.error = "Couldn’t create this chat. \(error.localizedDescription)"
+        }
+        Task { @MainActor in
+            let failure = await launch.finish()
+            if let failure {
+                opened = false
+                error = failure
+                return
+            }
         }
     }
 
-    private func create() async {
-        guard !working, recipients.count < 16 else { return }
-        creating = true
-        defer { creating = false }
-        error = nil
-        do {
-            let names = ["Arlo", "Aster", "Cleo", "Echo", "Ember", "Fern", "Milo", "Nova", "Olive", "Pip", "Sage", "Wren"]
-            var options = AvatarOptions.default
-            options.shape = ShapeID.allCases.randomElement() ?? .circle
-            options.color = ColorID.allCases.randomElement() ?? .ink
-            let agent = try await session.client.createAgent(
-                CreateAgentRequest(name: names.randomElement() ?? "Nova", role: "", prompt: "", avatar: options.design)
-            )
-            await session.sidebar.accept(agent)
-            await session.sidebar.refresh()
-            session.avatars.sync(agents: session.sidebar.agents)
+    private func create() {
+        guard recipients.count < 16 else { return }
+        let launch = InstantChat.create(draftAgent(), sidebar: session.sidebar, client: session.client, begin: {
+            error = nil
+        }) { agent in
             recipients.append(agent)
             query = ""
             focused = true
-        } catch { self.error = error.localizedDescription }
+        }
+        Task { @MainActor in
+            let failure = await launch.finish()
+            if let failure {
+                recipients.removeAll { $0.id == launch.agent.id }
+                error = failure
+                return
+            }
+            guard let saved = launch.saved, let index = recipients.firstIndex(where: { $0.id == launch.agent.id }) else { return }
+            recipients[index] = saved
+            session.avatars.sync(agents: session.sidebar.agents)
+        }
+    }
+
+    private func draftAgent() -> CreateAgentRequest {
+        let names = ["Arlo", "Aster", "Cleo", "Echo", "Ember", "Fern", "Milo", "Nova", "Olive", "Pip", "Sage", "Wren"]
+        var options = AvatarOptions.default
+        options.shape = ShapeID.allCases.randomElement() ?? .circle
+        options.color = ColorID.allCases.randomElement() ?? .ink
+        return CreateAgentRequest(name: names.randomElement() ?? "Nova", role: "", prompt: "", avatar: options.design)
     }
 }
+
+#if DICTATION_CHECK
+/// Offscreen check harness switch; never compiled into the app.
+enum NewChatCheck {
+    @MainActor static var autoAgent = false
+}
+#endif
 
 private struct RecipientFlow: Layout {
     private struct Placement {
