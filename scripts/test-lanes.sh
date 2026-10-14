@@ -658,6 +658,17 @@ WTL=$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep "/laneB-re
 check "retry on laneB detaches laneA's dirty tree, checks the branch out and commits there" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "detached stale dirty worktree $LANES_WT/laneA-retry-dirty (held test/retrydirty; changes kept)" "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log && [ -n "$WTL" ] && [ "$(git -C "$WTL" rev-parse HEAD)" = "$(git rev-parse test/retrydirty)" ]'
 check "laneA keeps its HEAD, staged, unstaged and untracked changes, detached" '[ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" rev-parse HEAD)" = "$OLD_HEAD" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff HEAD)" = "$OLD_DIFF" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)" = "$OLD_INDEX" ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD'
 rm -f "$LANES_HOME"/queue/*.task
+# 34 Only real run failures count, even with non-run stops in the window.
+rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY" "$LANES_HOME/fast-fails.tsv"
+for kind in dep spec scope; do
+  printf '%s\t%s\t%s\n' "$(date +%s)" "$kind" "$kind" >> "$LANES_HOME/fast-fails.tsv"
+done
+for i in 1 2; do OUT=$(LANE_BREAKER_N=3 LANE_NO_CHAIN=1 LANE_FORCE_FAIL=laneA $RL laneA "$(task "Real failure $i" "rf$i")" 2>&1); RC=$?; done
+check "two real run failures beside the stops: still no PAUSE" '[ ! -f "$LANES_HOME/PAUSE" ]'
+OUT=$(LANE_BREAKER_N=3 LANE_NO_CHAIN=1 LANE_FORCE_FAIL=laneA $RL laneA "$(task 'Real failure 3' rf3)" 2>&1); RC=$?
+check "third real run failure trips the breaker while dep/spec stops sit in the same window" '[ -f "$LANES_HOME/PAUSE" ] && [ "$(cut -f3 "$LANES_HOME/fast-fails.tsv" | grep -cx run)" = 3 ] && grep -q "BREAKER: 3 distinct tasks failed fast" "$LANES_HOME/NEEDS_CODY"'
+rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY" "$LANES_HOME"/queue/*.task
+if bash "$SRC/scripts/test-lane-guard.sh"; then PASS=$((PASS+1)); else FAILS=$((FAILS+1)); fi
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"

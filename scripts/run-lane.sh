@@ -140,7 +140,7 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
 # (honoured by lane-guard --preflight/--dispatch), add a NEEDS_CODY line, and stop chaining. Cody clears PAUSE.
 # The call runs under the lanelib lock $OPS/dispatch-chain.lock (one chained dispatch at a time; we wait
 # up to ~10 s for it so a failover refill isn't lost). lane-guard takes its own $OPS/dispatch.lock.
-UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE; CF="$OPS/chain-fails"
+STOP_CLASS=run; UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE; CF="$OPS/chain-fails"
 [ -f "$CF" ] && rm -f "$CF"; mkdir -p "$CF"   # old global streak file -> per-task dir
 base_title() { echo "$1" | sed -E 's/ \(attempt [0-9]+\)$//'; }
 deferred_hit() {  # $1 base title, $2 slug: print the $OPS/deferred/*.task (parked by policy, e.g. dogfood-first) that is this unit
@@ -157,6 +157,7 @@ hold_retries() {  # move queued retries of this task to queue-hold/
 fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-40 | sed 's/-$//')"
   for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
   if [ "$rc" = 0 ]; then rm -f "$f"; lock_drop "$OPS/chain-state.lock"; return 0; fi
+  [ "$STOP_CLASS" = run ] || { lock_drop "$OPS/chain-state.lock"; breaker "${f##*/}"; return 0; }
   n=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo $n > "$f"; lock_drop "$OPS/chain-state.lock"
   FAST=""; [ $(( $(date +%s) - UNIT_T0 )) -lt "${LANE_CHAIN_MIN_S:-120}" ] && FAST=1
   { [ -n "$FAST" ] || [ $n -ge 2 ]; } && hold_retries
@@ -164,12 +165,12 @@ fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z'
 breaker() {  # $1 task key of a fast failure; trips PAUSE on N distinct fast-failing tasks within the window
   local now d FF="$OPS/fast-fails.tsv"; now=$(date +%s)
   for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
-  printf '%s\t%s\n' "$now" "$1" >> "$FF"
+  printf '%s\t%s\t%s\n' "$now" "$1" "$STOP_CLASS" >> "$FF"
   awk -F'\t' -v c=$(( now - ${LANE_BREAKER_WIN_S:-900} )) '$1>=c' "$FF" > "$FF.tmp" && mv "$FF.tmp" "$FF"
-  d=$(cut -f2 "$FF" | sort -u | grep -c .); lock_drop "$OPS/chain-state.lock"
+  d=$(awk -F'\t' '$3=="run"{print $2}' "$FF" | sort -u | grep -c .); lock_drop "$OPS/chain-state.lock"
   [ "$d" -ge "${LANE_BREAKER_N:-3}" ] || return 0
   [ -f "$OPS/PAUSE" ] || { echo "run-lane $(date '+%F %T'): breaker: $d distinct tasks failed fast within ${LANE_BREAKER_WIN_S:-900}s ($(cut -f2 "$FF" | sort -u | tr '\n' ' '))" > "$OPS/PAUSE"
-    echo "$(date '+%F %T') $SLUG: BREAKER: $d distinct tasks failed fast within ${LANE_BREAKER_WIN_S:-900}s (systemic fault? login, fetch, disk); chaining paused via $OPS/PAUSE; last log $LOG" >> "$OPS/NEEDS_CODY"
+    echo "$(date '+%F %T') $SLUG: BREAKER: $d distinct tasks failed fast within ${LANE_BREAKER_WIN_S:-900}s (systemic fault? login, fetch, disk); chaining paused via $OPS/PAUSE; last log ${LOG:-}" >> "$OPS/NEEDS_CODY"
     echo "$(date '+%F %T') $SLUG: breaker tripped ($d distinct fast failures) -> PAUSE" >> "$OPS/logs/dispatch-chain.log"; }; }
 free_lane() {  # $1 lane now free; non-blocking
   { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
@@ -374,7 +375,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   [ "$NT" = 0 ] || echo "warn: $NT lane commit(s) without a 'Lane:' trailer (committer name still says $L)" | tee -a "$LOG"
   CH=$(git -C "$WT" diff --shortstat "$START"..HEAD | awk '{print $4+$6}')
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
-    git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
+    git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { STOP_CLASS=scope; ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
@@ -383,7 +384,8 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
     echo "$(date '+%F %T') $ID: INFRA missing toolchain on $HOST: ${MISS:-?} (lane $L, task '$TITLE' not failed) log $LOG" >> "$OPS/NEEDS_CODY"
     [ -n "$TASKF" ] && QW --no-check --dir "$OPS/queue-hold" --name "$ID-infra.task" "$TASKF" >/dev/null
     ev infra "$L" "missing toolchain: ${MISS:-?}"; BU verify "$SLUG" blocked; echo "INFRA: missing toolchain: ${MISS:-?} -> $OPS/NEEDS_CODY"; exit 10; fi
-  [ -x "$LANE_GUARD" ] && { "$LANE_GUARD" --task-end "$L" "$ID" "$VRC" "$LOG" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
+  [ "$VRC" = 0 ] || { grep -q '^verify: allowed-files FAIL' "$LOG" && STOP_CLASS=scope; }
+  [ -x "$LANE_GUARD" ] && { "$LANE_GUARD" --task-end "$L" "$ID" "$VRC" "$LOG" "$STOP_CLASS" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
   [ $VRC = 0 ] || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
   BODY="Task: $TITLE"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
