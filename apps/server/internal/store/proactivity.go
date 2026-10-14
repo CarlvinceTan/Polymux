@@ -714,7 +714,7 @@ func (s *Store) sealRoutineFailure(ctx context.Context, run *contract.Run) (bool
 	for i := range run.Tools {
 		if run.Tools[i].Status == "running" {
 			run.Tools[i].Status = run.Status
-			if err := s.RunEvent(ctx, "tool.done", run, &run.Tools[i]); err != nil {
+			if _, err := s.Append(ctx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &run.Tools[i]}, nil); err != nil {
 				return false, err
 			}
 		}

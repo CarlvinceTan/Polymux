@@ -56,10 +56,10 @@ func TestRunRecovery(t *testing.T) {
 		t.Fatalf("queued work lost %s %v", next, err)
 	}
 	thread, err := s.Thread(t.Context(), "a")
-	if err != nil || len(thread.Runs) != 2 || thread.Runs[0].JobID != "next" || thread.Runs[1].JobID != "active" {
+	if err != nil || len(thread.Runs) != 1 || thread.Runs[0].JobID != "next" {
 		t.Fatalf("snapshot %+v %v", thread, err)
 	}
-	if len(thread.Runs[1].Tools) != 1 || thread.Runs[1].Tools[0].Status != "interrupted" {
+	if len(run.Tools) != 1 || run.Tools[0].Status != "interrupted" {
 		t.Fatal("recovery lost the interrupted call")
 	}
 	events, err := s.Events(t.Context(), "a", 0, 100)
@@ -450,5 +450,52 @@ func TestToolHistoryListBound(t *testing.T) {
 				t.Error("list contains tool history")
 			}
 		}
+	}
+}
+
+func TestRoutineToolHistory(t *testing.T) {
+	s := runStore(t)
+	run := NewRun("routine-history", "a", "a", "routine")
+	run.Status = "running"
+	run.Tools = []contract.ToolActivity{
+		{ID: "done", RunID: run.ID, Status: "completed"},
+		{ID: "failed", RunID: run.ID, Status: "failed", Output: ptr("failure excerpt")},
+		{ID: "active", RunID: run.ID, Status: "running"},
+		{ID: "active-2", RunID: run.ID, Status: "running"},
+	}
+	if err := s.RunEvent(t.Context(), "run.start", &run, nil); err != nil {
+		t.Fatal(err)
+	}
+	message := contract.Message{ID: routineNoticeID(run.ID), ThreadID: "a", Role: "system", Status: "done", CreatedAt: Now()}
+	if _, err := s.Append(t.Context(), contract.Event{ConversationID: "a", Type: "message.start"}, &message); err != nil {
+		t.Fatal(err)
+	}
+	if sealed, err := s.sealRoutineFailure(t.Context(), &run); err != nil || !sealed {
+		t.Fatalf("seal: %v, %v", sealed, err)
+	}
+	stored, err := s.Run(t.Context(), run.ID)
+	if err != nil || len(stored.Tools) != 4 {
+		t.Fatalf("routine rows: %+v, %v", stored, err)
+	}
+	for i, status := range []string{"completed", "failed", "failed", "failed"} {
+		if stored.Tools[i].Status != status {
+			t.Errorf("row %d: %s, want %s", i, stored.Tools[i].Status, status)
+		}
+	}
+	if stored.Tools[1].Output == nil || *stored.Tools[1].Output != "failure excerpt" {
+		t.Fatal("failed excerpt lost")
+	}
+	events, err := s.Events(t.Context(), "a", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := 0
+	for _, event := range events {
+		if event.Type == "tool.done" {
+			done++
+		}
+	}
+	if done != 2 {
+		t.Fatalf("routine tool.done events: %d, want 2", done)
 	}
 }
