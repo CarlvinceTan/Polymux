@@ -48,14 +48,18 @@ fi
 CHECK=""; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
 LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60; SCOPE=""
 REQUESTED=CarlvinceTan/polymux
+BRIEF=$TASK; [ ! -f "$TASK" ] || BRIEF=$(cat "$TASK")
+if printf '%s\n' "$BRIEF" | out_has '^repo:'; then
+  REQUESTED=$(printf '%s\n' "$BRIEF" | sed -n 's/^repo: *//p' | head -1 | sed 's/[[:space:]]*$//')
+fi
 TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "issue: N" (GitHub issue on Project 3; legacy "card:" ids map through board-map.tsv), "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
-  REQUESTED=$(sed -n 's/^repo: *//p' "$TASK" | head -1); REQUESTED=${REQUESTED:-CarlvinceTan/polymux}
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
   BRANCH=$(sed -n 's/^branch: *//p' "$TASK" | head -1)
   WANT_AGENT=$(sed -n 's/^agent: *//p' "$TASK" | head -1 | tr -d ' ')   # watchdog retry: run only on this agent (codex|opencode|cursor)
   TASK=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|agent|repo):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
 fi
+[ -n "$TASKF" ] || TASK=$(printf '%s\n' "$TASK" | grep -v '^repo:')
 REPO=$(cfg repo "$REQUESTED" path) || exit 5
 VERIFY=$(cfg repo "$REQUESTED" verify) || exit 5
 SETUP=$(cfg repo "$REQUESTED" setup) || exit 5

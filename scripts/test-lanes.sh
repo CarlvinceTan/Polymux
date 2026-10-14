@@ -65,6 +65,24 @@ chmod +x "$T/repobin/gh"
 OUT=$(PATH="$T/repobin:$PATH" LANE_SKIP_SETUP= LANE_NO_CHAIN=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$AB" 2>&1); RC=$?
 check "argus header selects clone, setup, verify and PR repo" '[ $RC = 0 ] && [ -f "$T/argus-setup" ] && [ -f "$T/argus-verify" ] && git -C "$T/argus" show-ref -q refs/heads/agent/CarlvinceTan-argus-argus-repo && grep -q "pr create.*-R CarlvinceTan/argus" "$LANES_HOME/repo-gh.log"'
 check "argus board is scoped to Project 2 and isolated state" 'grep -q "to project 2" "$LANES_HOME/repos/CarlvinceTan-argus/board.log" && [ "$(cat "$LANES_HOME/repos/CarlvinceTan-argus/cards/CarlvinceTan-argus-argus-repo" 2>/dev/null)" = 42 ]'
+# A live board write resolves Project 2 fields and never sends Project 3 identifiers.
+cat > "$T/repobin/gh" <<'GH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$LANES_HOME/repo-live.log"
+case "$*" in
+  *'projectV2(number:'*) echo '{"data":{"user":{"projectV2":{"id":"ARGUS_PROJECT","fields":{"nodes":[{"id":"ARGUS_STATUS","name":"Status","options":[{"id":"ARGUS_PROGRESS","name":"In progress"}]}]}}}}}' ;;
+  *'repository(owner:'*) echo ARGUS_ISSUE ;;
+  *addProjectV2ItemById*) printf 'ARGUS_ITEM\tBacklog\n' ;;
+esac
+GH
+touch "$LANES_HOME/BOARD_LIVE"
+PATH="$T/repobin:$PATH" BOARD_REPO=CarlvinceTan/argus BOARD_NUMBER=2 bash scripts/board-update.sh start CarlvinceTan-argus-argus-repo
+rm "$LANES_HOME/BOARD_LIVE"
+check "argus live board uses Project 2 metadata and its field/options" 'grep -q "n=2" "$LANES_HOME/repo-live.log" && grep -q "p=ARGUS_PROJECT.*f=ARGUS_STATUS.*o=ARGUS_PROGRESS" "$LANES_HOME/repo-live.log" && ! grep -q "PVT_kwHOCDGEdM4Bmy5s" "$LANES_HOME/repo-live.log"'
+FB=$(task 'Argus retry' ar3); echo 'repo: CarlvinceTan/argus' >> "$FB"
+OUT=$(LANE_NO_CHAIN=1 LANE_FORCE_FAIL=laneA $RL laneA "$FB" 2>&1)
+check "argus retry retains repo header" 'grep -qx "repo: CarlvinceTan/argus" "$LANES_HOME"/queue/*-CarlvinceTan-argus-argus-retry-retry.task'
+rm -f "$LANES_HOME"/queue/*-CarlvinceTan-argus-argus-retry-retry.task
 UB=$(task 'Unknown repo' ar2); echo 'repo: stranger/missing' >> "$UB"
 OUT=$(LANE_NO_CHAIN=1 $RL --check laneA "$UB" 2>&1); RC=$?
 check "unknown repo rejected before claim or worktree" '[ $RC = 5 ] && echo "$OUT" | grep -q "Unknown repo.*stranger/missing" && [ ! -d "$LANES_WT/laneA-unknown-repo" ]'
