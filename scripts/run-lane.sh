@@ -4,7 +4,9 @@
 # run-lane.sh --check <lane> <task-file>  (would it start? exit 0, else its refusal code; no side effects)
 # Worktree -> headless agent -> our own verify.sh -> push + PR with proof.
 # On a first failure the brief is re-queued for lane-guard to place on a free lane; a failed
-# attempt 2+ writes ~/ops/lanes/failures.tsv + NEEDS_CODY. No daemon, no DB.
+# attempt 2+ writes ~/ops/lanes/failures.tsv + NEEDS_CODY, unless its stop class is known-handled
+# (scripts/stop-rules.tsv; see auto_hold below): then the task is held in queue-hold/ and the rest
+# of the queue keeps dispatching. No daemon, no DB.
 # One writer per branch: $OPS/branches/<branch>.lock (plus the unit lock). Lane commits carry
 # a "Lane: <lane>/<agent>" trailer so one writer per branch can be audited from history.
 set -uo pipefail
@@ -138,6 +140,8 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
 # that fails every card fast. Each fast failure appends "<epoch> <task>" to $OPS/fast-fails.tsv; when
 # LANE_BREAKER_N (3) distinct tasks failed fast within LANE_BREAKER_WIN_S (900 s), we write $OPS/PAUSE
 # (honoured by lane-guard --preflight/--dispatch), add a NEEDS_CODY line, and stop chaining. Cody clears PAUSE.
+# A known-handled stop class (scripts/stop-rules.tsv) never reaches this ledger, so a handled stop can
+# never pause the queue for unrelated cards.
 # The call runs under the lanelib lock $OPS/dispatch-chain.lock (one chained dispatch at a time; we wait
 # up to ~10 s for it so a failover refill isn't lost). lane-guard takes its own $OPS/dispatch.lock.
 STOP_CLASS=run; UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE; CF="$OPS/chain-fails"
@@ -154,6 +158,26 @@ hold_retries() {  # move queued retries of this task to queue-hold/
     t=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area):' "$f" | head -1)
     [ "$(base_title "$t")" = "$bt" ] && QW --force --mv "$f" "$OPS/queue-hold/" >/dev/null && echo "$(date '+%F %T') $SLUG: held retry $(basename "$f") (runaway guard)" >> "$OPS/logs/dispatch-chain.log"
   done; }
+# Known-handled stop classes (#305): a stop whose class has a recorded handling rule is auto-held.
+# Its brief + queued retries go to $OPS/queue-hold/ (with "hold-reason: <rule>"), no NEEDS_CODY line
+# is written, PAUSE is never touched and the freed lane is refilled, so one handled stop can't idle
+# the other cards. A class with no rule still pages Cody exactly as before.
+# Rules: scripts/stop-rules.tsv ships the handled classes; $OPS/stop-rules.tsv adds Cody-recorded
+# ones and wins per class (STOP_RULES=<file> overrides the $OPS path, for tests).
+RUL=${STOP_RULES:-$OPS/stop-rules.tsv}; SHIP="$SD/stop-rules.tsv"
+stop_rule() {  # $1 stop class -> prints its recorded handling rule; rc 1 = unknown class (page Cody)
+  local r; r=$( { [ -f "$RUL" ] && [ "$RUL" != "$SHIP" ] && cat "$RUL"; [ -f "$SHIP" ] && cat "$SHIP"; } 2>/dev/null |
+    awk -F'\t' -v c="$1" '$1==c{print $2; exit}' ); [ -n "$r" ] || return 1
+  echo "$r"; }
+auto_hold() {  # $1 rule text: park this task for Cody, page nobody, keep the queue moving
+  local r=$1 qf; mkdir -p "$OPS/queue-hold"
+  hold_retries
+  if [ -n "$TASKF" ]; then qf=$(mktemp)
+    { cat "$TASKF"; printf '\nhold-reason: %s\n' "$r"; } > "$qf"
+    QW --no-check --dir "$OPS/queue-hold" --name "$ID-held.task" "$qf" >/dev/null 2>&1; rm -f "$qf"
+  else printf '# %s\nneeds: %s\nexpected_min: %s\n\nhold-reason: %s\n' "$TITLE" "${NEEDS:-none}" "${EXP:-60}" "$r" |
+    QW --no-check --dir "$OPS/queue-hold" --name "$ID-held.task" - >/dev/null 2>&1; fi
+  echo "$(date '+%F %T') $ID: auto-held (stop class '$STOP_CLASS' is known-handled); dispatch continues: $r" >> "$OPS/logs/dispatch-chain.log"; }
 fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-40 | sed 's/-$//')"
   for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
   if [ "$rc" = 0 ]; then rm -f "$f"; lock_drop "$OPS/chain-state.lock"; return 0; fi
@@ -164,6 +188,7 @@ fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z'
   [ -n "$FAST" ] && breaker "${f##*/}"; return 0; }
 breaker() {  # $1 task key of a fast failure; trips PAUSE on N distinct fast-failing tasks within the window
   local now d FF="$OPS/fast-fails.tsv"; now=$(date +%s)
+  stop_rule "$STOP_CLASS" >/dev/null && { echo "$(date '+%F %T') $SLUG: stop class '$STOP_CLASS' is known-handled; not counted (no PAUSE)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
   for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
   printf '%s\t%s\t%s\n' "$now" "$1" "$STOP_CLASS" >> "$FF"
   awk -F'\t' -v c=$(( now - ${LANE_BREAKER_WIN_S:-900} )) '$1>=c' "$FF" > "$FF.tmp" && mv "$FF.tmp" "$FF"
@@ -282,7 +307,8 @@ IDLE_S=${LANE_IDLE_S:-$(( ${LANE_IDLE_MIN:-12} * 60 ))}; RS=${LANE_RETRY_SLEEP:-
 #  - the same test fails LANE_WD_TESTFAIL_N (3) times in this attempt's log (go "--- FAIL: X", swift "✘ Test X()
 #    failed", XCTest "Test Case '-[C X]' failed", test-lanes/merge-queue "FAIL x", pytest "FAILED x").
 # Then: stop_agent (opencode-aware teardown) and a retry brief with "agent: <other>" (codex <-> opencode;
-# LANE_WD_ALT overrides) and a "## Watchdog" note. 0 disables a limit. Only attempt 1 is re-queued (stop rule).
+# LANE_WD_ALT overrides) and a "## Watchdog" note. 0 disables a limit. Only attempt 1 is re-queued (stop rule):
+# a later watchdog stop is stop class 'watchdog' (known-handled), so the brief is held instead of paging Cody.
 WDOG=""; wd_failname() { [ -f "$LOG" ] || return 1; tail -c +"${LOG0:-1}" "$LOG" 2>/dev/null | perl -ne '
     if (/--- FAIL: (\S+)/) { print "$1\n" } elsif (/✘ Test (\S+?)\(?\)? .*failed/) { print "$1\n" }
     elsif (/Test Case .-\[\S+ (\S+?)\]. failed/) { print "$1\n" } elsif (/^FAIL +(\S.*?)\s*$/) { print "$1\n" }
@@ -367,7 +393,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   # Whatever the outcome, end the session: the agent's group, then anything still running in the worktree
   # (a shared "opencode serve" spawns MCP servers and tools outside our group). A dead attempt must not keep running.
   pgrep -g "$AP" >/dev/null 2>&1 && stop_agent; reap_wt "$WT" "$LOG"; AP=""
-  [ -n "$WDOG" ] && { ev failed "$L" "watchdog: $WDOG"; continue; }
+  [ -n "$WDOG" ] && { STOP_CLASS=watchdog; ev failed "$L" "watchdog: $WDOG"; continue; }
   [ -n "$IDLE" ] && { ev failed "$L" "no commit (fast-fail: idle ${IDLE_S}s)"; continue; }
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
   [ -n "$(git -C "$WT" log --oneline "$START"..HEAD)" ] || { echo "agent made no commit" >> "$LOG"; ev failed "$L" "no commit"; continue; }
@@ -440,12 +466,18 @@ if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to 
       else ev failed "$L" "deferred retry write rejected: $(tr '\n' ' ' < "$QB.err" | cut -c1-200)"; fi
     elif QW --name "$(basename "$Q")" "$QB" >/dev/null 2>"$QB.err"; then ev requeued "$L" "failed on $L; brief back in queue ($Q)"
     else ev failed "$L" "requeue rejected: $(tr '\n' ' ' < "$QB.err" | cut -c1-200)"
+      if HR=$(stop_rule brief); then STOP_CLASS=brief   # brief error with a recorded rule: hold it, keep dispatching
+        auto_hold "$HR"; ev held "$STOP_CLASS" "$HR"; rm -f "$QB" "$QB.err"
+        echo "HELD after:$TRIED (brief error, known stop class '$STOP_CLASS') -> $OPS/queue-hold ($(basename "$RUL")); dispatch continues"; exit 1; fi
       echo "$(date '+%F %T') $ID: requeue of '$BT' rejected by queue-write: $(tr '\n' ' ' < "$QB.err")" >> "$OPS/NEEDS_CODY"; fi
     rm -f "$QB" "$QB.err"
   else ev requeued "$L" "failed on $L; already re-queued ($DUP)"; fi
   [ -n "$DEF" ] && { echo "DEFERRED after: $L -> $QD (unit is deferred by policy; not re-queued)"; exit 1; }
   echo "REQUEUED after: $L -> $OPS/queue (lane-guard dispatches it to a free lane)"; exit 1; fi
 ERR=$(tail -n 5 "$LOG" | tr '\t\n' '  ')
+if HR=$(stop_rule "$STOP_CLASS"); then   # known-handled class: hold the task, page nobody, keep dispatching (#305)
+  auto_hold "$HR"; ev held "$STOP_CLASS" "$HR"; BU verify "$SLUG" blocked
+  echo "HELD after:$TRIED (known stop class '$STOP_CLASS') -> $OPS/queue-hold ($(basename "$RUL")); dispatch continues"; exit 1; fi
 printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$TITLE" "${TRIED# }" "$ERR" "$LOG" >> "$OPS/failures.tsv"
 echo "$(date '+%F %T') $ID: $TITLE (lanes:$TRIED) log $LOG" >> "$OPS/NEEDS_CODY"
 BU verify "$SLUG" failed; BU drop "$SLUG" "abandoned: failed on$TRIED"; ev needs_cody "${TRIED# }" "$LOG"; echo "FAILED after:$TRIED -> $OPS/NEEDS_CODY"; exit 1

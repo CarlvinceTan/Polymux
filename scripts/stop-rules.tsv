@@ -1,0 +1,10 @@
+# Known-handled stop classes (Polymux #305): one "<class><TAB><handling rule>" per line.
+# A stop whose class is listed here is auto-held: run-lane.sh moves the task's brief and its queued
+# retries to $OPS/queue-hold/ with a "hold-reason:" line, writes no NEEDS_CODY line, never sets
+# PAUSE, and frees the lane so unrelated cards keep dispatching. Cody releases a task by moving its
+# brief back to $OPS/queue/ (fixing it first). A class that is NOT listed here still pages Cody.
+# These shipped rules always apply; $OPS/stop-rules.tsv (record a new handled class there) wins per
+# class, so no code change is needed to handle another class.
+# Two fields per rule, separated by a tab: <class> and <handling rule> (the rule goes into hold-reason:).
+watchdog	known false stop: the watchdog ended the attempt on a repeated test line (quoted or mutant output counts as a failure); retry on the other agent is the recorded handling
+brief	handled brief error: queue-write refused the brief, so the brief itself needs a fix before it can run
