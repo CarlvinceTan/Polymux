@@ -13,7 +13,7 @@ OPS=${LANES_HOME:-$HOME/ops/lanes}; WTR=${LANES_WT:-$HOME/code/wt}; mkdir -p "$O
 SLUG_REPO=$(repo_slug "$REPO"); HOST=$(hostname -s)
 ev() { printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$1" "${2:-}" "${3:-}" >> "$EV"; }
 cfg() { python3 "$SD/lanes.py" "$@"; }
-BU() { bash "$SD/board-update.sh" "$@" >> "${LOG:-$OPS/logs/$ID-board.log}" 2>&1 || true; }   # board; errors -> board_error event + lane log
+BU() { BOARD_REPO="$SLUG_REPO" BOARD_NUMBER="$BOARD" bash "$SD/board-update.sh" "$@" >> "${LOG:-$OPS/logs/$ID-board.log}" 2>&1 || true; }   # board; errors -> board_error event + lane log
 started() { [ -n "$STARTED" ] && return; { [ -n "$(git -C "$WT" log --oneline "$BASE"..HEAD 2>/dev/null)" ] || [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; } && { STARTED=1; BU start "$SLUG"; }; }  # first real output
 publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own branch proof-media/<id>
   local wt=$1 id=$2 idx c err ref="proof-media-$2-$(date +%Y%m%d%H%M%S)-$$" n=0; idx=$(mktemp)   # unique per run; never force
@@ -47,13 +47,21 @@ if [ "${1:-}" = "--verify-only" ]; then
 fi
 CHECK=""; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
 LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP=60; SCOPE=""
+REQUESTED=CarlvinceTan/polymux
 TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "issue: N" (GitHub issue on Project 3; legacy "card:" ids map through board-map.tsv), "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
+  REQUESTED=$(sed -n 's/^repo: *//p' "$TASK" | head -1); REQUESTED=${REQUESTED:-CarlvinceTan/polymux}
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
   BRANCH=$(sed -n 's/^branch: *//p' "$TASK" | head -1)
   WANT_AGENT=$(sed -n 's/^agent: *//p' "$TASK" | head -1 | tr -d ' ')   # watchdog retry: run only on this agent (codex|opencode|cursor)
-  TASK=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|agent):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
+  TASK=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|agent|repo):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
 fi
+REPO=$(cfg repo "$REQUESTED" path) || exit 5
+VERIFY=$(cfg repo "$REQUESTED" verify) || exit 5
+SETUP=$(cfg repo "$REQUESTED" setup) || exit 5
+BOARD=$(cfg repo "$REQUESTED" board) || exit 5
+SLUG_REPO=$REQUESTED
+[ -d "$REPO" ] || { echo "refusing: clone for '$REQUESTED' does not exist: $REPO"; exit 5; }
 # GitHub labels for the PR (type:/area: headers, else inferred; see brief_labels in lanelib.sh)
 LBF=${TASKF:-$(mktemp)}; [ -n "$TASKF" ] || printf '%s\n' "$TASK" > "$LBF"
 LABELS=$(brief_labels "$LBF" "$(basename "${TASKF:-inline}")"); [ -n "$TASKF" ] || rm -f "$LBF"
@@ -66,10 +74,13 @@ QW() { bash "$SD/queue-write.sh" "$@"; }   # every queue/queue-hold write goes t
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
 TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32 | sed 's/-*$//')   # '# SA1: x' -> sa1-x (no leading '-')
+PREFIX=""; if [ "$REQUESTED" != CarlvinceTan/polymux ]; then
+  PREFIX="${REQUESTED//\//-}-"; SLUG="$PREFIX$SLUG"
+fi
 ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
 prompt() { echo "Task: $TASK
 Rules: work only in this worktree. Never search or list outside it (no ls, find or grep above it; no \$HOME scans). Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
-'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
+'$VERIFY' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
 needs a test change (or a 'No-test-reason: ...' line in the commit). Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $START..HEAD' (this run's start commit $START; plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for $((IDLE_S / 60)) minutes is stopped. Never open a browser, a browser profile or any Grok Bot session. If you cannot make verify.sh pass, say why and stop."; }
@@ -146,12 +157,12 @@ base_title() { echo "$1" | sed -E 's/ \(attempt [0-9]+\)$//'; }
 deferred_hit() {  # $1 base title, $2 slug: print the $OPS/deferred/*.task (parked by policy, e.g. dogfood-first) that is this unit
   local f t st; for f in "$OPS"/deferred/*.task; do [ -f "$f" ] || continue
     st=$(basename "$f" .task | sed -E 's/^[0-9]+-+//; s/-retry(-[0-9]+)?$//')
-    t=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|queue-note):' "$f" | head -1)
+    t=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|repo|queue-note):' "$f" | head -1)
     { [ "$(base_title "$t")" = "$1" ] || [ "$st" = "$2" ]; } && { echo "$f"; return 0; }; done; return 1; }
 hold_retries() {  # move queued retries of this task to queue-hold/
   local f t bt; bt=$(base_title "$TITLE"); mkdir -p "$OPS/queue-hold"
   for f in "$OPS"/queue/*.task; do [ -f "$f" ] || continue
-    t=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area):' "$f" | head -1)
+    t=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|repo):' "$f" | head -1)
     [ "$(base_title "$t")" = "$bt" ] && QW --force --mv "$f" "$OPS/queue-hold/" >/dev/null && echo "$(date '+%F %T') $SLUG: held retry $(basename "$f") (runaway guard)" >> "$OPS/logs/dispatch-chain.log"
   done; }
 fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-40 | sed 's/-$//')"
@@ -238,7 +249,7 @@ cleanup_unit() {
 trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
-BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
+BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(BOARD_REPO="$SLUG_REPO" BOARD_NUMBER="$BOARD" bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""
 # No in-process failover (it stacked units onto busy lanes): one lane per run. On a first failure the
@@ -348,7 +359,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
     elif ! git -C "$REPO" merge-base --is-ancestor "origin/$B" "$(git -C "$WT" rev-parse HEAD)"; then
       ev failed "$L" "local $B and origin/$B have diverged; not force-pushing"; continue; fi
   fi
-  [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash "$SD/wt-setup.sh") >> "$LOG" 2>&1
+  [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash -c "$SETUP") >> "$LOG" 2>&1
   START=$(git -C "$WT" rev-parse HEAD)   # branch head at unit start: size, trailer and no-commit checks measure only this run's work
   OCS=""; WDOG=""; WD_HEAD=""; WD_T=""; LOG0=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 )); set -m; run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; set +m; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
   while kill -0 $AP 2>/dev/null; do sleep "${LANE_POLL:-30}"   # liveness = new commit/push/change, not log mtime
@@ -376,7 +387,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
     git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
-  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
+  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash -c "$VERIFY"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
     MISS=$(sed -n 's/^verify: INFRA missing toolchain: *//p' "$LOG" | tail -1)
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" infra "$L" "missing toolchain: ${MISS:-?} (task: $SLUG)" "$LOG" >> "$OPS/failures.tsv"
@@ -419,15 +430,15 @@ BT=$(base_title "$TITLE"); AT=$(echo "$TITLE" | sed -nE 's/.* \(attempt ([0-9]+)
 if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to place on a free lane
   QD="$OPS/queue"; mkdir -p "$QD"; DUP=""
   for f in "$QD"/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have re-queued it
-    [ "$(base_title "$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
+    [ "$(base_title "$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|repo):' "$f" | head -1)")" = "$BT" ] && DUP=$f; done
   for f in "$QD"/*.task "$OPS"/deferred/*.task; do [ -f "$f" ] || continue   # lane-guard --task-end may already have written the retry
-    t=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after):' "$f" | head -1)
+    t=$(grep -vE '^(unit|needs|scope|expected_min|card|branch|after|repo):' "$f" | head -1)
     case $f in "$OPS"/deferred/*) echo "$t" | grep -qE ' \(attempt [0-9]+\)$' || continue;; esac   # deferred/: only retries, not the parked brief
     [ "$(base_title "$t")" = "$BT" ] && DUP=$f; done
   DEF=$(deferred_hit "$BT" "$SLUG") && QD="$OPS/deferred"   # deferred by policy: park the retry beside it, never back in queue/
   if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)-$SLUG-retry.task"
     QB=$(mktemp); { echo "$BT (attempt 2)"; echo "needs: ${NEEDS:-none}"; echo "expected_min: $EXP"   # title first (queue-write rule)
-      [ -n "$TASKF" ] && grep -iE '^(unit|scope|card|issue|labels|after|type|area):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
+      [ -n "$TASKF" ] && grep -iE '^(unit|scope|card|issue|labels|after|type|area|repo):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
       [ -n "$WDOG" ] && echo "agent: $(wd_alt)"
       echo "$TASK" | tail -n +2
       [ -n "$WDOG" ] && printf '\n## Watchdog (attempt 1 on %s/%s stopped)\n%s. The previous agent looped; take a different approach.\nLast log lines:\n```\n%s\n```\n' "$L" "$(cfg lane "$L" agent)" "$WDOG" "$(tail -n 20 "$LOG" | sed 's/```//g')"; } > "$QB"

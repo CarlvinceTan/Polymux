@@ -9,7 +9,7 @@ check() { if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAILS=$((FAI
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/repo"; cd "$T/repo"
 git config user.name "Lane Test"; git config user.email lane@test.invalid
 mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup,board-update,queue-write}.sh "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
-cat > agents/lanes.toml <<'TOML'
+cat > agents/lanes.toml <<TOML
 max_builds = 1
 lock_dir = "~/ops/lanes/locks"
 sim_template = "polymux-template"
@@ -20,6 +20,11 @@ cmd = "true"
 [laneB]
 agent = "codex"
 cmd = "true"
+[repo."CarlvinceTan/polymux"]
+path = "$T/repo"
+verify = "bash scripts/verify.sh"
+setup = "bash scripts/wt-setup.sh"
+board = 3
 TOML
 printf '.build/\n' > .gitignore   # same ignore as the real repo: scratch homes stay invisible to git status
 echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
@@ -36,6 +41,33 @@ check "dry happy path exits 0" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK lan
 check "lane trailer present" 'git -C "$LANES_WT/laneA-happy-path" log -1 --format=%B | grep -q "^Lane: laneA/opencode"'
 check "committer names lane" 'git -C "$LANES_WT/laneA-happy-path" log -1 --format=%cn | grep -q "(laneA/opencode)"'
 check "unit + branch locks released" '! ls -d "$LANES_HOME"/units/*.lock "$LANES_HOME"/branches/*.lock 2>/dev/null | grep -q .'
+# Repo selection uses a separate clone, commands and project; unknown repos never run.
+git init -q --bare "$T/argus.git"; git clone -q "$T/origin.git" "$T/argus" 2>/dev/null
+git -C "$T/argus" checkout -q main; git -C "$T/argus" remote set-url origin "$T/argus.git"
+git -C "$T/argus" config user.name "Lane Test"; git -C "$T/argus" config user.email lane@test.invalid
+git -C "$T/argus" push -q origin main
+cat >> agents/lanes.toml <<TOML
+[repo."CarlvinceTan/argus"]
+path = "$T/argus"
+verify = "echo argus-verify > '$T/argus-verify'; mkdir -p .build/proof; echo unit-test-verified > .build/proof/level; echo verified > .build/proof/summary.md"
+setup = "echo argus-setup > '$T/argus-setup'"
+board = 2
+TOML
+check "default repo resolves clone, verify and Project 3" '[ "$(python3 scripts/lanes.py repo CarlvinceTan/polymux path)" = "$T/repo" ] && [ "$(python3 scripts/lanes.py repo CarlvinceTan/polymux verify)" = "bash scripts/verify.sh" ] && [ "$(python3 scripts/lanes.py repo CarlvinceTan/polymux board)" = 3 ]'
+AB=$(task 'Argus repo' ar1); printf 'repo: CarlvinceTan/argus\nissue: 42\n' >> "$AB"
+mkdir -p "$T/repobin"; cat > "$T/repobin/gh" <<'GH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$LANES_HOME/repo-gh.log"
+[ "$1 $2" != 'pr create' ] || echo https://github.com/CarlvinceTan/argus/pull/1
+exit 0
+GH
+chmod +x "$T/repobin/gh"
+OUT=$(PATH="$T/repobin:$PATH" LANE_SKIP_SETUP= LANE_NO_CHAIN=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$AB" 2>&1); RC=$?
+check "argus header selects clone, setup, verify and PR repo" '[ $RC = 0 ] && [ -f "$T/argus-setup" ] && [ -f "$T/argus-verify" ] && git -C "$T/argus" show-ref -q refs/heads/agent/CarlvinceTan-argus-argus-repo && grep -q "pr create.*-R CarlvinceTan/argus" "$LANES_HOME/repo-gh.log"'
+check "argus board is scoped to Project 2 and isolated state" 'grep -q "to project 2" "$LANES_HOME/repos/CarlvinceTan-argus/board.log" && [ "$(cat "$LANES_HOME/repos/CarlvinceTan-argus/cards/CarlvinceTan-argus-argus-repo" 2>/dev/null)" = 42 ]'
+UB=$(task 'Unknown repo' ar2); echo 'repo: stranger/missing' >> "$UB"
+OUT=$(LANE_NO_CHAIN=1 $RL --check laneA "$UB" 2>&1); RC=$?
+check "unknown repo rejected before claim or worktree" '[ $RC = 5 ] && echo "$OUT" | grep -q "Unknown repo.*stranger/missing" && [ ! -d "$LANES_WT/laneA-unknown-repo" ]'
 # 2 first failure -> brief back to queue/ as attempt 2 (no in-process failover); attempt 2 fails -> NEEDS_CODY
 OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Always fails' t2)" 2>&1); RC=$?
 RQ=$(ls "$LANES_HOME"/queue/*-always-fails-retry.task 2>/dev/null | head -1)
@@ -366,6 +398,11 @@ agent = "cursor"
 key = "main key"
 cmd = "$VB/fake-cursor"
 role = "fallback"
+[repo."CarlvinceTan/polymux"]
+path = "$T/repo"
+verify = "bash scripts/verify.sh"
+setup = "bash scripts/wt-setup.sh"
+board = 3
 TOML
 GT="LANES_TOML=$T/gate.toml PATH=$VB:$PATH"
 OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" CURSOR_API_KEY=main-should-not-leak $RL lane1 "$(task 'Gate lane1' g1)" 2>&1); RC=$?
@@ -396,6 +433,11 @@ mac_hosts = ["testmac"]
 [laneC]
 agent = "codex"
 cmd = "$CXC/codex"
+[repo."CarlvinceTan/polymux"]
+path = "$T/repo"
+verify = "bash scripts/verify.sh"
+setup = "bash scripts/wt-setup.sh"
+board = 3
 TOML
 : > "$T/codex.rec"
 OUT=$(env -u CODEX_HOME -u GH_CONFIG_DIR -u GIT_CONFIG_GLOBAL LANES_TOML="$T/codex.toml" REC="$T/codex.rec" LANE_NO_CHAIN=1 LANE_DRY=1 $RL laneC "$(task 'Codex home' cx1)" 2>&1); RC=$?

@@ -9,7 +9,7 @@ def load(text):  # minimal TOML subset (tables, key = "str"|int|bool); macOS pyt
     for line in text.splitlines():
         line = line.split(" #")[0].strip()
         if not line or line.startswith("#"): continue
-        if line.startswith("["): cur = cfg.setdefault(line.strip("[]"), {}); continue
+        if line.startswith("["): cur = cfg.setdefault(line.strip("[]").replace('"', ""), {}); continue
         k, v = (x.strip() for x in line.split("=", 1))
         v = {"true": True, "false": False}.get(v, v)
         (cur if cur is not None else cfg)[k] = ast.literal_eval(v) if isinstance(v, str) else v
@@ -30,6 +30,13 @@ def is_main(v):
 a = sys.argv[1:]
 if a[0] == "get": print(os.path.expanduser(str(cfg.get(a[1], ""))))
 elif a[0] == "list": v = cfg.get(a[1], []); print(" ".join(v if isinstance(v, list) else [str(v)]))
+elif a[0] == "repo":
+    r = cfg.get("repo." + a[1])
+    if not isinstance(r, dict):
+        sys.exit("Unknown repo '%s' in agents/lanes.toml" % a[1])
+    if not all(r.get(k) for k in ("path", "verify", "setup", "board")):
+        sys.exit("Incomplete repo config for '%s' in agents/lanes.toml" % a[1])
+    print(os.path.expanduser(str(r[a[2]])))
 elif a[0] == "lane":
     host = os.environ.get("LANES_HOST") or socket.gethostname().split(".")[0]
     l = cfg.get(a[1], {}); print(os.path.expanduser(str(l.get(a[2] + "@" + host, l.get(a[2], "")))))
@@ -44,13 +51,13 @@ elif a[0] == "mainkey":  # exit 0 if lane NAMEs key/account/env, or the callers 
 elif a[0] == "maxconc":  # per-lane concurrent run cap (0 = not set; lane-guard dispatches one per lane)
     l = cfg.get(a[1], {}); print(int(l.get("max_concurrent", 0)) if isinstance(l, dict) else 0)
 elif a[0] == "usable":  # run-lane gate: unknown, disabled or expired lanes never run
-    sys.exit(0 if isinstance(cfg.get(a[1]), dict) and usable(a[1]) else 1)
+    sys.exit(0 if not a[1].startswith("repo.") and isinstance(cfg.get(a[1]), dict) and usable(a[1]) else 1)
 elif a[0] == "primaries":  # dispatch rotation: primaries only; fallback lanes only if no primary is usable
-    names = [k for k, v in cfg.items() if isinstance(v, dict) and usable(k)]
+    names = [k for k, v in cfg.items() if isinstance(v, dict) and not k.startswith("repo.") and usable(k)]
     pri = [n for n in names if cfg[n].get("role") != "fallback"]
     print(" ".join(pri or names))
 elif a[0] == "order":
-    names = [k for k, v in cfg.items() if isinstance(v, dict) and usable(k)]
+    names = [k for k, v in cfg.items() if isinstance(v, dict) and not k.startswith("repo.") and usable(k)]
     # role = "fallback" lanes go last (reached only when primaries fail or are unusable).
     names = [n for n in names if cfg[n].get("role") != "fallback"] + [n for n in names if cfg[n].get("role") == "fallback"]
     # A requested first lane is honoured only if usable and primary: disabled lanes never run or receive failover.

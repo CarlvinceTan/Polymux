@@ -50,3 +50,15 @@ agent = "opencode"
 account = "default"
 cmd = "opencode"
 role = "primary"        # TEMP (live only): until lane3 max_concurrent=2 is confirmed working; then fallback
+
+[repo."CarlvinceTan/polymux"]
+path = "~/code/proj/Polymux"
+verify = "bash scripts/verify.sh"
+setup = "bash scripts/wt-setup.sh"
+board = 3
+
+[repo."CarlvinceTan/argus"]
+path = "~/code/proj/argus"
+verify = "bash scripts/verify.sh"
+setup = "bash scripts/wt-setup.sh"
+board = 2

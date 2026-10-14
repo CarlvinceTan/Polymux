@@ -22,7 +22,14 @@
 # Always exits 0; errors become board_error events (events.tsv + stdout for the lane log). Auth: gh's own.
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd); . "$SD/lanelib.sh"
-OPS=${LANES_HOME:-$HOME/ops/lanes}; mkdir -p "$OPS/cards" "$OPS/board"
+OPS=${LANES_HOME:-$HOME/ops/lanes}
+NUMBER=${BOARD_NUMBER:-3}
+if [ "${BOARD_REPO:-CarlvinceTan/polymux}" != CarlvinceTan/polymux ] && [ -z "${BOARD_SCOPED:-}" ]; then
+  BASE_OPS=$OPS; export BOARD_SCOPED=1; OPS="$OPS/repos/${BOARD_REPO//\//-}"
+  mkdir -p "$OPS"; [ ! -f "$BASE_OPS/BOARD_LIVE" ] || touch "$OPS/BOARD_LIVE"
+  [ -f "$BASE_OPS/BOARD_LIVE" ] || rm -f "$OPS/BOARD_LIVE"
+fi
+mkdir -p "$OPS/cards" "$OPS/board"
 BOARD_MAP=${BOARD_MAP:-$OPS/board-map.tsv}; REPO_SLUG=${BOARD_REPO:-CarlvinceTan/polymux}
 PROJ=${BOARD_PROJECT_ID:-PVT_kwHOCDGEdM4Bmy5s}
 : ${F_STATUS:=PVTSSF_lAHOCDGEdM4Bmy5szhlabM8}; : ${F_VER:=PVTSSF_lAHOCDGEdM4Bmy5szhlabeg}; : ${F_PR:=PVTF_lAHOCDGEdM4Bmy5szhlabjc}
@@ -107,20 +114,39 @@ issue_node() { local n; n=$(awk -F'\t' -v k="$1" '$2==k && $3!=""{print $3; exit
   [ -n "$n" ] && echo "$n"; }
 NAME="the issue #$ISSUE item"; [ -n "$ISSUE" ] || NAME="the PR item"
 if [ $DRY = 1 ]; then
-  [ -n "$PRURL" ] && log "DRY-RUN would add PR $PRURL to project 3 (Status 'In review')${ISSUE:+; PR field of #$ISSUE = $PRURL}"
+  [ -n "$PRURL" ] && log "DRY-RUN would add PR $PRURL to project $NUMBER (Status 'In review')${ISSUE:+; PR field of #$ISSUE = $PRURL}"
   if [ "$EVT" = start ]; then log "DRY-RUN would set Status of $NAME -> '$VAL' (only from Backlog/Proposals/empty)"
   else log "DRY-RUN would set $([ "$FID" = "$F_VER" ] && echo Verification || echo Status) of $NAME -> '$VAL'"; fi
   exit 0; fi
+if [ "$NUMBER" != 3 ] || [ "$REPO_SLUG" != CarlvinceTan/polymux ]; then
+  META=$(gql -f query='query($o:String!,$n:Int!){user(login:$o){projectV2(number:$n){id fields(first:100){nodes{... on ProjectV2Field{id name} ... on ProjectV2SingleSelectField{id name options{id name}}}}}}}' \
+    -f o="${REPO_SLUG%%/*}" -F n="$NUMBER") || { err "project $NUMBER lookup failed; nothing written"; exit 0; }
+  VALUES=$(printf '%s' "$META" | python3 -c '
+import json,sys
+p=json.load(sys.stdin)["data"]["user"]["projectV2"]
+f={x["name"]:x for x in p["fields"]["nodes"] if "name" in x}
+print(p["id"])
+for name in ("Status", "Verification", "PR"): print(f.get(name, {}).get("id", ""))
+for name in ("Status", "Verification"):
+ for o in f.get(name, {}).get("options", []): print(o["name"] + "\t" + o["id"])
+') || { err "invalid project $NUMBER metadata; nothing written"; exit 0; }
+  PROJ=$(echo "$VALUES" | sed -n '1p'); F_STATUS=$(echo "$VALUES" | sed -n '2p')
+  F_VER=$(echo "$VALUES" | sed -n '3p'); F_PR=$(echo "$VALUES" | sed -n '4p')
+  opt() { printf '%s\n' "$VALUES" | awk -F'\t' -v n="$1" 'NR>4 && $1==n{print $2; exit}'; }
+  case $EVT in verify) FID=$F_VER;; *) FID=$F_STATUS;; esac
+  [ -n "$PROJ" ] && [ -n "$FID" ] && [ -n "$(opt "$VAL")" ] && { [ -z "$PRURL" ] || [ -z "$ISSUE" ] || [ -n "$F_PR" ]; } || {
+    err "project $NUMBER lacks required fields/options; nothing written"; exit 0; }
+fi
 if [ -n "$PRURL" ]; then
   PN=$(gh pr view "$PRURL" --json id -q .id 2>/dev/null) && [ -n "$PN" ] || { err "PR node lookup failed ($PRURL); nothing written"; exit 0; }
   echo "$PN" > "$OPS/cards/$UNIT.pr"; PRNODE=$PN
-  R=$(add_item "$PN") || { err "adding the PR to project 3 failed"; exit 0; }
+  R=$(add_item "$PN") || { err "adding the PR to project $NUMBER failed"; exit 0; }
   [ "${R#*$'\t'}" = "In review" ] || set_select "${R%%$'\t'*}" "$F_STATUS" "$(opt "In review")" || err "PR item Status write failed"
-  log "PR item ${R%%$'\t'*} on project 3"
+  log "PR item ${R%%$'\t'*} on project $NUMBER"
   [ -n "$ISSUE" ] || exit 0; fi
 if [ -n "$ISSUE" ]; then NODE=$(issue_node "$ISSUE") || { err "issue #$ISSUE node lookup failed; nothing written"; exit 0; }
 else NODE=$PRNODE; fi
-R=$(add_item "$NODE") || { err "adding $NAME to project 3 failed; nothing written"; exit 0; }
+R=$(add_item "$NODE") || { err "adding $NAME to project $NUMBER failed; nothing written"; exit 0; }
 ITEM=${R%%$'\t'*}; CUR=${R#*$'\t'}
 [ -n "$PRURL" ] && { set_text "$ITEM" "$F_PR" "$PRURL" && log "wrote PR field: $PRURL" || err "PR field write failed"; }
 if [ "$FID" = "$F_STATUS" ] && [ "$CUR" = "$VAL" ]; then log "skip: Status already '$VAL'"
