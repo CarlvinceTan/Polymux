@@ -25,6 +25,7 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
         return PolymuxKit.Thread(id: id, agentID: members[0], title: direct == nil ? id : "",
                                  agentIDs: members)
     }
+    static func prompt(_ name: String) -> String { "\(name) keeps the workspace on track and reports back." }
     static func session() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [VerifyFixture.self]
@@ -35,11 +36,16 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         do {
             let data: Data
-            switch request.url?.lastPathComponent {
-            case "agents": data = try JSONEncoder().encode(Self.agents)
-            case "threads": data = try JSONEncoder().encode(Self.threads)
-            case "settings": data = try JSONEncoder().encode(Settings(appearance: "system", sidebarWidth: 360))
-            default: data = Data("{}".utf8)
+            if let agent = Self.agents.first(where: { $0.id == request.url?.lastPathComponent }) {
+                // The profile editors load an AgentProfile, not an empty object, in UI checks.
+                data = try JSONEncoder().encode(AgentProfile(agent: agent, prompt: Self.prompt(agent.name)))
+            } else {
+                switch request.url?.lastPathComponent {
+                case "agents": data = try JSONEncoder().encode(Self.agents)
+                case "threads": data = try JSONEncoder().encode(Self.threads)
+                case "settings": data = try JSONEncoder().encode(Settings(appearance: "system", sidebarWidth: 360))
+                default: data = Data("{}".utf8)
+                }
             }
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
                                            headerFields: ["Content-Type": "application/json"])!
