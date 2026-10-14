@@ -130,7 +130,7 @@ case $1 in
     if [ -z "$held" ]; then LN=$FREE; else log "dispatch: --free-lane $FREE ignored, lock held ($held)"; fi; fi
   PIN=""; [ -z "$FREE" ] && PIN=$LN; NSTART=0; NOLANE=""   # PIN: explicit lane argument -> fill only that lane's slots
   # pick_lane: next lane with a free slot (count < max_concurrent, recounted live) that preflight hasn't ruled out this pass
-  pick_lane(){ local l; for l in ${PIN:-$FREE $rot}; do echo "$NOLANE" | grep -qxF "$l" && continue
+  pick_lane(){ local l; for l in ${PIN:-$FREE $rot}; do printf '%s\n%s\n' "$NOLANE" "$REJECT" | grep -qxF "$l" && continue
       [ "$(lane_count "$l")" -lt "$(maxc "$l")" ] && { LN=$l; return 0; }; done; LN=""; return 1; }
   if [ -z "$LN" ]; then for l in $rot; do echo "$busy" | grep -qxF "$l" || { LN=$l; break; }; done; fi
   [ -n "$LN" ] || { log "dispatch: all lanes busy"; exit 0; }
@@ -149,9 +149,26 @@ case $1 in
     awk -v c=$((NOW-SW)) -v i="$id" '$1>=c&&$2==i{f=1}END{exit !f}' "$RCF" 2>/dev/null && { skip "refused by run-lane <${SW}s ago"; continue; }
     w=$(deps_ok "$f") || { log "dispatch: $id waits: after $w unmet; left in queue"; continue; }
     ensure_needs "$f" || log "dispatch: $id: could not insert default needs: line"
-    [ -n "$RCK" ] && { r=$("$RLB" --check "$LN" "$f" 2>&1 </dev/null); rc=$?; [ $rc = 0 ] || { skip "run-lane preflight refuses (rc $rc: $(echo "$r" | tail -1 | cut -c1-120))"; continue; }; }
-    while ! "$0" --preflight "$LN" "$id"; do   # lane-level (PAUSE, max_concurrent, lane-gate): no card can start on this lane
-      [ -f "$O/PAUSE" ] && exit 0; NOLANE="$NOLANE"$'\n'"$LN"; pick_lane || { log "dispatch: no free slot left (started $NSTART this pass)"; exit 0; }; done
+    REJECT=""
+    [ -n "$LN" ] || pick_lane || continue
+    while :; do
+      if [ -n "$RCK" ]; then
+        r=$("$RLB" --check "$LN" "$f" 2>&1 </dev/null); rc=$?
+        if [ "$rc" != 0 ]; then
+          if [ "$rc" = 5 ] && [ -z "$PIN" ] && echo "$r" | grep -q "^refusing: brief wants agent '"; then
+            log "dispatch: $id: $LN refuses agent pin; trying next lane"
+            REJECT="$REJECT"$'\n'"$LN"
+            pick_lane && continue
+          fi
+          REJECT=""; skip "run-lane preflight refuses (rc $rc: $(echo "$r" | tail -1 | cut -c1-120))"; continue 2
+        fi
+      fi
+      "$0" --preflight "$LN" "$id" && break
+      [ -f "$O/PAUSE" ] && exit 0
+      NOLANE="$NOLANE"$'\n'"$LN"
+      pick_lane || { REJECT=""; continue 2; }
+    done
+    REJECT=""
     br=$(sed -n 's/^branch: *//p' "$f" | head -1); mkdir -p "$Q/starting" "$Q/started" "$O/logs"; qmv "$f" "$Q/starting/" || exit 1; sf=$Q/starting/$id.task
     ev0=$(wc -l < "$O/events.tsv" 2>/dev/null || echo 0); rf0=$(cat "$RF" 2>/dev/null | wc -l | tr -d ' '); DLOG=$O/logs/dispatch-$id.log
     nohup "$RLB" "$LN" "$sf" ${br:+--branch "$br"} >> "$DLOG" 2>&1 </dev/null & pid=$!

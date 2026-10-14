@@ -54,4 +54,52 @@ OUT=$(bash "$T/guard.sh" --deps "$T/dependency.task")
 [[ "$OUT" = 'UNMET '* ]]; [ -s "$ANCESTRY_LOG" ]
 PASS=$((PASS+1))
 echo 'ok   merged-PR lookup accepts only numbers and falls back to ancestry'
+chmod +x "$T/guard.sh"
+cat > "$LANES_REPO/agents/lanes.toml" <<'TOML'
+mac_hosts = []
+[lane4]
+agent = "opencode"
+cmd = "true"
+[lane3]
+agent = "codex"
+cmd = "true"
+TOML
+cat > "$T/run-lane" <<'SH'
+#!/bin/bash
+if [ "$1" = --check ]; then
+  echo "$2" >> "$CHECK_LOG"
+  if [ "$2" = lane4 ] || [ "${REFUSE_ALL:-0}" = 1 ]; then
+    echo "refusing: brief wants agent 'codex', lane '$2' runs 'opencode'"
+    exit 5
+  fi
+  exit 0
+fi
+printf '%s\t%s\tstarted\t%s\taccepted\n' "$(date '+%F %T')" pinned "$1" pinned >> "$LANES_HOME/events.tsv"
+SH
+chmod +x "$T/run-lane"
+export RUN_LANE="$T/run-lane" CHECK_LOG="$T/checks" DISPATCH_WAIT=1
+for mode in fallback explicit exhausted; do
+  rm -f "$LANES_HOME/events.tsv" "$LANE_GUARD_STATE/last-lane"
+  : > "$CHECK_LOG"
+  printf '# Pinned\nneeds: none\nagent: codex\n' > "$LANES_HOME/queue/pinned.task"
+  export REFUSE_ALL=0
+  case "$mode" in
+    explicit) bash "$T/guard.sh" --dispatch lane4 >/dev/null;;
+    exhausted) REFUSE_ALL=1 bash "$T/guard.sh" --dispatch >/dev/null;;
+    fallback) bash "$T/guard.sh" --dispatch >/dev/null;;
+  esac
+  if [ "$mode" = fallback ]; then
+    [ "$(cat "$CHECK_LOG")" = $'lane4\nlane3' ]
+    [ ! -f "$LANES_HOME/queue/pinned.task" ]
+    [ -f "$LANES_HOME/queue/started/pinned.task" ]
+    [ "$(cat "$LANE_GUARD_STATE/last-lane")" = lane3 ]
+  else
+    [ -f "$LANES_HOME/queue/pinned.task" ]
+    [ ! -s "$LANES_HOME/events.tsv" ]
+    if [ "$mode" = explicit ]; then [ "$(cat "$CHECK_LOG")" = lane4 ]
+    else [ "$(cat "$CHECK_LOG")" = $'lane4\nlane3' ]; fi
+  fi
+  PASS=$((PASS+1))
+done
+echo 'ok   agent-pin refusal tries the next lane unless a lane is explicit'
 echo "test-lane-guard: $PASS passed, 0 failed"
