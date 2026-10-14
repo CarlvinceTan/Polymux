@@ -68,10 +68,12 @@ def scan(root, state, events):
             # Only migrate an unambiguous per-task line, or a single-task note.
             lines = [line for line in notes.splitlines() if task.name in line or task.stem in line]
             note = "\n".join(lines) if lines else notes if len(holds) == 1 else ""
-            refs = re.findall(r"(?:after:)?(pr|issue)[: #]+([1-9][0-9]*)\s+(merged|closed)", note, re.I)
-            refs = list(dict.fromkeys(refs))
-            if len(refs) == 1:
-                kind, number, status = refs[0]
+            note = note.strip()
+            expression = re.sub(r"^(?:" + re.escape(task.name) + "|" + re.escape(task.stem) + r"):?\s*", "", note)
+            expression = re.sub(r"^(?:hold until|release when|until|after)\s+", "", expression, flags=re.I)
+            ref = re.fullmatch(r"(?:after:)?(pr|issue)[: #]+([1-9][0-9]*)\s+(merged|closed)", expression, re.I)
+            if ref:
+                kind, number, status = ref.groups()
                 release = f"release: after:{kind.lower()}:{number} {status.lower()}"
                 if condition(release):
                     tmp = task.with_name("." + task.name + ".release")
@@ -82,6 +84,10 @@ def scan(root, state, events):
                     tmp.unlink()
                     if result.returncode == 0:
                         match = condition(release)
+                        notes = notes.replace(note, f"{task.name}: {release[9:]}")
+                        note_tmp = legacy.with_suffix(".tmp")
+                        note_tmp.write_text(notes)
+                        note_tmp.replace(legacy)
                         print(f"hold: migrated {task.name}: {release}")
         if not match:
             message = f"{task.name}: invalid or missing release condition; met=unknown"
@@ -117,7 +123,7 @@ def scan(root, state, events):
     else:
         (state / "holds-idle").unlink(missing_ok=True)
     if ready:
-        # Project item order is the priority order; preserve each brief's queue name.
+        # Priority field first, board order breaks ties.
         raw = gh("project", "item-list", "3", "--owner", "CarlvinceTan", "--limit", "1000", "--format", "json")
         try:
             items = json.loads(raw)["items"]
@@ -136,9 +142,12 @@ def scan(root, state, events):
             result = subprocess.run(["bash", str(Path(__file__).with_name("queue-write.sh")),
                                      "--mv", str(task), str(target)], stdout=subprocess.DEVNULL)
             if result.returncode == 0:
+                target.touch()
                 print(f"hold: released {task.name} -> {target.name}")
                 for prefix in ("hold-invalid-", "hold-met-"):
                     (state / (prefix + task.name)).unlink(missing_ok=True)
+            else:
+                print(f"hold: release failed for {task.name}; left held")
 
 
 if __name__ == "__main__":

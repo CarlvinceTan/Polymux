@@ -15,6 +15,8 @@
 #                                          row within 60 s ($O/refusals.tsv) = storm: stop + log; rotates lanes.py order over free lanes;
 #                                          passes --branch from a 'branch:' line; card -> starting/ -> started/ only once lock/events row seen (20s), else back to queue; drops queue entries whose task passed/started/is running (events.tsv, units/*.lock),
 #                                          else preflights (PAUSE, lane-gate) and starts ONE via run-lane.sh <lane> <file> (nohup), as Cody does.
+#   Holds use release: after:pr:N merged or after:issue:N closed, optionally followed by alert-only.
+#   Dispatch/stall migrate unambiguous RELEASE-WHEN.txt notes, release met holds in Project 3 order, and alert on idle holds.
 #   lane-guard --deps <task-file>...     dry check of after: deps (MET/UNMET), no dispatch.
 #   lane-guard --stall                     launchd 30 min: exits unless active (queue/ or a unit lock, no PAUSE); alerts once if no PR in 3h.
 #   lane-guard --queued | --progress
@@ -94,7 +96,8 @@ deps_ok(){ # $1 task file: every 'after:' ref must be met; gh results cached per
       [ $st -gt 1 ] && log "dispatch: $(basename "$1"): merge-base check for $n failed (rc $st); treating as unmet" >&2
       [ $st = 0 ] || { echo "$r"; return 1; };;
     *) log "dispatch: $(basename "$1"): unknown after ref '$r'; treating as unmet" >&2; echo "$r"; return 1;; esac; done; return 0; }
-holds(){ python3 "$(dirname "$0")/hold-release.py" "$O" "$ST" | while IFS= read -r line; do log "$line"; done; }
+holds(){ local helper="$(dirname "$0")/hold-release.py"; [ -f "$helper" ] || helper="$LANES_REPO/scripts/hold-release.py"
+  python3 "$helper" "$O" "$ST" | while IFS= read -r line; do log "$line"; done; }
 case $1 in
 --deps) DC=$(mktemp); trap 'rm -f "$DC" "$DC.f"' EXIT; shift   # dry check: are the after: deps of these task files met? never dispatches
   for f; do if w=$(deps_ok "$f"); then echo "MET    $(basename "$f")"; else echo "UNMET  $(basename "$f"): $w"; fi; done; exit 0;;
