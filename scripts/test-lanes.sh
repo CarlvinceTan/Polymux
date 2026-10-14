@@ -578,8 +578,13 @@ grep -v pull/103 "$LANES_HOME/results.tsv" > "$T/r.tsv"; cat "$T/r.tsv" > "$LANE
 git worktree remove --force "$LANES_WT/laneA-chat-lane-labels" 2>/dev/null
 # 34 plain titles: no code prefix reaches a GitHub title (plain_title + the run-lane PR create gh stub)
 PT() { ( . scripts/lanelib.sh; plain_title "$1" ); }
-check "plain_title: '# MN:', '# P0-208:', 'SB2 -', '[UI]' and 'word:' prefixes are stripped" '[ "$(PT "# MN: Stable tool names")" = "Stable tool names" ] && [ "$(PT "# P0-208: Require creds")" = "Require creds" ] && [ "$(PT "SB2 - User folders")" = "User folders" ] && [ "$(PT "[UI] Fix menu")" = "Fix menu" ] && [ "$(PT "Lanes: keep x")" = "keep x" ]'
+check "plain_title: '# MN:', '# P0-208:', 'SB2 -', '[UI]' and 'word:' prefixes are stripped" '[ "$(PT "# MN: Stable tool names")" = "Stable tool names" ] && [ "$(PT "# P0-208: Require creds")" = "Require creds" ] && [ "$(PT "SB2 - User folders")" = "User folders" ] && [ "$(PT "[UI] Fix menu")" = "Fix menu" ]'
 check "plain_title: a plain title is unchanged; over 70 chars is cut on a word boundary" '[ "$(PT "Stable tool names")" = "Stable tool names" ] && [ "$(PT "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff gggggggggg")" = "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff" ]'
+for title in "MCP tools via codemode" "API keys" "A plain title" "UI polish for the menu"; do
+  check "plain_title: '$title' stays unchanged" '[ "$(PT "$title")" = "$title" ]'
+done
+check "plain_title: capitalise after stripping a prefix" '[ "$(PT "Lanes: keep x")" = "Keep x" ]'
+check "plain_title: digit-bearing code tokens without punctuation are stripped" '[ "$(PT "SB2 keep x")" = "Keep x" ] && [ "$(PT "P0-208 keep x")" = "Keep x" ]'
 check "plain_title: a title that is only a code prefix is rejected" '! PT "# MN:" >/dev/null && ! PT "SB2 -" >/dev/null'
 printf '# MN: Stable tool names\nneeds: none\nexpected_min: 5\n' > "$T/pt.task"; rm -f "$T/prargs"
 OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/pt.task" --branch test/plain-title 2>&1); RC=$?
