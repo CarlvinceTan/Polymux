@@ -39,7 +39,7 @@ func TestMO1DataDirIsolation(t *testing.T) {
 	if err := s.DB.QueryRow(`SELECT count(*) FROM mcp_tokens`).Scan(&count); err != nil || count != 1 {
 		t.Fatal("credentials were duplicated")
 	}
-	_, other := mcpStore(t, t.TempDir())
+	otherStore, other := mcpStore(t, t.TempDir())
 	if got, err := other.Load(t.Context()); err != nil || got != nil {
 		t.Fatal("separate data directory inherited credentials")
 	}
@@ -48,6 +48,16 @@ func TestMO1DataDirIsolation(t *testing.T) {
 	}
 	if got, err := other.Load(t.Context()); err != nil || got == nil || got.Tokens.AccessToken != state.Tokens.AccessToken {
 		t.Fatal("separate data directory could not save independently")
+	}
+	var encrypted []byte
+	if err := s.DB.QueryRow(`SELECT state FROM mcp_tokens`).Scan(&encrypted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := otherStore.DB.Exec(`UPDATE mcp_tokens SET state=?`, encrypted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Load(t.Context()); err == nil {
+		t.Fatal("separate data directory decrypted transplanted credentials")
 	}
 }
 
