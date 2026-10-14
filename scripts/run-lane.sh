@@ -235,7 +235,7 @@ cleanup_unit() {
   [ -n "$OWN_WT" ] && unit_free "$WT" "$SLUG" "$(cfg get lock_dir)" "$LOG"
   return 0
 }
-trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; oc_end; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
+trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; declare -F oc_end >/dev/null && oc_end; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
 BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
@@ -300,7 +300,7 @@ wd_alt() { [ -n "${LANE_WD_ALT:-}" ] && { echo "$LANE_WD_ALT"; return; }; case $
 # log and $UL/oc_session; oc_end exports it next to the log, then ends it with "opencode session delete" (the
 # CLI has no abort; delete stops it on the server). The serve itself is never restarted. LANE_OC_CMD: test hook.
 OCS=""; OC_DONE=1; ocli() { perl -e 'alarm shift; exec @ARGV' "${LANE_OC_TIMEOUT:-20}" "${LANE_OC_CMD:-$(cfg lane "$L" cmd)}" "$@"; }
-oc_capture() { [ -z "${OC_DONE:-1}" ] && [ -z "$OCS" ] && [ "$(cfg lane "$L" agent 2>/dev/null)" = opencode ] && [ -n "${WT:-}" ] || return 0
+oc_capture() { [ -z "${OC_DONE-1}" ] && [ -z "$OCS" ] && [ "$(cfg lane "$L" agent 2>/dev/null)" = opencode ] && [ -n "${WT:-}" ] || return 0
   OCS=$( (cd "$WT" && ocli session list --format json -n 20) 2>/dev/null | python3 -c '
 import json,os,sys
 wt,since=sys.argv[1],int(sys.argv[2])*1000-5000; ds={wt,os.path.realpath(wt)}
@@ -310,7 +310,7 @@ ss=[x for x in ss if isinstance(x,dict) and x.get("directory") in ds and int(x.g
 ss.sort(key=lambda x:-int(x.get("created",0)))
 print(ss[0]["id"] if ss else "")' "$WT" "${T0:-0}")
   [ -n "$OCS" ] && { echo "opencode session: $OCS" >> "$LOG"; echo "$OCS" > "$UL/oc_session" 2>/dev/null; }; return 0; }
-oc_end() { [ -z "${OC_DONE:-1}" ] || return 0; oc_capture; [ -n "$OCS" ] || return 0
+oc_end() { [ -z "${OC_DONE-1}" ] || return 0; oc_capture; [ -n "$OCS" ] || return 0
   ocli session export "$OCS" > "$LOG.oc-$OCS.json" 2>/dev/null
   if ocli session delete "$OCS" >> "$LOG" 2>&1; then echo "opencode session $OCS ended on the shared serve (transcript: $LOG.oc-$OCS.json)" >> "$LOG"
   else echo "warn: could not end opencode session $OCS on the shared serve" >> "$LOG"; fi

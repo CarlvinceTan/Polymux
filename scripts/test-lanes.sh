@@ -601,6 +601,27 @@ check "opencode unit killed (TERM): session ended exactly once" 'grep -q "^sessi
 : > "$T/oc.log"
 OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Oc happy' oc3)" 2>&1); RC=$?
 check "opencode success ends its session exactly once" '[ $RC = 0 ] && [ "$(grep -c "session delete" "$T/oc.log")" = 1 ]'
+: > "$T/oc.log"
+task 'Oc interrupt' oc-int >/dev/null
+LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='sleep 300' python3 - "$T/oc-int.task" "$T/oc.log" <<'PYINT'
+import os,signal,subprocess,sys,time
+p = subprocess.Popen(['bash','scripts/run-lane.sh','laneA',sys.argv[1]],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+try:
+    for _ in range(100):
+        if 'session list' in open(sys.argv[2]).read():
+            break
+        time.sleep(.1)
+    p.send_signal(signal.SIGINT)
+    rc = p.wait(timeout=30)
+    sys.exit(0 if rc == 130 else 1)
+finally:
+    if p.poll() is None:
+        p.kill()
+        p.wait()
+PYINT
+RC=$?
+check "opencode interrupt ends its session exactly once" '[ $RC = 0 ] && [ "$(grep -c "session delete" "$T/oc.log")" = 1 ]'
 for mode in failure timeout; do
   : > "$T/oc.log"
   OC_STUB='exit 1'; OC_EXP=5
