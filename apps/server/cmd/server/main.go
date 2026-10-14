@@ -154,7 +154,7 @@ func run() error {
 		return err
 	}
 	defer closeStorage()
-	runtime, err := agentruntime.NewDurable(ctx, *dir, baseURL, model, key, agentruntime.Client{Headers: config.Headers, Session: config.Session}, storage)
+	runtime, err := agentruntime.NewDurable(ctx, *dir, baseURL, model, key, agentruntime.Client{Headers: config.Headers, Session: config.Session}, storage, config.Models...)
 	if err != nil {
 		return err
 	}

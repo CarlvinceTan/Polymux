@@ -12,10 +12,11 @@ import (
 )
 
 type modelConfig struct {
-	URL     string `json:"url"`
-	Model   string `json:"model"`
-	KeyEnv  string `json:"keyEnv"`
-	KeyFile string `json:"keyFile"`
+	URL     string   `json:"url"`
+	Model   string   `json:"model"`
+	Models  []string `json:"models"`
+	KeyEnv  string   `json:"keyEnv"`
+	KeyFile string   `json:"keyFile"`
 	// Headers are sent with every provider request; Session names one of them to carry a stable per-conversation value.
 	Headers map[string]string `json:"headers"`
 	Session string            `json:"sessionHeader"`
@@ -58,6 +59,26 @@ func loadModel(dir string) (modelConfig, error) {
 	if config.Model == "" {
 		config.Model = "openai/gpt-5.5"
 	}
+	if value, present := os.LookupEnv("POLYMUX_MODELS"); present {
+		config.Models = strings.Split(value, ",")
+	}
+	valid := regexp.MustCompile(`^[A-Za-z0-9._/:-]+$`)
+	if len(config.Models) > 32 {
+		return config, errors.New("invalid model configuration")
+	}
+	seen := make(map[string]bool)
+	models := []string{config.Model}
+	seen[config.Model] = true
+	for _, id := range config.Models {
+		if len(id) > 128 || !valid.MatchString(id) {
+			return config, errors.New("invalid model configuration")
+		}
+		if !seen[id] {
+			models = append(models, id)
+			seen[id] = true
+		}
+	}
+	config.Models = models
 	return config, nil
 }
 

@@ -38,13 +38,13 @@ type DurableRuntime struct {
 
 // NewDurable opens a durable harness over the given storage. Conversations, generations,
 // tools and usage are durable; Polymux's own session persistence stores the conversation id.
-func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Client, storage durable.Storage) (*DurableRuntime, error) {
+func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Client, storage durable.Storage, extra ...string) (*DurableRuntime, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
 	registry := harness.CreateRegistry()
 	opened, err := harness.OpenHarness(ctx, cacheHistory(storage), harness.HarnessOptions{
-		Models: durableModels(baseURL, key, model, client),
+		Models: durableModels(baseURL, key, model, client, extra...),
 		Settings: func() *harness.HarnessSettings {
 			return &harness.HarnessSettings{Compaction: &harness.CompactionPolicyPatch{
 				ReserveTokens: new(4096), KeepRecentTokens: new(4096), BackgroundTokens: new(0),
@@ -191,16 +191,27 @@ const DurableProvider = "polymux"
 const MaxRequestBytes = 128 << 10
 
 // durableModels registers Polymux's OpenAI-compatible endpoint with the durable models runtime.
-func durableModels(baseURL, key, model string, client Client) *ai.Models {
-	provider := ai.NewOpenAIProvider(ai.OpenAIConfig{BaseURL: baseURL, APIKey: key, Model: model, ProviderID: DurableProvider, ExtraHeaders: client.Headers})
+func durableModels(baseURL, key, model string, client Client, extra ...string) *ai.Models {
+	providers := make(map[string]ai.Provider)
+	var registered []*ai.Model
+	for _, id := range append([]string{model}, extra...) {
+		if _, exists := providers[id]; exists {
+			continue
+		}
+		providers[id] = ai.NewOpenAIProvider(ai.OpenAIConfig{BaseURL: baseURL, APIKey: key, Model: id, ProviderID: DurableProvider, ExtraHeaders: client.Headers})
+		registered = append(registered, &ai.Model{ID: id, Capabilities: ai.ModelCapabilities{ContextWindow: 16384}, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: baseURL}})
+	}
+	stream := func(ctx context.Context, selected *ai.Model, transcript ai.TranscriptContext, opts ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
+		return providers[selected.ID].Stream(ctx, transcript, opts)
+	}
 	models := ai.CreateModels()
 	models.SetProvider(&ai.ModelsProvider{
 		ID: DurableProvider, Name: DurableProvider, BaseURL: baseURL,
 		GetModels: func() ([]*ai.Model, error) {
-			return []*ai.Model{{ID: model, Capabilities: ai.ModelCapabilities{ContextWindow: 16384}, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: baseURL}}}, nil
+			return registered, nil
 		},
-		Stream:       passthrough(provider),
-		StreamSimple: passthrough(provider),
+		Stream:       stream,
+		StreamSimple: stream,
 		Auth: ai.ProviderAuth{APIKey: &ai.APIKeyAuth{Name: "Polymux key", Resolve: func(context.Context, ai.APIKeyAuthInput) (*ai.AuthResult, error) {
 			return &ai.AuthResult{Auth: ai.ModelAuth{APIKey: key}, Source: DurableProvider}, nil
 		}}},
