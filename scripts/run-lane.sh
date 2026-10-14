@@ -161,7 +161,8 @@ hold_retries() {  # move queued retries of this task to queue-hold/
 # Known-handled stop classes (#305): a stop whose class has a recorded handling rule is auto-held.
 # Its brief + queued retries go to $OPS/queue-hold/ (with "hold-reason: <rule>"), no NEEDS_CODY line
 # is written, PAUSE is never touched and the freed lane is refilled, so one handled stop can't idle
-# the other cards. A class with no rule still pages Cody exactly as before.
+# the other cards. A class with no rule still pages Cody exactly as before. The held event keeps the
+# usual row shape: lane in the lane column, "<class>: <rule>" in the message (lane-status.sh reads it).
 # Rules: scripts/stop-rules.tsv ships the handled classes; $OPS/stop-rules.tsv adds Cody-recorded
 # ones and wins per class (STOP_RULES=<file> overrides the $OPS path, for tests).
 RUL=${STOP_RULES:-$OPS/stop-rules.tsv}; SHIP="$SD/stop-rules.tsv"
@@ -467,7 +468,7 @@ if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to 
     elif QW --name "$(basename "$Q")" "$QB" >/dev/null 2>"$QB.err"; then ev requeued "$L" "failed on $L; brief back in queue ($Q)"
     else ev failed "$L" "requeue rejected: $(tr '\n' ' ' < "$QB.err" | cut -c1-200)"
       if HR=$(stop_rule brief); then STOP_CLASS=brief   # brief error with a recorded rule: hold it, keep dispatching
-        auto_hold "$HR"; ev held "$STOP_CLASS" "$HR"; rm -f "$QB" "$QB.err"
+        auto_hold "$HR"; ev held "$L" "$STOP_CLASS: $HR"; rm -f "$QB" "$QB.err"
         echo "HELD after:$TRIED (brief error, known stop class '$STOP_CLASS') -> $OPS/queue-hold ($(basename "$RUL")); dispatch continues"; exit 1; fi
       echo "$(date '+%F %T') $ID: requeue of '$BT' rejected by queue-write: $(tr '\n' ' ' < "$QB.err")" >> "$OPS/NEEDS_CODY"; fi
     rm -f "$QB" "$QB.err"
@@ -476,7 +477,7 @@ if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to 
   echo "REQUEUED after: $L -> $OPS/queue (lane-guard dispatches it to a free lane)"; exit 1; fi
 ERR=$(tail -n 5 "$LOG" | tr '\t\n' '  ')
 if HR=$(stop_rule "$STOP_CLASS"); then   # known-handled class: hold the task, page nobody, keep dispatching (#305)
-  auto_hold "$HR"; ev held "$STOP_CLASS" "$HR"; BU verify "$SLUG" blocked
+  auto_hold "$HR"; ev held "$L" "$STOP_CLASS: $HR"; BU verify "$SLUG" blocked
   echo "HELD after:$TRIED (known stop class '$STOP_CLASS') -> $OPS/queue-hold ($(basename "$RUL")); dispatch continues"; exit 1; fi
 printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$TITLE" "${TRIED# }" "$ERR" "$LOG" >> "$OPS/failures.tsv"
 echo "$(date '+%F %T') $ID: $TITLE (lanes:$TRIED) log $LOG" >> "$OPS/NEEDS_CODY"

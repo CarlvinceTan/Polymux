@@ -679,10 +679,12 @@ HQ=$(ls "$LANES_HOME"/queue-hold/*held-watch*.task 2>/dev/null | head -1)
 check "known stop class (watchdog): task held with its hold reason, no NEEDS_CODY, no failure row, no breaker entry" '[ $RC = 1 ] && grep -q "HELD after: laneA (known stop class .watchdog" <<< "$OUT" && [ -n "$HQ" ] && [ "$(head -1 "$HQ")" = "# Held watch (attempt 2)" ] && grep -q "^hold-reason: .*watchdog" "$HQ" && [ ! -f "$LANES_HOME/NEEDS_CODY" ] && ! grep -q "Held watch" "$LANES_HOME/failures.tsv" 2>/dev/null && grep -q "stop class .watchdog. is known-handled; not counted" "$CL" && ! grep -q watchdog "$LANES_HOME/fast-fails.tsv" 2>/dev/null'
 for k in $(seq 1 50); do grep -q -- "free-lane laneA" "$GLOG" 2>/dev/null && break; sleep 0.1; done
 check "known stop class: the lane is refilled (dispatch continues) and an unrelated card is untouched" 'grep -q "^--dispatch --free-lane laneA lock=no" "$GLOG" && [ -f "$LANES_HOME/queue/g35other.task" ] && ! ls "$LANES_HOME"/queue-hold/*other-card* >/dev/null 2>&1'
+check "held event (watchdog): lane column holds the lane, stop class in the message" 'awk -F"\t" -v L=laneA "\$3 ~ /^held\$/ && \$4 == L && \$5 ~ /^watchdog: / {n++} END {exit(n>0?0:1)}" "$LANES_HOME/events.tsv"'
 printf '# Held brief\nneeds: none\nexpected_min: 5\nafter: bogus\n' > "$T/g35hb.task"
 OUT=$(LANE_NO_CHAIN=1 LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL=laneA $RL laneA "$T/g35hb.task" 2>&1); RC=$?
 HB=$(ls "$LANES_HOME"/queue-hold/*held-brief*.task 2>/dev/null | head -1)
 check "known stop class (brief error): queue-write refusal holds the brief instead of paging Cody" '[ $RC = 1 ] && grep -q "HELD after: laneA (brief error, known stop class" <<< "$OUT" && [ -n "$HB" ] && grep -q "^hold-reason: .*brief" "$HB" && grep -qx "after: bogus" "$HB" && [ ! -f "$LANES_HOME/NEEDS_CODY" ] && ! ls "$LANES_HOME"/queue/*held-brief* >/dev/null 2>&1'
+check "held event (brief): lane column holds the lane, stop class in the message" 'awk -F"\t" -v L=laneA "\$3 ~ /^held\$/ && \$4 == L && \$5 ~ /^brief: / {n++} END {exit(n>0?0:1)}" "$LANES_HOME/events.tsv"'
 printf 'watchdog\toverridden rule for tests\n' > "$LANES_HOME/stop-rules.tsv"
 printf '# Held custom (attempt 2)\nneeds: none\nexpected_min: 5\n' > "$T/g35hc.task"
 OUT=$(LANE_NO_CHAIN=1 LANE_IDLE_S=999 LANE_WD_NOCOMMIT_S=3 LANE_STUB_CMD='while :; do echo x >> w.txt; sleep 0.3; done' $RL laneA "$T/g35hc.task" 2>&1)
