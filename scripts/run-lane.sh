@@ -207,18 +207,6 @@ lane_live() { local d p l n=0; for d in "$OPS"/units/*.lock; do [ -d "$d" ] || c
 # --check: run only the refusal rules (lane usable/main key above, dispatch guard, stop rule, unit lock,
 # lane max_concurrent cap) and exit 0 = would start,
 # else the same refusal code; no claim, no events, no intake row, no chain. lane-guard --dispatch uses it.
-if [ -n "$TASKF" ]; then
-  READY=$(bash "$SD/dispatch-guard.sh" --brief "$TASKF" "$REPO") || {
-    echo "$READY"
-    if [ -z "$CHECK" ]; then
-      STOP_CLASS=${READY%%:*}; mkdir -p "$OPS/queue-hold"
-      printf '\nhold-reason: %s\n' "$READY" >> "$TASKF"
-      QW --force --mv "$TASKF" "$OPS/queue-hold/" >/dev/null
-      breaker "$SLUG"
-    fi
-    exit 4
-  }
-fi
 if [ -n "$CHECK" ]; then DISPATCH_INTAKE=/dev/null bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" >/dev/null || { echo "refusing: dispatch-guard"; exit 4; }
 else trap 'rc=$?; refusal $rc; exit $rc' EXIT; trap 'SIGNALED=1; exit 143' TERM; trap 'SIGNALED=1; exit 130' INT
   bash "$SD/dispatch-guard.sh" "$UNIT" "$TARGET" || exit 4; fi

@@ -88,7 +88,7 @@ deps_ok(){ # $1 task file: every 'after:' ref must be met; gh results cached per
     branch-on-main:*) n=${r#branch-on-main:}; h=${n#origin/}; st=$(awk -v n="b:$h" '$1==n{print $2}' "$DC")   # squash-merged + deleted: a merged PR with head <b> counts
       if [ -z "$st" ]; then st=$(gh pr list -R CarlvinceTan/polymux --state merged --head "$h" --json number --limit 1 -q '.[0].number // "none"' 2>/dev/null) || st=ERROR; echo "b:$h ${st:-ERROR}" >> "$DC"; fi
       [ "$st" = ERROR ] && log "dispatch: $(basename "$1"): gh merged-PR lookup for $h failed; trying ancestry" >&2
-      case $st in ''|*[!0-9]*|0) ;; *) continue;; esac
+      case $st in ''|none|ERROR) ;; *) continue;; esac
       [ -f "$DC.f" ] || { git -C "$LANES_REPO" fetch -q origin 2>/dev/null || log "dispatch: git fetch failed" >&2; : > "$DC.f"; }
       git -C "$LANES_REPO" merge-base --is-ancestor "$n" origin/main 2>/dev/null; st=$?
       [ $st -gt 1 ] && log "dispatch: $(basename "$1"): merge-base check for $n failed (rc $st); treating as unmet" >&2
@@ -147,9 +147,7 @@ case $1 in
     nf=$(awk -F'\t' -v c="$CUT" -v b="$b" '$1>=c&&$7==b&&$4!=0' "$ST/tasks.tsv" | wc -l | tr -d ' ')
     { [ "$nf" -ge 2 ] || awk -F'\t' -v t="$t" -v b="$b" '$2==t||$2==b||$2==b" (attempt 2)"{f=1}END{exit !f}' "$O/failures.tsv" 2>/dev/null; } && { skip "at retry cap (failed twice)"; continue; }
     awk -v c=$((NOW-SW)) -v i="$id" '$1>=c&&$2==i{f=1}END{exit !f}' "$RCF" 2>/dev/null && { skip "refused by run-lane <${SW}s ago"; continue; }
-    w=$(bash "$LANES_REPO/scripts/dispatch-guard.sh" --brief "$f" "$LANES_REPO") || {
-      mkdir -p "$O/queue-hold"; printf '\nhold-reason: %s\n' "$w" >> "$f"
-      qmv "$f" "$O/queue-hold/"; log "dispatch: held $id: $w"; continue; }
+    w=$(deps_ok "$f") || { log "dispatch: $id waits: after $w unmet; left in queue"; continue; }
     ensure_needs "$f" || log "dispatch: $id: could not insert default needs: line"
     [ -n "$RCK" ] && { r=$("$RLB" --check "$LN" "$f" 2>&1 </dev/null); rc=$?; [ $rc = 0 ] || { skip "run-lane preflight refuses (rc $rc: $(echo "$r" | tail -1 | cut -c1-120))"; continue; }; }
     while ! "$0" --preflight "$LN" "$id"; do   # lane-level (PAUSE, max_concurrent, lane-gate): no card can start on this lane
