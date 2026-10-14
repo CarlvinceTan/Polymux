@@ -626,6 +626,28 @@ QD="$LANES_HOME/queue"; rm -f "$QD"/*.task; : > "$T/oc.log"
 OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_NOCOMMIT_S=3 LANE_STUB_CMD='while :; do echo x >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd nocommit' wd1)" 2>&1); RC=$?
 WQ=$(ls "$QD"/*wd-nocommit*-retry.task 2>/dev/null | head -1)
 check "watchdog: no commit within the limit -> stopped, opencode session ended, retry pinned to codex with a note" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "^## Watchdog" "$WQ" && grep -q "no new commit" "$WQ" && [ "$(head -1 "$WQ")" = "# Wd nocommit (attempt 2)" ] && grep -q "session delete ses_.*wd_nocommit" "$T/oc.log" && bash scripts/queue-write.sh --check "$WQ" >/dev/null'
+# A verifier from another checkout must load its own step recorder.
+mkdir -p "$T/foreign/scripts" "$T/foreign/.build" "$T/verify-bin"
+git init -q "$T/foreign"
+printf 'WT_NAME=foreign\nDD=unused\nSPM=unused\nSIM_UDID=unused\n' > "$T/foreign/.build/env"
+cp scripts/verify-result.sh "$T/foreign/scripts/"
+printf '#!/bin/bash\nexit 0\n' > "$T/foreign/scripts/test-readiness.sh"
+printf '#!/bin/bash\nexit 0\n' > "$T/verify-bin/xcrun"; chmod +x "$T/verify-bin/xcrun"
+mkdir -p "$T/verifier"; cp scripts/{verify,verify-step,lanelib}.sh scripts/lanes.py "$T/verifier/"
+printf '#!/bin/bash\necho "VT=affected GO_PKGS= SWIFT= APP=0 WHY=fixture"\n' > "$T/verifier/verify-targets.sh"
+printf '#!/bin/bash\nexit 0\n' > "$T/verifier/test-integrity.sh"
+OUT=$(cd "$T/foreign" && PATH="$T/verify-bin:$PATH" bash "$T/verifier/verify.sh" 2>&1); RC=$?
+check "foreign verifier works without checkout verify-step.sh" '[ $RC = 0 ] && echo "$OUT" | grep -q "verify: readiness-tests PASS" && ! echo "$OUT" | grep -q "command not found"'
+# Real command output counts; quoted agent stdout above remains ignored.
+mkdir -p "$T/test-bin"
+for tool in go swift xcodebuild; do
+  printf '#!/bin/bash\nprintf -- "--- FAIL: TestDirect (0.01s)\\n"\nexit 1\n' > "$T/test-bin/$tool"
+  chmod +x "$T/test-bin/$tool"
+  rm -f "$QD"/*.task
+  OUT=$(PATH="$T/test-bin:$PATH" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD="for i in 1 2 3; do $tool test; done; sleep 2; $STUB_OK" $RL laneA "$(task "Wd direct $tool" "wd-$tool")" 2>&1); RC=$?
+  WQ=$(ls "$QD"/*wd-direct-*-retry.task 2>/dev/null | head -1)
+  check "watchdog counts agent-launched $tool test failures" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -q "test .TestDirect. failed 3+ times" "$WQ"'
+done
 # Use verify's real recorder with a failing test process, without the full build setup.
 cat > "$T/test-step.sh" <<'STEP'
 #!/bin/bash
