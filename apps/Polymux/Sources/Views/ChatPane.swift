@@ -137,10 +137,16 @@ struct ChatPane: View {
                     Button("Close search", systemImage: "xmark", action: closeSearch)
                         .keyboardShortcut(.escape, modifiers: [])
                 } else {
-                    Button("Search conversation", systemImage: "magnifyingglass") { showSearch = true }
+                    Button { showSearch = true } label: {
+                        Image(systemName: "magnifyingglass")
+                            .frame(width: 24, height: 24)
+                            .padding(6)
+                            .glassEffect(.regular, in: Capsule())
+                    }
+                        .accessibilityLabel("Search conversation")
                         .keyboardShortcut("f", modifiers: .command)
                         .accessibilityIdentifier("header.search")
-                        .buttonStyle(.glass)
+                        .buttonStyle(.plain)
                 }
             }
             }
@@ -150,8 +156,16 @@ struct ChatPane: View {
                 if thread.isGroup { GroupEditor(thread: thread, session: session) }
                 else { AgentEditor(agent: agent, session: session) }
             }
-            .accessibilityIdentifier("header.profile")
-            .accessibilityValue(headerBudget)
+            .overlay(alignment: .bottom) {
+                #if DEBUG
+                if CommandLine.arguments.contains("--verify-fixture") {
+                    Text("Profile timing")
+                        .font(.caption2)
+                        .accessibilityIdentifier("header.profile")
+                        .accessibilityValue(headerBudget)
+                }
+                #endif
+            }
         }
         .task {
             store.isVisible = scenePhase == .active
