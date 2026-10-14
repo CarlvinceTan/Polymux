@@ -18,7 +18,6 @@ struct ChatPane: View {
     @State private var showSearch = false
     @State private var searchQuery = ""
     @State private var paneWidth: CGFloat = 720
-    @State private var toolbarHeight: CGFloat?
     @FocusState private var searchFocused: Bool
     @State private var showVoice = false
     @State private var voiceStore: (any VoiceSession)?
@@ -120,7 +119,15 @@ struct ChatPane: View {
                                   conversationID: thread.id, runs: store.runs,
                                   activity: store.activity, connected: store.isConnected,
                                   speakingID: showVoice && voiceStore?.phase == .speaking ? voiceStore?.agentID : nil,
-                                  height: toolbarHeight, edit: openProfile)
+                                  edit: openProfile)
+                        .opacity(showProfile ? 0.6 : 1)
+                        .onChange(of: showProfile) { _, shown in
+                            if shown, let profileTap {
+                                InstantUI.interval("HeaderFeedback", budget: InstantUI.feedbackBudget,
+                                                   trace: headerTrace, from: profileTap) {}
+                                headerBudget = headerTrace.meetsBudgets ? "met" : "miss"
+                            }
+                        }
                         .accessibilityHint(thread.isGroup ? "Edit chat" : "Edit \(agent.name)’s profile")
                 }
             }
@@ -133,7 +140,7 @@ struct ChatPane: View {
                     Button("Search conversation", systemImage: "magnifyingglass") { showSearch = true }
                         .keyboardShortcut("f", modifiers: .command)
                         .accessibilityIdentifier("header.search")
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { toolbarHeight = $0 }
+                        .buttonStyle(.glass)
                 }
             }
             }
@@ -145,13 +152,6 @@ struct ChatPane: View {
             }
             .accessibilityIdentifier("header.profile")
             .accessibilityValue(headerBudget)
-            .onAppear {
-                if let profileTap {
-                    InstantUI.interval("HeaderFeedback", budget: InstantUI.feedbackBudget,
-                                       trace: headerTrace, from: profileTap) {}
-                    headerBudget = headerTrace.meetsBudgets ? "met" : "miss"
-                }
-            }
         }
         .task {
             store.isVisible = scenePhase == .active

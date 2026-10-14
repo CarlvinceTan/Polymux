@@ -8,7 +8,6 @@ struct HeaderCapsule: View {
     var activity: ActivityStore?
     var connected = true
     var speakingID: String?
-    var height: CGFloat?
     let edit: () -> Void
     var body: some View {
         Button(action: edit) {
@@ -28,12 +27,9 @@ struct HeaderCapsule: View {
                 Text(title).lineLimit(1).truncationMode(.tail)
             }
             .font(.headline)
-            .padding(.horizontal, 8)
-            .frame(height: height)
             .contentShape(Capsule())
-            .glassEffect(.regular.interactive(), in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.glass)
         .accessibilityIdentifier("header.capsule")
         .accessibilityValue("\(min(3, members.count)) avatars")
     }

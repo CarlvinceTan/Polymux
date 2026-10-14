@@ -34,7 +34,7 @@ final class HeaderCapsuleUITests: XCTestCase {
             capture(app, name: "chief-" + theme)
             press(app.buttons["header.capsule"])
             XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 2))
-            XCTAssertEqual(app.descendants(matching: .any)["header.profile"].value as? String, "met")
+            XCTAssertEqual(app.scrollViews["header.profile"].value as? String, "met")
             capture(app, name: "profile-" + theme)
         }
     }
@@ -43,7 +43,7 @@ final class HeaderCapsuleUITests: XCTestCase {
         let app = open("t-chief", theme: "Light", stall: true)
         press(app.buttons["header.capsule"])
         XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 2))
-        XCTAssertEqual(app.descendants(matching: .any)["header.profile"].value as? String, "miss")
+        XCTAssertEqual(app.scrollViews["header.profile"].value as? String, "miss")
     }
 
     private func open(_ id: String, five: Bool = false, theme: String, stall: Bool = false) -> XCUIApplication {
