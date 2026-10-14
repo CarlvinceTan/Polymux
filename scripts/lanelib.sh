@@ -68,7 +68,7 @@ unit_free() {
 # out_has [grep -E opts] PATTERN: does stdin have a matching line? Reads ALL of stdin first, so the writer
 # never gets SIGPIPE. (`cmd | grep -q` under pipefail returns 141 when grep exits early on a long output.)
 out_has() { local s; s=$(cat); grep -qE "$@" <<< "$s"; }
-lane_files_changed() { git diff --name-only "$1"...HEAD | out_has '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write)\.sh|scripts/(lanes|media-check|verdict)\.py|agents/lanes\.toml)$'; }
+lane_files_changed() { git diff --name-only "$1"...HEAD | out_has '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write|lane-guard|test-lane-guard)\.sh|scripts/(lanes|media-check|verdict|hold-release|test-hold-release)\.py|agents/lanes\.toml)$'; }
 # test-lanes.sh to run: the checkout under test (a PR's own worktree in --verify-only), else ours.
 lane_tests_path() { if [ -f "$1/scripts/test-lanes.sh" ]; then echo "$1/scripts/test-lanes.sh"; else echo "$2/test-lanes.sh"; fi; }
 branch_lock_dir() { echo "${LANES_HOME:-$HOME/ops/lanes}/branches/$(echo "$1" | tr '/' '%').lock"; }
@@ -163,3 +163,16 @@ reap_wt() { local p k left; p=$(wt_pids "$1") || return 0; [ -n "$p" ] || return
   for k in $(seq 1 $(( ${LANE_KILL_WAIT:-10} * 10 ))); do left=""; for x in $p; do kill -0 "$x" 2>/dev/null && left="$left $x"; done
     [ -z "$left" ] && return 0; sleep 0.1; done
   kill -KILL $left 2>/dev/null; echo "reap: KILL after ${LANE_KILL_WAIT:-10}s:$left" >> "${2:-/dev/null}"; }
+
+plain_text() { perl -pe 's/\e\][^\a\e]*(?:\a|\e\\)//g; s/\e\[[0-?]*[ -\/]*[@-~]//g'; }
+brief_title() {
+  plain_text < "$1" | awk '/^# / { print; found=1; exit } NR==1 { first=$0 } END { if (!found) print first }' |
+    sed -E 's/^#+[[:space:]]*//; s/[[:space:]]*\(attempt [0-9]+\)[[:space:]]*$//; s/[[:space:]]+att[0-9]+[[:space:]]*$//; s/^[A-Z]+[0-9]+:[[:space:]]*//; s/[[:space:]]+$//'
+}
+brief_link() {
+  local issue verb=Closes
+  issue=$(sed -nE 's/^[Ii]ssue:[[:space:]]*#?([0-9]+)[[:space:]]*$/\1/p' "$1" | head -1)
+  [ -n "$issue" ] || return 0
+  grep -qiE '^partial:[[:space:]]*(true|yes|1|slice)[[:space:]]*$|^slice:[[:space:]]*partial[[:space:]]*$|\bpartial slice\b' "$1" && verb=Refs
+  printf '%s #%s\n' "$verb" "$issue"
+}

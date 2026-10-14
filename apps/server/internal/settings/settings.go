@@ -15,7 +15,52 @@ import (
 
 var ErrInvalid = errors.New("invalid settings")
 
+type Model struct {
+	ID      string   `json:"id"`
+	Tags    []string `json:"tags"`
+	Enabled bool     `json:"enabled"`
+}
+
+type Provider struct {
+	ID            string            `json:"id"`
+	Type          string            `json:"type"`
+	Name          string            `json:"name"`
+	BaseURL       string            `json:"baseURL"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	SessionHeader string            `json:"sessionHeader,omitempty"`
+	Enabled       bool              `json:"enabled"`
+	Order         int               `json:"order"`
+	Models        []Model           `json:"models"`
+}
+
+// cloneProviders copies through JSON, so callers never alias stored or caller state.
+func cloneProviders(providers []Provider) []Provider {
+	data, _ := json.Marshal(providers)
+	var cloned []Provider
+	_ = json.Unmarshal(data, &cloned)
+	return cloned
+}
+
+func (s *Store) Providers() []Provider {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneProviders(s.data.Providers)
+}
+
+func (s *Store) SetProviders(providers []Provider) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.data
+	d.Providers = cloneProviders(providers)
+	if err := s.save(d); err != nil {
+		return err
+	}
+	s.data = d
+	return nil
+}
+
 type document struct {
+	Providers []Provider        `json:"providers,omitempty"`
 	Settings  contract.Settings `json:"settings"`
 	GeminiKey string            `json:"geminiKey,omitempty"`
 }
