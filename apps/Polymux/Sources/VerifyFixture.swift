@@ -28,6 +28,28 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
     }
     private static let answers = Answers()
 
+    private static var toolEvents: [Event] {
+        let date = "2026-10-14T12:00:00Z"
+        let tools = [
+            ToolActivity(id: "bash", runID: "tool-run", name: "bash", status: "completed",
+                         summary: "go test ./...", output: "ok polymux 0.2s"),
+            ToolActivity(id: "read-1", runID: "tool-run", name: "read", status: "completed", summary: "one.swift"),
+            ToolActivity(id: "read-2", runID: "tool-run", name: "read", status: "completed", summary: "two.swift"),
+            ToolActivity(id: "read-3", runID: "tool-run", name: "read", status: "completed", summary: "three.swift"),
+            ToolActivity(id: "edit", runID: "tool-run", name: "edit", status: "completed", summary: "ChatPane.swift"),
+            ToolActivity(id: "failed", runID: "tool-run", name: "bash", status: "failed",
+                         summary: "false", output: "Command exited with status 1\n[redacted]")
+        ]
+        let run = Run(id: "tool-run", conversationID: "t-chief", trigger: "message", tools: tools,
+                      attempt: 1, seq: 1, createdAt: date, updatedAt: date, activity: "generating",
+                      agentID: "t-chief", status: "completed", summary: "Checked the project")
+        let message = Message(runID: run.id, id: "tool-message", threadID: "t-chief", role: "assistant",
+                              parts: [Part(kind: "text", text: "Checked the project and edited ChatPane.swift.")],
+                              createdAt: date, status: "completed", seq: 2, agentID: "t-chief")
+        return [Event(seq: 1, conversationID: "t-chief", type: "run.done", createdAt: date, run: run),
+                Event(seq: 2, conversationID: "t-chief", type: "message.done", message: message, createdAt: date)]
+    }
+
     static func failAnswers() { answers.fail() }
 
     static func session() -> URLSession {
@@ -38,6 +60,13 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        if CommandLine.arguments.contains("--verify-tools"), request.url?.lastPathComponent == "stream" {
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                           headerFields: ["Content-Type": "text/event-stream"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(": connected\n\n".utf8))
+            return
+        }
         if request.url?.lastPathComponent == "answer" {
             Self.answers.add(self)
             return
@@ -47,7 +76,15 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
             switch request.url?.lastPathComponent {
             case "agents": data = try JSONEncoder().encode(Self.agents)
             case "threads": data = try JSONEncoder().encode(Self.threads)
-            case "settings": data = try JSONEncoder().encode(Settings(appearance: "system", sidebarWidth: 360))
+            case "settings":
+                let theme = CommandLine.arguments.contains("--verify-tools")
+                    ? (CommandLine.arguments.contains("--tools-dark") ? "dark" : "light") : "system"
+                data = try JSONEncoder().encode(Settings(appearance: theme, sidebarWidth: 360))
+            case "events" where CommandLine.arguments.contains("--verify-tools"):
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+                let after = Int64(query?.first { $0.name == "after" }?.value ?? "0") ?? 0
+                let events = request.url!.path.contains("/t-chief/") ? Self.toolEvents.filter { $0.seq > after } : []
+                data = try JSONEncoder().encode(events)
             default: data = Data("{}".utf8)
             }
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,

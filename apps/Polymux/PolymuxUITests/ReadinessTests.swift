@@ -18,6 +18,36 @@ final class ReadinessTests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testToolRows() {
+        for theme in ["light", "dark"] {
+            let app = XCUIApplication()
+            app.launchEnvironment["POLYMUX_DATA_DIR"] = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"]
+            app.launchArguments = ["--verify-fixture", "--verify-tools"] + (theme == "dark" ? ["--tools-dark"] : [])
+            for replay in [false, true] {
+                app.launch()
+                #if os(macOS)
+                app.activate()
+                #endif
+                let chief = app.descendants(matching: .any)["sidebar.row.t-chief"].firstMatch
+                XCTAssertTrue(chief.waitForExistence(timeout: 10))
+                press(chief)
+                let bash = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Ran go test ./...'")).firstMatch
+                XCTAssertTrue(bash.waitForExistence(timeout: 10))
+                XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'Read 3 files'")).firstMatch.exists)
+                XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'Edited ChatPane.swift'")).firstMatch.exists)
+                XCTAssertFalse(app.staticTexts["go test ./...\nok polymux 0.2s"].exists)
+                capture(app, theme: theme, state: "tools-\(replay ? "replay" : "before")")
+                press(bash)
+                XCTAssertTrue(app.staticTexts["go test ./...\nok polymux 0.2s"].waitForExistence(timeout: 2))
+                let failed = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Ran false'")).firstMatch
+                press(failed)
+                XCTAssertTrue(app.staticTexts["false\nCommand exited with status 1\n[redacted]"].waitForExistence(timeout: 2))
+                capture(app, theme: theme, state: "tools-after-\(replay)")
+                app.terminate()
+            }
+        }
+    }
+
     func testApprovalStates() {
         for theme in ["light", "dark"] {
             let app = XCUIApplication()
