@@ -344,3 +344,34 @@ func TestToolRunsSurviveNewerTurns(t *testing.T) {
 		}
 	}
 }
+
+func TestCancelledToolHistory(t *testing.T) {
+	s := runStore(t)
+	run := NewRun("cancel", "a", "a", "message")
+	run.Status = "running"
+	run.Tools = []contract.ToolActivity{
+		{ID: "done", RunID: run.ID, Name: "read", Status: "completed"},
+		{ID: "failed", RunID: run.ID, Name: "bash", Status: "failed", Output: ptr("failure excerpt")},
+		{ID: "active", RunID: run.ID, Name: "bash", Status: "running"},
+	}
+	if err := s.RunEvent(t.Context(), "run.start", &run, nil); err != nil { t.Fatal(err) }
+	if _, err := s.StopRuns(t.Context(), "a"); err != nil { t.Fatal(err) }
+	stored, err := s.Run(t.Context(), run.ID)
+	if err != nil { t.Fatal(err) }
+	if len(stored.Tools) != 3 { t.Fatalf("cancel snapshot: %d rows, want 3", len(stored.Tools)) }
+	for i, status := range []string{"completed", "failed", "cancelled"} {
+		if stored.Tools[i].Status != status { t.Errorf("row %d: %s, want %s", i, stored.Tools[i].Status, status) }
+	}
+	if stored.Tools[1].Output == nil || *stored.Tools[1].Output != "failure excerpt" { t.Fatal("failed excerpt lost") }
+	events, err := s.Events(t.Context(), "a", 0, 100)
+	if err != nil { t.Fatal(err) }
+	done := 0
+	for _, event := range events {
+		if event.Type == "tool.done" {
+			done++
+			if event.Tool.ID != "active" || event.Tool.Status != "cancelled" { t.Errorf("finished row rewritten: %+v", event.Tool) }
+		}
+		if event.Type == "run.done" && len(event.Run.Tools) != 3 { t.Errorf("cancel replay: %d rows, want 3", len(event.Run.Tools)) }
+	}
+	if done != 1 { t.Errorf("tool.done events: %d, want 1", done) }
+}
