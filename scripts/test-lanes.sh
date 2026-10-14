@@ -41,51 +41,6 @@ check "dry happy path exits 0" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK lan
 check "lane trailer present" 'git -C "$LANES_WT/laneA-happy-path" log -1 --format=%B | grep -q "^Lane: laneA/opencode"'
 check "committer names lane" 'git -C "$LANES_WT/laneA-happy-path" log -1 --format=%cn | grep -q "(laneA/opencode)"'
 check "unit + branch locks released" '! ls -d "$LANES_HOME"/units/*.lock "$LANES_HOME"/branches/*.lock 2>/dev/null | grep -q .'
-# Repo selection uses a separate clone, commands and project; unknown repos never run.
-git init -q --bare "$T/argus.git"; git clone -q "$T/origin.git" "$T/argus" 2>/dev/null
-git -C "$T/argus" checkout -q main; git -C "$T/argus" remote set-url origin "$T/argus.git"
-git -C "$T/argus" config user.name "Lane Test"; git -C "$T/argus" config user.email lane@test.invalid
-git -C "$T/argus" push -q origin main
-cat >> agents/lanes.toml <<TOML
-[repo."CarlvinceTan/argus"]
-path = "$T/argus"
-verify = "echo argus-verify > '$T/argus-verify'; mkdir -p .build/proof; echo unit-test-verified > .build/proof/level; echo verified > .build/proof/summary.md"
-setup = "echo argus-setup > '$T/argus-setup'"
-board = 2
-TOML
-check "default repo resolves clone, verify and Project 3" '[ "$(python3 scripts/lanes.py repo CarlvinceTan/polymux path)" = "$T/repo" ] && [ "$(python3 scripts/lanes.py repo CarlvinceTan/polymux verify)" = "bash scripts/verify.sh" ] && [ "$(python3 scripts/lanes.py repo CarlvinceTan/polymux board)" = 3 ]'
-AB=$(task 'Argus repo' ar1); printf 'repo: CarlvinceTan/argus\nissue: 42\n' >> "$AB"
-mkdir -p "$T/repobin"; cat > "$T/repobin/gh" <<'GH'
-#!/bin/bash
-printf '%s\n' "$*" >> "$LANES_HOME/repo-gh.log"
-[ "$1 $2" != 'pr create' ] || echo https://github.com/CarlvinceTan/argus/pull/1
-exit 0
-GH
-chmod +x "$T/repobin/gh"
-OUT=$(PATH="$T/repobin:$PATH" LANE_SKIP_SETUP= LANE_NO_CHAIN=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$AB" 2>&1); RC=$?
-check "argus header selects clone, setup, verify and PR repo" '[ $RC = 0 ] && [ -f "$T/argus-setup" ] && [ -f "$T/argus-verify" ] && git -C "$T/argus" show-ref -q refs/heads/agent/CarlvinceTan-argus-argus-repo && grep -q "pr create.*-R CarlvinceTan/argus" "$LANES_HOME/repo-gh.log"'
-check "argus board is scoped to Project 2 and isolated state" 'grep -q "to project 2" "$LANES_HOME/repos/CarlvinceTan-argus/board.log" && [ "$(cat "$LANES_HOME/repos/CarlvinceTan-argus/cards/CarlvinceTan-argus-argus-repo" 2>/dev/null)" = 42 ]'
-# A live board write resolves Project 2 fields and never sends Project 3 identifiers.
-cat > "$T/repobin/gh" <<'GH'
-#!/bin/bash
-printf '%s\n' "$*" >> "$LANES_HOME/repo-live.log"
-case "$*" in
-  *'projectV2(number:'*) echo '{"data":{"user":{"projectV2":{"id":"ARGUS_PROJECT","fields":{"nodes":[{"id":"ARGUS_STATUS","name":"Status","options":[{"id":"ARGUS_PROGRESS","name":"In progress"}]}]}}}}}' ;;
-  *'repository(owner:'*) echo ARGUS_ISSUE ;;
-  *addProjectV2ItemById*) printf 'ARGUS_ITEM\tBacklog\n' ;;
-esac
-GH
-touch "$LANES_HOME/BOARD_LIVE"
-PATH="$T/repobin:$PATH" BOARD_REPO=CarlvinceTan/argus BOARD_NUMBER=2 bash scripts/board-update.sh start CarlvinceTan-argus-argus-repo
-rm "$LANES_HOME/BOARD_LIVE"
-check "argus live board uses Project 2 metadata and its field/options" 'grep -q "n=2" "$LANES_HOME/repo-live.log" && grep -q "p=ARGUS_PROJECT.*f=ARGUS_STATUS.*o=ARGUS_PROGRESS" "$LANES_HOME/repo-live.log" && ! grep -q "PVT_kwHOCDGEdM4Bmy5s" "$LANES_HOME/repo-live.log"'
-FB=$(task 'Argus retry' ar3); echo 'repo: CarlvinceTan/argus' >> "$FB"
-OUT=$(LANE_NO_CHAIN=1 LANE_FORCE_FAIL=laneA $RL laneA "$FB" 2>&1)
-check "argus retry retains repo header" 'grep -qx "repo: CarlvinceTan/argus" "$LANES_HOME"/queue/*-CarlvinceTan-argus-argus-retry-retry.task'
-rm -f "$LANES_HOME"/queue/*-CarlvinceTan-argus-argus-retry-retry.task
-UB=$(task 'Unknown repo' ar2); echo 'repo: stranger/missing' >> "$UB"
-OUT=$(LANE_NO_CHAIN=1 $RL --check laneA "$UB" 2>&1); RC=$?
-check "unknown repo rejected before claim or worktree" '[ $RC = 5 ] && echo "$OUT" | grep -q "Unknown repo.*stranger/missing" && [ ! -d "$LANES_WT/laneA-unknown-repo" ]'
 # 2 first failure -> brief back to queue/ as attempt 2 (no in-process failover); attempt 2 fails -> NEEDS_CODY
 OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Always fails' t2)" 2>&1); RC=$?
 RQ=$(ls "$LANES_HOME"/queue/*-always-fails-retry.task 2>/dev/null | head -1)
@@ -154,6 +109,52 @@ check "scope: nested + deleted inside scope pass" 'SC "apps/**,*.md,README" >/de
 check "scope: deleted file outside scope fails" '! SC "apps/**,*.md" >/dev/null && grep -q "outside scope: README" <<< "$(SC "apps/**,*.md")"'
 check "scope: *.md matches nested docs/n.md despite TOP.md existing" '! grep -q docs/n.md <<< "$(SC "apps/**,*.md,README")"'
 git checkout -q main
+# Repo selection uses a separate clone, commands and project; unknown repos never run.
+git init -q --bare "$T/argus.git"; git clone -q "$T/origin.git" "$T/argus" 2>/dev/null
+git -C "$T/argus" checkout -q main; git -C "$T/argus" remote set-url origin "$T/argus.git"
+git -C "$T/argus" config user.name "Lane Test"; git -C "$T/argus" config user.email lane@test.invalid
+git -C "$T/argus" push -q origin main
+cat >> agents/lanes.toml <<TOML
+[repo."CarlvinceTan/argus"]
+path = "$T/argus"
+verify = "echo argus-verify > '$T/argus-verify'; mkdir -p .build/proof; echo unit-test-verified > .build/proof/level; echo verified > .build/proof/summary.md"
+setup = "echo argus-setup > '$T/argus-setup'"
+board = 2
+TOML
+check "default repo resolves clone, verify and Project 3" '[ "$(python3 scripts/lanes.py repo CarlvinceTan/polymux path)" = "$T/repo" ] && [ "$(python3 scripts/lanes.py repo CarlvinceTan/polymux verify)" = "bash scripts/verify.sh" ] && [ "$(python3 scripts/lanes.py repo CarlvinceTan/polymux board)" = 3 ]'
+AB=$(task 'Argus repo' ar1); printf 'repo: CarlvinceTan/argus\nissue: 42\n' >> "$AB"
+mkdir -p "$T/repobin"; cat > "$T/repobin/gh" <<'GH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$LANES_HOME/repo-gh.log"
+[ "$1 $2" != 'pr create' ] || echo https://github.com/CarlvinceTan/argus/pull/1
+exit 0
+GH
+chmod +x "$T/repobin/gh"
+OUT=$(PATH="$T/repobin:$PATH" LANE_SKIP_SETUP= LANE_NO_CHAIN=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$AB" 2>&1); RC=$?
+check "argus header selects clone, setup, verify and PR repo" '[ $RC = 0 ] && [ -f "$T/argus-setup" ] && [ -f "$T/argus-verify" ] && git -C "$T/argus" show-ref -q refs/heads/agent/CarlvinceTan-argus-argus-repo && grep -q "pr create.*-R CarlvinceTan/argus" "$LANES_HOME/repo-gh.log"'
+check "argus board is scoped to Project 2 and isolated state" 'grep -q "to project 2" "$LANES_HOME/repos/CarlvinceTan-argus/board.log" && [ "$(cat "$LANES_HOME/repos/CarlvinceTan-argus/cards/CarlvinceTan-argus-argus-repo" 2>/dev/null)" = 42 ]'
+# A live board write resolves Project 2 fields and never sends Project 3 identifiers.
+cat > "$T/repobin/gh" <<'GH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$LANES_HOME/repo-live.log"
+case "$*" in
+  *'projectV2(number:'*) echo '{"data":{"user":{"projectV2":{"id":"ARGUS_PROJECT","fields":{"nodes":[{"id":"ARGUS_STATUS","name":"Status","options":[{"id":"ARGUS_PROGRESS","name":"In progress"}]}]}}}}}' ;;
+  *'repository(owner:'*) echo ARGUS_ISSUE ;;
+  *addProjectV2ItemById*) printf 'ARGUS_ITEM\tBacklog\n' ;;
+esac
+GH
+touch "$LANES_HOME/BOARD_LIVE"
+PATH="$T/repobin:$PATH" BOARD_REPO=CarlvinceTan/argus BOARD_NUMBER=2 bash scripts/board-update.sh start CarlvinceTan-argus-argus-repo
+rm "$LANES_HOME/BOARD_LIVE"
+check "argus live board uses Project 2 metadata and its field/options" 'grep -q "n=2" "$LANES_HOME/repo-live.log" && grep -q "p=ARGUS_PROJECT.*f=ARGUS_STATUS.*o=ARGUS_PROGRESS" "$LANES_HOME/repo-live.log" && ! grep -q "PVT_kwHOCDGEdM4Bmy5s" "$LANES_HOME/repo-live.log"'
+FB=$(task 'Argus retry' ar3); echo 'repo: CarlvinceTan/argus' >> "$FB"
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_FORCE_FAIL=laneA $RL laneA "$FB" 2>&1)
+check "argus retry retains repo header" 'grep -qx "repo: CarlvinceTan/argus" "$LANES_HOME"/queue/*-CarlvinceTan-argus-argus-retry-retry.task'
+rm -f "$LANES_HOME"/queue/*-CarlvinceTan-argus-argus-retry-retry.task
+UB=$(task 'Unknown repo' ar2); echo 'repo: stranger/missing' >> "$UB"
+OUT=$(LANE_NO_CHAIN=1 $RL --check laneA "$UB" 2>&1); RC=$?
+check "unknown repo rejected before claim or worktree" '[ $RC = 5 ] && echo "$OUT" | grep -q "Unknown repo.*stranger/missing" && [ ! -d "$LANES_WT/laneA-unknown-repo" ]'
+
 # 12 verify-only: rerun gets its own proof branch; failed fetch stops
 mkdir -p "$T/bin"; printf '#!/bin/sh\nexit 0\n' > "$T/bin/gh"; chmod +x "$T/bin/gh"
 git push -q origin main:refs/heads/vo/one main:refs/heads/proof-media
