@@ -355,50 +355,84 @@ func TestCancelledToolHistory(t *testing.T) {
 		{ID: "failed", RunID: run.ID, Name: "bash", Status: "failed", Output: ptr("failure excerpt")},
 		{ID: "active", RunID: run.ID, Name: "bash", Status: "running"},
 	}
-	if err := s.RunEvent(t.Context(), "run.start", &run, nil); err != nil { t.Fatal(err) }
-	if _, err := s.StopRuns(t.Context(), "a"); err != nil { t.Fatal(err) }
-	stored, err := s.Run(t.Context(), run.ID)
-	if err != nil { t.Fatal(err) }
-	if len(stored.Tools) != 3 { t.Fatalf("cancel snapshot: %d rows, want 3", len(stored.Tools)) }
-	for i, status := range []string{"completed", "failed", "cancelled"} {
-		if stored.Tools[i].Status != status { t.Errorf("row %d: %s, want %s", i, stored.Tools[i].Status, status) }
+	if err := s.RunEvent(t.Context(), "run.start", &run, nil); err != nil {
+		t.Fatal(err)
 	}
-	if stored.Tools[1].Output == nil || *stored.Tools[1].Output != "failure excerpt" { t.Fatal("failed excerpt lost") }
+	if _, err := s.StopRuns(t.Context(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.Run(t.Context(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Tools) != 3 {
+		t.Fatalf("cancel snapshot: %d rows, want 3", len(stored.Tools))
+	}
+	for i, status := range []string{"completed", "failed", "cancelled"} {
+		if stored.Tools[i].Status != status {
+			t.Errorf("row %d: %s, want %s", i, stored.Tools[i].Status, status)
+		}
+	}
+	if stored.Tools[1].Output == nil || *stored.Tools[1].Output != "failure excerpt" {
+		t.Fatal("failed excerpt lost")
+	}
 	events, err := s.Events(t.Context(), "a", 0, 100)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	done := 0
 	for _, event := range events {
 		if event.Type == "tool.done" {
 			done++
-			if event.Tool.ID != "active" || event.Tool.Status != "cancelled" { t.Errorf("finished row rewritten: %+v", event.Tool) }
+			if event.Tool.ID != "active" || event.Tool.Status != "cancelled" {
+				t.Errorf("finished row rewritten: %+v", event.Tool)
+			}
 		}
-		if event.Type == "run.done" && len(event.Run.Tools) != 3 { t.Errorf("cancel replay: %d rows, want 3", len(event.Run.Tools)) }
+		if event.Type == "run.done" && len(event.Run.Tools) != 3 {
+			t.Errorf("cancel replay: %d rows, want 3", len(event.Run.Tools))
+		}
 	}
-	if done != 1 { t.Errorf("tool.done events: %d, want 1", done) }
+	if done != 1 {
+		t.Errorf("tool.done events: %d, want 1", done)
+	}
 }
 
 func TestToolHistoryListBound(t *testing.T) {
 	s := runStore(t)
 	latest := NewRun("latest", "a", "a", "message")
 	latest.Status = "completed"
-	if err := s.RunEvent(t.Context(), "run.done", &latest, nil); err != nil { t.Fatal(err) }
+	if err := s.RunEvent(t.Context(), "run.done", &latest, nil); err != nil {
+		t.Fatal(err)
+	}
 	before, err := s.Threads(t.Context())
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	baseline, _ := json.Marshal(before)
 	for i := 0; i < 50; i++ {
 		run := NewRun(fmt.Sprint("old-", i), "a", "a", "message")
 		run.Status, run.CreatedAt = "completed", "2020-01-01T00:00:00Z"
 		run.Tools = []contract.ToolActivity{{ID: run.ID, RunID: run.ID, Name: "bash", Status: "completed", Output: ptr(strings.Repeat("x", 2000))}}
-		if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil { t.Fatal(err) }
+		if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	threads, err := s.Threads(t.Context())
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	data, _ := json.Marshal(threads)
-	if len(data) > len(baseline)+100 { t.Errorf("list payload grew: %d -> %d bytes", len(baseline), len(data)) }
+	if len(data) > len(baseline)+100 {
+		t.Errorf("list payload grew: %d -> %d bytes", len(baseline), len(data))
+	}
 	for _, thread := range threads {
-		if thread.ID == "a" && len(thread.Runs) != 1 { t.Errorf("list runs grew: 1 -> %d", len(thread.Runs)) }
+		if thread.ID == "a" && len(thread.Runs) != 1 {
+			t.Errorf("list runs grew: 1 -> %d", len(thread.Runs))
+		}
 		for _, run := range thread.Runs {
-			if len(run.Tools) != 0 { t.Error("list contains tool history") }
+			if len(run.Tools) != 0 {
+				t.Error("list contains tool history")
+			}
 		}
 	}
 }
