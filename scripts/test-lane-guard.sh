@@ -54,4 +54,5 @@ OUT=$(bash "$T/guard.sh" --deps "$T/dependency.task")
 [[ "$OUT" = 'UNMET '* ]]; [ -s "$ANCESTRY_LOG" ]
 PASS=$((PASS+1))
 echo 'ok   merged-PR lookup accepts only numbers and falls back to ancestry'
+python3 "$SRC/scripts/test-hold-release.py"
 echo "test-lane-guard: $PASS passed, 0 failed"

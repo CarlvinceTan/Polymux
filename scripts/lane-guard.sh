@@ -15,6 +15,8 @@
 #                                          row within 60 s ($O/refusals.tsv) = storm: stop + log; rotates lanes.py order over free lanes;
 #                                          passes --branch from a 'branch:' line; card -> starting/ -> started/ only once lock/events row seen (20s), else back to queue; drops queue entries whose task passed/started/is running (events.tsv, units/*.lock),
 #                                          else preflights (PAUSE, lane-gate) and starts ONE via run-lane.sh <lane> <file> (nohup), as Cody does.
+#   Holds use release: after:pr:N merged or after:issue:N closed, optionally followed by alert-only.
+#   Dispatch/stall migrate unambiguous RELEASE-WHEN.txt notes, release met holds in Project 3 order, and alert on idle holds.
 #   lane-guard --deps <task-file>...     dry check of after: deps (MET/UNMET), no dispatch.
 #   lane-guard --stall                     launchd 30 min: exits unless active (queue/ or a unit lock, no PAUSE); alerts once if no PR in 3h.
 #   lane-guard --queued | --progress
@@ -94,6 +96,8 @@ deps_ok(){ # $1 task file: every 'after:' ref must be met; gh results cached per
       [ $st -gt 1 ] && log "dispatch: $(basename "$1"): merge-base check for $n failed (rc $st); treating as unmet" >&2
       [ $st = 0 ] || { echo "$r"; return 1; };;
     *) log "dispatch: $(basename "$1"): unknown after ref '$r'; treating as unmet" >&2; echo "$r"; return 1;; esac; done; return 0; }
+holds(){ local helper="$(dirname "$0")/hold-release.py"; [ -f "$helper" ] || helper="$LANES_REPO/scripts/hold-release.py"
+  python3 "$helper" "$O" "$ST" | while IFS= read -r line; do log "$line"; done; }
 case $1 in
 --deps) DC=$(mktemp); trap 'rm -f "$DC" "$DC.f"' EXIT; shift   # dry check: are the after: deps of these task files met? never dispatches
   for f; do if w=$(deps_ok "$f"); then echo "MET    $(basename "$f")"; else echo "UNMET  $(basename "$f"): $w"; fi; done; exit 0;;
@@ -119,6 +123,7 @@ case $1 in
   storm && { log "dispatch: STORM: $SN+ units refused in a row within ${SW}s ($(cut -f2,3 "$RF" | tail -3 | tr '\t\n' ': ')); not dispatching until it clears (600 s tick)"; exit 0; }
   shift; LN=""; FREE=""; while [ $# -gt 0 ]; do case $1 in --free-lane) FREE=${2:-}; shift; shift;; *) LN=$1; shift;; esac; done
   DC=$(mktemp); FETCHED=""; trap fin EXIT
+  holds
   RLB=${RUN_LANE:-$LANES_REPO/scripts/run-lane.sh}; RCK=""; grep -q -- '--check' "$RLB" 2>/dev/null && RCK=1   # run-lane's own refusal rules, side-effect free
   RCF=$ST/refused-cards   # "<epoch> <id>": a card whose child run-lane refused is skipped for SW s
   held_titles=$(for h in "$O"/queue-hold/*.task; do [ -f "$h" ] && grep -vE '^(unit|needs|scope|expected_min|branch|after|card):' "$h" | head -1 | sed -E 's/ \(attempt [0-9]+\)$//'; done)
@@ -136,8 +141,12 @@ case $1 in
   [ -n "$LN" ] || { log "dispatch: all lanes busy"; exit 0; }
   for f in "$Q"/*.task; do [ -f "$f" ] || continue; id=$(basename "$f" .task); t=$(grep -vE '^(unit|needs|scope|expected_min|branch|after):' "$f" | head -1)
     b=$(echo "$t" | sed -E 's/ \(attempt [0-9]+\)$//'); C=$(for x in "$b" "$t"; do echo "$(slug "$x") $(slugo "$x")"; done; echo "$(strip "${id#*-}")"); C=$(echo $C | tr ' ' '\n' | sort -u | tr '\n' ' '); m=$(date -r "$f" '+%Y%m%d%H%M%S')
+    # Cleanup events belong to the finished attempt, even when the retry has the same timestamp.
     why=$(evm "$O/events.tsv" 2>/dev/null | awk -F'\t' -v m="$m" '{
-        if($3=="pr"||$3=="dry"){print "already passed ("$2" "$3")";exit} if($3=="requeued"||$3=="superseded"||$3=="board")next; ts=$1;gsub(/[-: ]/,"",ts); if(ts>=m){print "attempt already started ("$2" "$3")";exit}}')
+        if($3=="pr"||$3=="dry"){print "already passed ("$2" "$3")";exit}
+        if($3=="failed"||$3=="requeued"||$3=="superseded"||$3=="infra"||$3=="needs_cody"||$3=="deferred"){delete live[$2];next}
+        ts=$1;gsub(/[-: ]/,"",ts); if($3=="running"&&ts>=m)live[$2]=1
+      } END{for(id in live){print "attempt already started ("id" running)";exit}}')
     [ -z "$why" ] && awk -F'\t' -v b="$b" '$7==b&&$4==0{f=1}END{exit !f}' "$ST/tasks.tsv" && why="passed (lane-guard ledger)"
     if [ -n "$why" ]; then mkdir -p "$Q/dropped"; qmv "$f" "$Q/dropped/"; log "dispatch: dropped $id: $why"; continue; fi
     # Skip (leave in queue, try the next card in this pass) anything run-lane would refuse or must not start.
@@ -169,7 +178,8 @@ case $1 in
     # max_concurrent, then the rotation) and keep going through the queue. Ends when no slot or no runnable card is left.
     NSTART=$((NSTART+1)); pick_lane || { log "dispatch: all slots filled (started $NSTART this pass)"; exit 0; }
   done; exit 0;;
---stall) { [ -f "$O/PAUSE" ] || { ! queued && ! ls -d "$O"/units/*.lock >/dev/null 2>&1; }; } && { echo "idle: paused or nothing queued/running"; exit 0; }
+--stall) holds
+  { [ -f "$O/PAUSE" ] || { ! queued && ! ls -d "$O"/units/*.lock >/dev/null 2>&1; }; } && { echo "idle: paused or nothing queued/running"; exit 0; }
   p=$(progress) || { $RL carl-lane-guard failed stall 0 n "gh failed"; exit 1; }
   if [ $((NOW-p)) -gt 10800 ]; then once "stall:$p" && { alert no_progress "Polymux lanes: no PR opened or merged for $(( (NOW-p)/3600 ))h while tasks are queued/running"; exit 0; }
     echo "stall already alerted"; else echo "ok: last PR activity $(( (NOW-p)/60 ))m ago"; fi; exit 0;;
