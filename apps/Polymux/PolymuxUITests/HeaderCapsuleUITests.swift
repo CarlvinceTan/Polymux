@@ -12,9 +12,17 @@ final class HeaderCapsuleUITests: XCTestCase {
             let capsule = app.buttons["header.capsule"]
             let search = app.buttons["header.search"]
             XCTAssertTrue(search.waitForExistence(timeout: 5))
+            #if os(iOS)
+            let native = app.navigationBars.buttons.element(boundBy: 0)
+            XCTAssertTrue(native.exists)
+            XCTAssertNotEqual(native.identifier, "header.capsule")
+            XCTAssertNotEqual(native.identifier, "header.search")
+            #else
+            let native = search
+            #endif
             XCTAssertEqual(capsule.value as? String, "1 avatars")
             XCTAssertGreaterThan(capsule.frame.height, 0)
-            XCTAssertEqual(capsule.frame.height, search.frame.height, accuracy: 1)
+            XCTAssertEqual(capsule.frame.height, native.frame.height, accuracy: 1)
             capture(app, name: "direct-" + theme)
         }
     }

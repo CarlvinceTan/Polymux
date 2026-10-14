@@ -27,6 +27,9 @@ struct HeaderCapsule: View {
                 Text(title).lineLimit(1).truncationMode(.tail)
             }
             .font(.headline)
+            #if os(iOS)
+            .frame(minHeight: 30)
+            #endif
             .padding(.horizontal, 10)
             .contentShape(Capsule())
         }
