@@ -14,6 +14,85 @@ swift build --disable-sandbox
 products=$(swift build --disable-sandbox --show-bin-path)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
+if [ "${1:-}" = MA2 ]; then
+  cat > "$scratch/MA2.swift" <<'SWIFT'
+import SwiftUI
+import PolymuxKit
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+@main struct MA2Check {
+    @MainActor static func main() throws {
+        #if os(macOS)
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        #endif
+        let output = URL(fileURLWithPath: CommandLine.arguments[1])
+        let container = CGSize(width: 400, height: 480)
+        let anchors = [CGPoint(x: 0, y: 240), CGPoint(x: 400, y: 240),
+                       CGPoint(x: 200, y: 0), CGPoint(x: 200, y: 480),
+                       .zero, CGPoint(x: 400, y: 0), CGPoint(x: 0, y: 480), CGPoint(x: 400, y: 480)]
+        for dark in [false, true] {
+            #if os(macOS)
+            NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            #endif
+            for (edge, point) in anchors.enumerated() {
+                for picker in [false, true] {
+                    let anchor = CGRect(origin: point, size: .zero)
+                    let view = picker
+                        ? AnyView(EmojiPicker(anchor: anchor, container: container, choose: { _ in }))
+                        : AnyView(MessageMenu(anchor: anchor, container: container, share: {}, react: { _ in }, expand: {}, reply: {}, copy: {}))
+                    let renderer = ImageRenderer(content: view.environment(\.colorScheme, dark ? .dark : .light))
+                    renderer.scale = 1
+                    guard let cg = renderer.cgImage else { fatalError("ImageRenderer produced no image") }
+                    var pixels = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+                    guard let context = CGContext(data: &pixels, width: cg.width, height: cg.height,
+                        bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { fatalError("No pixel context") }
+                    context.draw(cg, in: CGRect(origin: .zero, size: container))
+                    var count = 0
+                    for y in 0..<cg.height {
+                        for x in 0..<cg.width where pixels[(y * cg.width + x) * 4 + 3] > 0 {
+                            precondition(x >= 8 && y >= 8 && x < cg.width - 8 && y < cg.height - 8,
+                                         "Rendered view escaped inset: edge \(edge), picker \(picker), pixel \(x),\(y)")
+                            count += 1
+                        }
+                    }
+                    precondition(count > 20_000, "Snapshot is empty or truncated")
+                    #if os(macOS)
+                    let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])!
+                    let platform = "mac"
+                    #else
+                    let png = UIImage(cgImage: cg).pngData()!
+                    let platform = "ios"
+                    #endif
+                    try png.write(to: output.appending(path: "\(platform)-\(dark ? "dark" : "light")-\(picker ? "picker" : "menu")-\(edge).png"))
+                }
+            }
+        }
+        print("MA2: 32 real-view snapshots; all eight positions satisfy the 8 pt inset")
+    }
+}
+SWIFT
+  views=(apps/Polymux/Sources/Views/{MessageMenu,EmojiPicker,PanelView,PanelPresentation,PanelDismiss}.swift)
+  swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx27.0 \
+    -I "$products" -I packages/CSQLite -L "$products" -lPolymuxKit \
+    "${views[@]}" "$scratch/MA2.swift" -o "$scratch/ma2"
+  "$scratch/ma2" "$out"
+  [ -f .build/env ] && . .build/env
+  : "${SIM_UDID:?MA2 requires an iOS simulator from wt-setup}"
+  xcrun simctl bootstatus "$SIM_UDID" -b >/dev/null
+  triple=arm64-apple-ios27.0-simulator
+  swift build -c release --triple "$triple" --scratch-path .build/ios-snap --disable-sandbox --target PolymuxKit >/dev/null
+  ios_products=$(swift build -c release --triple "$triple" --scratch-path .build/ios-snap --disable-sandbox --show-bin-path)
+  xcrun --sdk iphonesimulator swiftc -swift-version 6 -parse-as-library -target "$triple" \
+    -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -I "$ios_products" -I packages/CSQLite \
+    "${views[@]}" "$scratch/MA2.swift" "$ios_products/PolymuxKit.o" -o "$scratch/ma2-ios"
+  xcrun simctl spawn "$SIM_UDID" "$scratch/ma2-ios" "$out"
+  exit 0
+fi
 sources=()
 for name in ComposerView DictationInput DraftPreview ReplyPreview AttachmentPreview BubbleStyle \
   AppearanceView MediaView AudioView HTMLView ShareMenu CameraView PanelView PanelPresentation PanelDismiss InputFocus; do
