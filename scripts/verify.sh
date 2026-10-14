@@ -5,6 +5,9 @@
 # VERIFY_TARGETS=full (default; merge lane / --verify-only) | affected (task lanes: only the Go packages,
 # Swift test targets and app builds reachable from paths changed since TI_BASE, via scripts/affected.py),
 # write .build/proof/summary.md. Exit 0 only when everything passed.
+# When run-lane.sh sets LANE_TEST_LOG (a lane attempt's live test ledger), each step appends the failing
+# test names (wd_fail_names) it read in its log, so the lane watchdog counts only test output from the
+# processes this run started, never failure lines the agent's stdout merely echoes.
 # Builds wait for a slot in the shared lock dir (max_builds; 1 while ~/ops/pr-verify builds).
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd)   # scripts may live in another checkout (cloud PRs)
@@ -85,6 +88,7 @@ step() {  # step NAME cmd...
   fi
   local tests=$(awk '/^Test Case .* passed/||/^. Test .* passed after/{p++} /^Test Case .* failed/||/^. Test .* failed after/{f++}
     END{if(p+f) printf "%d passed, %d failed", p, f}' "$L/$n.log")
+  [ -n "${LANE_TEST_LOG:-}" ] && wd_fail_names < "$L/$n.log" >> "$LANE_TEST_LOG" 2>/dev/null || true
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
 step readiness-tests bash "$ROOT/scripts/test-readiness.sh"
