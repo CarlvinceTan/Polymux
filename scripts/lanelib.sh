@@ -171,3 +171,16 @@ reap_wt() { local p k left; p=$(wt_pids "$1") || return 0; [ -n "$p" ] || return
   for k in $(seq 1 $(( ${LANE_KILL_WAIT:-10} * 10 ))); do left=""; for x in $p; do kill -0 "$x" 2>/dev/null && left="$left $x"; done
     [ -z "$left" ] && return 0; sleep 0.1; done
   kill -KILL $left 2>/dev/null; echo "reap: KILL after ${LANE_KILL_WAIT:-10}s:$left" >> "${2:-/dev/null}"; }
+
+plain_text() { perl -pe 's/\e\][^\a\e]*(?:\a|\e\\)//g; s/\e\[[0-?]*[ -\/]*[@-~]//g'; }
+brief_title() {
+  plain_text < "$1" | awk '/^# / { print; found=1; exit } NR==1 { first=$0 } END { if (!found) print first }' |
+    sed -E 's/^#+[[:space:]]*//; s/[[:space:]]*\(attempt [0-9]+\)[[:space:]]*$//; s/[[:space:]]+att[0-9]+[[:space:]]*$//; s/^[A-Z]+[0-9]+:[[:space:]]*//; s/[[:space:]]+$//'
+}
+brief_link() {
+  local issue verb=Closes
+  issue=$(sed -nE 's/^[Ii]ssue:[[:space:]]*#?([0-9]+)[[:space:]]*$/\1/p' "$1" | head -1)
+  [ -n "$issue" ] || return 0
+  grep -qiE '^partial:[[:space:]]*(true|yes|1|slice)[[:space:]]*$|^slice:[[:space:]]*partial[[:space:]]*$|\bpartial slice\b' "$1" && verb=Refs
+  printf '%s #%s\n' "$verb" "$issue"
+}

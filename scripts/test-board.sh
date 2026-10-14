@@ -106,7 +106,7 @@ printf '# Closes issue\nneeds: none\nexpected_min: 5\nIssue: 42\nLabels: Infra,L
 OUT=$(PATH=$BP LANE_NO_CHAIN=1 LANE_RETRY_SLEEP=0 LANE_VERIFY_CMD="$VCN" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/ci.task" --branch test/closes 2>&1); RC=$?
 PRB=$(sed -n '/^pr create/,$p' "$T/ghb.log" | head -1)
 check "run-lane: PR body has Closes #42, ends with Release Notes, no Notion ref reaches gh" '[ $RC = 0 ] && echo "$PRB" | grep -q "Closes #42" && echo "$PRB" | grep -q "Release Notes:  - N/A" && echo "$PRB" | grep -q -- "--label Infra,Lanes" && ! notion_ref < "$T/ghb.log"'
-check "run-lane: issue: header is not part of the brief/title" '! echo "$PRB" | grep -qi "issue: 42" && ! echo "$PRB" | grep -q "Labels:" && grep -q -- "--title # Closes issue" "$T/ghb.log"'
+check "run-lane: issue: header is not part of the brief/title" '! echo "$PRB" | grep -qi "issue: 42" && ! echo "$PRB" | grep -q "Labels:" && grep -q -- "--title Closes issue" "$T/ghb.log"'
 # approve-proof.sh + cleanup.sh route through the same board writer
 AW="$HOME/code/wt/laneA-approve-me"; AP="$AW/.build/proof"; mkdir -p "$AP"; cp "$V/ok.mp4" "$AP/"; echo ok.mp4 > "$AP/uploaded"
 echo UI-verified > "$AP/level"; echo laneA-approve-me > "$C/approve-me.wt"; echo 43 > "$C/approve-me"

@@ -56,6 +56,8 @@ TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "issue: N" (GitHub i
 fi
 # GitHub labels for the PR (type:/area: headers, else inferred; see brief_labels in lanelib.sh)
 LBF=${TASKF:-$(mktemp)}; [ -n "$TASKF" ] || printf '%s\n' "$TASK" > "$LBF"
+PR_TITLE=$(brief_title "$LBF"); PR_LINK=$(brief_link "$LBF"); PR_WARNING=""
+[ -n "$PR_LINK" ] || PR_WARNING="missing issue: in brief"
 LABELS=$(brief_labels "$LBF" "$(basename "${TASKF:-inline}")"); [ -n "$TASKF" ] || rm -f "$LBF"
 BL=$(sed -n 's/^[Ll]abels: *//p' "${TASKF:-/dev/null}" 2>/dev/null | head -1 | tr -d ' '); [ -n "$BL" ] && LABELS=$BL   # brief "Labels:" line wins
 # Lane gate FIRST: a disabled (lane1 = main Cursor account), expired or unknown lane never runs; no claim, worktree or vault read.
@@ -239,7 +241,7 @@ cleanup_unit() {
 trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
-BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
+BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""
 # No in-process failover (it stacked units onto busy lanes): one lane per run. On a first failure the
@@ -395,9 +397,11 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   LV=$(cat "$WT/.build/proof/level" 2>/dev/null || echo build-only); DRAFT=""
   case $LV in UI-verified|unit-test-verified) ;; build-only) ;; *) ev failed "$L" "level $LV"; continue;; esac
   [ "$LV" = build-only ] && { DRAFT=--draft; BODY="**Verification level: build-only, so this is NOT ready for review (draft).**"$'\n\n'"$BODY"; }
-  [ -n "$ISSUE" ] && BODY+=$'\n\n'"Closes #$ISSUE"
+  [ -n "$PR_WARNING" ] && { ev warning "$L" "$PR_WARNING"; BODY+=$'\n\n'"Warning: $PR_WARNING"; }
+  [ -n "$PR_LINK" ] && BODY+=$'\n\n'"$PR_LINK"
   # gh_write (lanelib.sh) scrubs Notion URLs/page ids from every GitHub write
   BODY+=$'\n\n'"Release Notes:"$'\n\n'"- N/A"   # PR validator: body (and lane comments) end with this
+  BODY=$(printf '%s' "$BODY" | plain_text)
   # Continuing an existing PR (--branch with an open PR): no new PR; comment the new head + summary on it.
   EX=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG") ||
     { ev failed "$L" "gh pr list failed (pushed $B; no PR created or commented)"; continue; }
@@ -408,14 +412,14 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
       echo "warn: could not mark existing PR $URL as draft (build-only)" | tee -a "$LOG"; }
   else
     URL=""; for ptry in 1 2 3; do   # pushed already: retry the API call only, never the agent
-      URL=$(cd "$WT" && gh_write pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --label "$LABELS" --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
+      URL=$(cd "$WT" && gh_write pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --label "$LABELS" --title "$PR_TITLE" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
       sleep $((ptry * 10 * RS)); URL=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG"); [ -n "$URL" ] && break
       echo "gh pr create failed (try $ptry); retrying" >> "$LOG"; done
     [ -n "$URL" ] || { ev failed "$L" "gh pr create failed (3 tries; $B is pushed)"; continue; }
   fi
   basename "$WT" > "$OPS/cards/$SLUG.wt"; BU pr "$SLUG" "$URL"   # .wt: exact worktree name for cleanup
   BU verify "$SLUG" "$LV" "$WT/.build/proof" "$(echo "$BODY" | grep -oE "https://github.com/$SLUG_REPO/raw/proof-media/[^/) ]+" | head -1)"
-  ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV" >> "$OPS/results.tsv"
+  ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV${PR_WARNING:+; $PR_WARNING}" >> "$OPS/results.tsv"
   cleanup_unit
   echo "$URL ($LV)"; exit 0
 done
