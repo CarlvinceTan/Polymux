@@ -16,6 +16,7 @@ while [ $# -gt 0 ]; do case $1 in --days) DAYS=$2; shift 2;; --proof-days) PROOF
 REPO=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel); MAIN=$(git -C "$REPO" worktree list --porcelain | sed -n '1s/^worktree //p')
 . "$REPO/scripts/lanelib.sh"   # _mtime: portable mtime (GNU stat -c first; BSD stat -f %m on macOS)
 OPS=${LANES_HOME:-$HOME/ops/lanes}; LOCKS=$(python3 "$REPO/scripts/lanes.py" get lock_dir)
+[ "$APPLY" = 1 ] && oc_sweep "$OPS" "$REPO/scripts"
 do_() { if [ $APPLY = 1 ]; then echo "+ $*"; "$@"; else echo "would: $*"; fi; }
 keep() { echo "keep: $1 ($2)"; }
 # Removable trees are moved to $WT_TRASH (default ~/code/wt-trash), never deleted, so a wrong removal is

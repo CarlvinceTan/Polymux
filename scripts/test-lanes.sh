@@ -587,10 +587,26 @@ echo "\$*" >> "$T/oc.log"
 case "\$1 \$2" in
 "session list") d=\$(pwd -P); echo "[{\"id\":\"ses_other\",\"directory\":\"/elsewhere\",\"created\":\$(( \$(date +%s) * 1000 ))},{\"id\":\"ses_\$(basename "\$d" | tr -c 'a-z0-9\n' _)\",\"directory\":\"\$d\",\"created\":\$(( \$(date +%s) * 1000 ))}]";;
 "session export") echo "{\"id\":\"\$3\"}";;
-"session delete") echo "deleted \$3";;
+"session delete") [ "\${OC_DELETE_FAIL:-}" = "\$3" ] && exit 1; echo "deleted \$3";;
 esac
 OCSTUB
 chmod +x "$OCB/opencode"
+. scripts/lanelib.sh
+for name in dead live gated failed other; do
+  d="$LANES_HOME/units/oc-$name.lock"; mkdir -p "$d"
+  echo 99999999 > "$d/pid"; echo laneA > "$d/lane"; echo "ses_$name" > "$d/oc_session"
+done
+echo $$ > "$LANES_HOME/units/oc-live.lock/pid"
+echo laneB > "$LANES_HOME/units/oc-other.lock/lane"
+mkdir "$LANES_HOME/units/oc-gated.lock.reclaim"
+LANE_OC_CMD="$OCB/opencode" OC_DELETE_FAIL=ses_failed oc_sweep "$LANES_HOME" "$T/repo/scripts"
+check "orphan sweep exports and deletes only recorded dead OpenCode sessions" '[ ! -f "$LANES_HOME/units/oc-dead.lock/oc_session" ] && [ -s "$LANES_HOME/logs/orphan-ses_dead.json" ] && grep -qx "session delete ses_dead" "$T/oc.log" && ! grep -qE "session delete ses_(live|gated|other)" "$T/oc.log"'
+check "orphan sweep retains failed deletions for retry and respects live owners and reclaim gates" '[ -f "$LANES_HOME/units/oc-failed.lock/oc_session" ] && [ -f "$LANES_HOME/units/oc-live.lock/oc_session" ] && [ -f "$LANES_HOME/units/oc-gated.lock/oc_session" ] && [ -d "$LANES_HOME/units/oc-gated.lock.reclaim" ]'
+: > "$T/oc.log"
+LANE_OC_CMD="$OCB/opencode" oc_sweep "$LANES_HOME" "$T/repo/scripts"
+check "orphan sweep retries failed deletion without repeating successful deletion" '[ ! -f "$LANES_HOME/units/oc-failed.lock/oc_session" ] && [ "$(grep -c "session delete" "$T/oc.log")" = 1 ] && grep -qx "session delete ses_failed" "$T/oc.log"'
+rm -rf "$LANES_HOME"/units/oc-*.lock "$LANES_HOME/units/oc-gated.lock.reclaim"
+: > "$T/oc.log"
 OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_IDLE_S=2 LANE_DRY=1 LANE_STUB_CMD='sleep 300' $RL laneA "$(task 'Oc fastfail' oc1)" 2>&1); RC=$?
 OL=$(ls "$LANES_HOME"/logs/*oc-fastfail*laneA.log 2>/dev/null | head -1)
 check "opencode fast-fail: session id recorded, exported, deleted on the serve; other sessions untouched" '[ -n "$OL" ] && grep -q "^opencode session: ses_" "$OL" && grep -q "^session delete ses_.*oc_fastfail" "$T/oc.log" && ! grep -q "delete ses_other" "$T/oc.log" && ls "$OL".oc-ses_*.json >/dev/null 2>&1 && grep -q "ended on the shared serve" "$OL" && ! grep -qiE "serve|restart|kill" <(grep -v "^session " "$T/oc.log")'
@@ -606,7 +622,8 @@ task 'Oc interrupt' oc-int >/dev/null
 LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='sleep 300' python3 - "$T/oc-int.task" "$T/oc.log" <<'PYINT'
 import os,signal,subprocess,sys,time
 p = subprocess.Popen(['bash','scripts/run-lane.sh','laneA',sys.argv[1]],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
 try:
     for _ in range(100):
         if 'session list' in open(sys.argv[2]).read():

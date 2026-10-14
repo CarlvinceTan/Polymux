@@ -77,6 +77,31 @@ repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|ht
 # Carl's lane-guard hook; missing = skip, never fatal unless the caller checks rc.
 LANE_GUARD=${LANE_GUARD:-$HOME/.local/bin/lane-guard}
 guard() { [ -x "$LANE_GUARD" ] || return 0; "$LANE_GUARD" "$@"; }
+# Recorded sessions survive a killed runner; the reclaim gate excludes new writers.
+oc_sweep() {
+  local ops=$1 sd=$2 d p lane cmd session gate
+  for d in "$ops"/units/*.lock; do
+    [ -s "$d/oc_session" ] || continue
+    p=$(lock_holder "$d"); [ -n "$p" ] || continue
+    kill -0 "$p" 2>/dev/null && continue
+    gate="$d.reclaim"; mkdir "$gate" 2>/dev/null || continue
+    if [ "$(lock_holder "$d")" = "$p" ] && ! kill -0 "$p" 2>/dev/null; then
+      lane=$(cat "$d/lane" 2>/dev/null)
+      if [ -n "$lane" ] && [ "$(python3 "$sd/lanes.py" lane "$lane" agent 2>/dev/null)" = opencode ]; then
+        cmd=${LANE_OC_CMD:-$(python3 "$sd/lanes.py" lane "$lane" cmd)}
+        session=$(cat "$d/oc_session")
+        if [[ $session =~ ^ses_[a-zA-Z0-9_]+$ ]]; then
+          mkdir -p "$ops/logs"
+          perl -e 'alarm shift; exec @ARGV' "${LANE_OC_TIMEOUT:-20}" "$cmd" session export "$session" > "$ops/logs/orphan-$session.json" 2>/dev/null
+          if perl -e 'alarm shift; exec @ARGV' "${LANE_OC_TIMEOUT:-20}" "$cmd" session delete "$session" >> "$ops/logs/orphan-sessions.log" 2>&1; then
+            rm -f "$d/oc_session"
+          fi
+        fi
+      fi
+    fi
+    rmdir "$gate" 2>/dev/null
+  done
+}
 # --- GitHub labels and Notion-free GitHub writes ---------------------------------------------------
 # Shared label set: exactly one type, at least one area, plus dogfood / Flaky test. Priority is a
 # Project field, never a label.

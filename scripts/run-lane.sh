@@ -216,6 +216,7 @@ MC=$(cfg maxconc "$LANE"); CAPL="$OPS/lanes/$LANE.cap.lock"
 if [ -n "$CHECK" ]; then h=$(lock_holder "$UL"); [ -n "$h" ] && kill -0 "$h" 2>/dev/null && { echo "unit '$SLUG' already has a writer (pid $h)"; exit 3; }
   if [ "$MC" != 0 ]; then N=$(lane_live "$LANE"); [ "$N" -lt "$MC" ] || { echo "refusing: lane '$LANE' already has $N running (max_concurrent $MC)"; exit 5; }; fi
   echo "runnable: $SLUG"; exit 0; fi
+oc_sweep "$OPS" "$SD"
 G=$(guard --preflight "$LANE" "$TITLE" 2>&1) || { echo "lane-guard --preflight refused: $G"; exit 5; }
 # One writer per unit and per branch.
 # Cap: count + unit-lock take under the per-lane mutex, so two starts can't both pass (same rule as --check).
