@@ -208,6 +208,7 @@ func (r *Runtime) Open(ctx context.Context, d Definition, path string) (Session,
 		servers = nil
 	}
 	tools, clients, err := connectMCP(ctx, servers, cwd)
+	tools = wrapMCP(tools, d.BeforeTool)
 	unavailable := err != nil
 	if err != nil {
 		tools, clients = nil, nil
@@ -237,7 +238,12 @@ func (r *Runtime) Open(ctx context.Context, d Definition, path string) (Session,
 	}
 	hooks := []agent.BeforeToolCallHook{}
 	if d.BeforeTool != nil {
-		hooks = append(hooks, d.BeforeTool)
+		hooks = append(hooks, func(ctx context.Context, id, name string, args json.RawMessage) agent.ToolCallHookResult {
+			if name == "codemode" {
+				return agent.ToolCallHookResult{}
+			}
+			return d.BeforeTool(ctx, id, name, args)
+		})
 	}
 	if d.Ephemeral {
 		path = ""
