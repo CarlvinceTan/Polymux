@@ -8,7 +8,7 @@ PASS=0; FAILS=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAILS=$((FAILS+1)); echo "FAIL $1"; fi; }
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/repo"; cd "$T/repo"
 git config user.name "Lane Test"; git config user.email lane@test.invalid
-mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup,board-update,queue-write}.sh "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
+mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,verify-step,verify-result,lanelib,dispatch-guard,cleanup,wt-setup,board-update,queue-write}.sh "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
 cat > agents/lanes.toml <<'TOML'
 max_builds = 1
 lock_dir = "~/ops/lanes/locks"
@@ -606,12 +606,32 @@ QD="$LANES_HOME/queue"; rm -f "$QD"/*.task; : > "$T/oc.log"
 OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_NOCOMMIT_S=3 LANE_STUB_CMD='while :; do echo x >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd nocommit' wd1)" 2>&1); RC=$?
 WQ=$(ls "$QD"/*wd-nocommit*-retry.task 2>/dev/null | head -1)
 check "watchdog: no commit within the limit -> stopped, opencode session ended, retry pinned to codex with a note" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "^## Watchdog" "$WQ" && grep -q "no new commit" "$WQ" && [ "$(head -1 "$WQ")" = "# Wd nocommit (attempt 2)" ] && grep -q "session delete ses_.*wd_nocommit" "$T/oc.log" && bash scripts/queue-write.sh --check "$WQ" >/dev/null'
+# Use verify's real recorder with a failing test process, without the full build setup.
+cat > "$T/test-step.sh" <<'STEP'
+#!/bin/bash
+. scripts/lanelib.sh
+. scripts/verify-result.sh
+. scripts/verify-step.sh
+L=.build/test-logs; mkdir -p "$L"
+mark() { :; }
+ROWS=(); FAIL=0; UI_UNAVAILABLE=0
+step mutant bash -c 'for i in 1 2 3; do printf -- "--- FAIL: %s (0.01s)\n" "$1"; done; exit "${2:-1}"' _ "$1" "${2:-1}"
+STEP
+export WD_STEP="$T/test-step.sh"
+rm -f "$T/step.wd"
+LANE_TEST_LOG="$T/step.wd" bash "$WD_STEP" TestPassed 0 >/dev/null
+check "passing step cannot record quoted failure output" '[ ! -e "$T/step.wd" ]'
+LANE_TEST_LOG="$T/step.wd" bash "$WD_STEP" TestRepeated >/dev/null
+check "one failing step records a repeated test name once" '[ "$(cat "$T/step.wd")" = TestRepeated ]'
 rm -f "$QD"/*.task
-OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; echo "--- FAIL: TestOther$i (0.01s)"; done; while :; do echo y >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd testloop' wd2)" 2>&1); RC=$?
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; echo "FAIL quoted shell test"; done; sleep 2; '"$STUB_OK" $RL laneA "$(task 'Wd quoted' wdq)" 2>&1); RC=$?
+check "watchdog ignores quoted failures in agent stdout" '[ $RC = 0 ] && ! grep -q watchdog "$LANES_HOME"/logs/*wd-quoted-laneA.log && [ ! -e "$LANES_HOME"/logs/*wd-quoted-laneA.wd ]'
+rm -f "$QD"/*.task
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='for i in 1 2 3; do bash "$WD_STEP" TestLoopy; bash "$WD_STEP" "TestOther$i"; done; while :; do echo y >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd testloop' wd2)" 2>&1); RC=$?
 WQ=$(ls "$QD"/*wd-testloop*-retry.task 2>/dev/null | head -1)
 check "watchdog: the same test failing 3 times -> stopped, retry on the other agent names the test" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "test .TestLoopy. failed 3+ times" "$WQ"'
 rm -f "$QD"/*.task
-OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=0 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; done; sleep 2; '"$STUB_OK" $RL laneA "$(task 'Wd disabled' wd3)" 2>&1); RC=$?
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=0 LANE_STUB_CMD='for i in 1 2 3; do bash "$WD_STEP" TestLoopy; done; sleep 2; '"$STUB_OK" $RL laneA "$(task 'Wd disabled' wd3)" 2>&1); RC=$?
 check "watchdog limits are configurable: LANE_WD_TESTFAIL_N=0 disables the test-loop stop" '[ $RC = 0 ] && ! grep -q watchdog "$LANES_HOME"/logs/*wd-disabled-laneA.log'
 printf '# Wd pinned\nneeds: none\nexpected_min: 5\nagent: codex\n' > "$T/wdp.task"
 OA=$(LANE_NO_CHAIN=1 $RL --check laneA "$T/wdp.task" 2>&1); RA=$?; OB=$(LANE_NO_CHAIN=1 $RL --check laneB "$T/wdp.task" 2>&1); RB=$?
@@ -623,7 +643,7 @@ rm -f "$QD"/*.task
 for name in happy-path always-fails oc-fastfail oc-killed wd-disabled; do
   check "unit-free: $name exits detached" 'grep -q "unit-free: $name wt=.* detached" "$LANES_HOME"/logs/*-$name-laneA.log && { [ ! -d "$LANES_WT/laneA-$name" ] || ! git -C "$LANES_WT/laneA-$name" symbolic-ref -q HEAD; }'
 done
-OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; echo "--- FAIL: TestClean (0.01s)"; sleep 300' $RL laneA "$(task 'Free watchdog' uf1)" 2>&1); RC=$?
+OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='for i in 1 2 3; do bash "$WD_STEP" TestClean; done; sleep 300' $RL laneA "$(task 'Free watchdog' uf1)" 2>&1); RC=$?
 check "unit-free: clean watchdog exit detaches" '[ $RC = 1 ] && ! git -C "$LANES_WT/laneA-free-watchdog" symbolic-ref -q HEAD'
 check "unit-free: dirty watchdog tree exits detached with its change kept, counted once" '! git -C "$LANES_WT/laneA-wd-nocommit" symbolic-ref -q HEAD && [ -f "$LANES_WT/laneA-wd-nocommit/w.txt" ] && [ "$(grep -c "unit-free: wd-nocommit .*dirty=1; detached (changes kept)" "$LANES_HOME"/logs/*wd-nocommit-laneA.log)" = 1 ] && grep -q "wt_dirty.*wd-nocommit.*dirty=1" "$LANES_HOME/events.tsv"'
 UF_STUB='mkdir -p .build/verify.lock "$HOME/ops/lanes/locks/active" "$HOME/ops/lanes/locks/slot1"; echo 999999 > .build/verify.lock/pid; echo 999999 > "$HOME/ops/lanes/locks/slot1/pid"; pwd > "$HOME/ops/lanes/locks/slot1/wt"; touch .build/verify-active "$HOME/ops/lanes/locks/active/polymux-$(basename "$PWD")"; mkdir -p "$HOME/ops/lanes/cards"; basename "$PWD" > "$HOME/ops/lanes/cards/free-markers.wt"; '

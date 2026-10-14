@@ -77,20 +77,7 @@ skip() { ROWS+=("| $1 | SKIP | not affected | 0s |"); echo "verify: $1 SKIP (not
 # Target selection (scripts/verify-targets.sh): unset/full -> everything; affected -> affected.py, falling back to full.
 VT=full GO_PKGS=./... SWIFT=all APP=1 WHY="verify-targets.sh missing"; [ -f "$SD/verify-targets.sh" ] && eval "$(bash "$SD/verify-targets.sh" "${TI_BASE:-origin/main}" "$L/affected.log")"
 [ "$VT" = affected ] && echo "verify: affected ($WHY): go=[${GO_PKGS:-none}] swift=[${SWIFT:-none}] app=$APP" || echo "verify: targets full ($WHY)"
-step() {  # step NAME cmd...
-  local n=$1; shift; local t=$SECONDS; mark
-  perl -e 'alarm shift; exec @ARGV' 2400 "$@" > "$L/$n.log" 2>&1; local rc=$?
-  local res; res=$(verify_result "$n" "$rc" "$L/$n.log")
-  [ "$res" = FAIL ] && FAIL=1
-  if [ "$res" = UNAVAILABLE ]; then
-    UI_UNAVAILABLE=1
-    echo "verify: $n readiness unavailable (runner automation timeout); caps level below UI-verified"
-  fi
-  local tests=$(awk '/^Test Case .* passed/||/^. Test .* passed after/{p++} /^Test Case .* failed/||/^. Test .* failed after/{f++}
-    END{if(p+f) printf "%d passed, %d failed", p, f}' "$L/$n.log")
-  [ -n "${LANE_TEST_LOG:-}" ] && wd_fail_names < "$L/$n.log" >> "$LANE_TEST_LOG" 2>/dev/null || true
-  ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
-}
+. "$ROOT/scripts/verify-step.sh"
 step readiness-tests bash "$ROOT/scripts/test-readiness.sh"
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 [ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"
