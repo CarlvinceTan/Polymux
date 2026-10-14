@@ -50,22 +50,11 @@ func (k *Keychain) Set(id, key string) error {
 		_, err := security(fmt.Sprintf("add-generic-password -U -s %s -a \"%s\" -w \"%s\"\n", Service, id, hex.EncodeToString([]byte(key))), "-i")
 		return err
 	}
+	// Off-macOS hosts have no Keychain; the owner-only file is the documented fallback.
 	if err := os.MkdirAll(k.Dir, 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(k.Dir, ".secret-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err = f.WriteString(key); err != nil {
-		f.Close()
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), k.file(id))
+	return os.WriteFile(k.file(id), []byte(key), 0600)
 }
 
 func (k *Keychain) Get(id string) (string, error) {

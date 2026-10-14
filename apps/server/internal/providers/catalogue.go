@@ -1,4 +1,5 @@
 package providers
+
 // Empty tags indicate model metadata or endpoint discovery is required.
 var Catalogue = map[string][]string{
 	"openai":     {"text", "vision", "image-gen", "stt", "tts", "live", "embed"},

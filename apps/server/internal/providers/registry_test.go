@@ -1,16 +1,19 @@
 package providers
+
 import (
 	"bytes"
 	"fmt"
+	"github.com/CarlvinceTan/polymux/apps/server/internal/settings"
 	"log"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
-	"github.com/CarlvinceTan/polymux/apps/server/internal/settings"
 )
+
 type fakeStore map[string]string
+
 func (f fakeStore) Set(id, key string) error      { f[Service+"/"+id] = key; return nil }
 func (f fakeStore) Get(id string) (string, error) { return f[Service+"/"+id], nil }
 func (f fakeStore) Delete(id string) error        { delete(f, Service+"/"+id); return nil }
@@ -34,7 +37,7 @@ func TestP2KeysNeverPersisted(t *testing.T) {
 	if err := r.SetKey("p2", key); err != nil {
 		t.Fatal(err)
 	}
-	if f[Service+"/p2"] != key {
+	if f["com.polymux.provider/p2"] != key {
 		t.Fatal("key missing from secret store")
 	}
 	if err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {

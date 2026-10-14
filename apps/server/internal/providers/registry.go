@@ -1,9 +1,11 @@
 package providers
+
 import (
 	"errors"
-	"strings"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/settings"
+	"strings"
 )
+
 type Provider = settings.Provider
 type Model = settings.Model
 type SecretStore interface {
@@ -15,6 +17,7 @@ type Registry struct {
 	Settings *settings.Store
 	Secrets  SecretStore
 }
+
 func (r *Registry) Save(providers []Provider) error {
 	ids := map[string]bool{}
 	for _, p := range providers {

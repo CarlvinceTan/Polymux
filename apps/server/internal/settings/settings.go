@@ -33,27 +33,25 @@ type Provider struct {
 	Models        []Model           `json:"models"`
 }
 
+// cloneProviders copies through JSON, so callers never alias stored or caller state.
+func cloneProviders(providers []Provider) []Provider {
+	data, _ := json.Marshal(providers)
+	var cloned []Provider
+	_ = json.Unmarshal(data, &cloned)
+	return cloned
+}
+
 func (s *Store) Providers() []Provider {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	data, _ := json.Marshal(s.data.Providers)
-	var providers []Provider
-	_ = json.Unmarshal(data, &providers)
-	return providers
+	return cloneProviders(s.data.Providers)
 }
 
 func (s *Store) SetProviders(providers []Provider) error {
-	data, err := json.Marshal(providers)
-	if err != nil {
-		return err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d := s.data
-	d.Providers = nil
-	if err := json.Unmarshal(data, &d.Providers); err != nil {
-		return err
-	}
+	d.Providers = cloneProviders(providers)
 	if err := s.save(d); err != nil {
 		return err
 	}
