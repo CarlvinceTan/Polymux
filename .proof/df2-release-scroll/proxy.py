@@ -45,6 +45,12 @@ def events(thread):
     return output if thread in ['t-long', 't-activity'] else []
 
 
+# t-long is the only thread with a lastMessage, so the app's "most recent" order puts it first
+# and its default selection opens it (ShellView .task sets selection = conversations.first).
+next(t for t in threads if t['id'] == 't-long')['lastMessage'] = \
+    next(e['message'] for e in reversed(events('t-long')) if e['type'] == 'message.done')
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args): pass
 

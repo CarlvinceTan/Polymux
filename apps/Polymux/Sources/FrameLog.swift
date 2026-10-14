@@ -19,6 +19,11 @@ final class FrameLog {
     }
 
     private static let shared = FrameLog()
+    #if DEBUG
+    private static let configuration = "Debug"
+    #else
+    private static let configuration = "Release"
+    #endif
     private var link: CADisplayLink?
     private var handle: FileHandle?
     private var last: CFTimeInterval = 0
@@ -27,7 +32,7 @@ final class FrameLog {
     private func start(path: String, attempt: Int) {
         guard link == nil else { return }
         if handle == nil {
-            guard FileManager.default.createFile(atPath: path, contents: Data("# wall time, frame interval ms\n".utf8)),
+            guard FileManager.default.createFile(atPath: path, contents: Data("# wall time, frame interval ms [\(Self.configuration)]\n".utf8)),
                   let opened = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) else { return }
             handle = opened
         }

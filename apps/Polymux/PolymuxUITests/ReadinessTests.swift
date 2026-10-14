@@ -63,11 +63,13 @@ final class ReadinessTests: XCTestCase {
 
     #if os(macOS)
     // Release scroll frame timing for PR #39: opens the staged long thread (100 messages and
-    // 600 activity events served by .proof/df2-release-scroll/proxy.py) in the Release build,
-    // scrolls it, and reports the CADisplayLink log FrameLog writes as median/p95/max frame
-    // times plus the share of intervals over 1.5x the measured display period (a missed
-    // refresh). Armed only by .proof/df2-release-scroll/measure-release-scroll.sh: verify.sh
-    // never sets POLYMUX_RELEASE_SCROLL_PORT, so its runs skip this measurement.
+    // 600 activity events served by .proof/df2-release-scroll/proxy.py), scrolls it, and
+    // reports the CADisplayLink log FrameLog writes as median/p95/max frame times plus the
+    // share of intervals over 1.5x the measured display period (a missed refresh). Armed
+    // only by .proof/df2-release-scroll/measure-release-scroll.sh, which also points the
+    // scheme's TestAction at the Release configuration for the armed run and restores it
+    // afterwards; verify.sh never sets POLYMUX_RELEASE_SCROLL_PORT, so its runs skip this
+    // measurement, and the log header must say [Release] or the test fails.
     func testReleaseScroll() throws {
         guard let port = ProcessInfo.processInfo.environment["POLYMUX_RELEASE_SCROLL_PORT"] else {
             throw XCTSkip("Release scroll measurement is armed only by .proof/df2-release-scroll/measure-release-scroll.sh")
@@ -75,14 +77,12 @@ final class ReadinessTests: XCTestCase {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let proof = root.appendingPathComponent(".proof/df2-release-scroll")
-        let release = root.appendingPathComponent(".build/DD/Build/Products/Release/Polymux.app")
-        try XCTSkipUnless(FileManager.default.fileExists(atPath: release.path), "no Release app at \(release.path)")
         let frames = proof.appendingPathComponent("frames.log")
         let data = root.appendingPathComponent(".build/release-scroll-data")
         try? FileManager.default.removeItem(at: frames)
         try? FileManager.default.removeItem(at: data)
 
-        let app = XCUIApplication(url: release)
+        let app = XCUIApplication()   // the scheme's target app: Release for the armed run
         app.launchEnvironment["POLYMUX_DATA_DIR"] = data.path
         app.launchArguments = ["-serverAddress", "http://127.0.0.1:\(port)",
                                "--verify-frame-log", frames.path]
@@ -120,6 +120,7 @@ final class ReadinessTests: XCTestCase {
         app.terminate()
 
         let text = (try? String(contentsOf: frames, encoding: .utf8)) ?? ""
+        XCTAssertTrue(text.contains("[Release]"), "measurement must come from a Release build")
         var samples: [(at: Double, ms: Double)] = []
         for line in text.split(separator: "\n") where !line.hasPrefix("#") {
             let parts = line.split(separator: " ")
