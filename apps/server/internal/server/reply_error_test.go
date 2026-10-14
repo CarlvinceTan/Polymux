@@ -57,6 +57,9 @@ func failedReply(t *testing.T, cause error, code, message string) (string, strin
 			if run.Error == nil || run.Error.Code != code || run.Error.Message != message {
 				t.Fatalf("run error: %+v", run.Error)
 			}
+			if err := api.Close(); err != nil {
+				t.Fatal(err)
+			}
 			log, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
