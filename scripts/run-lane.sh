@@ -283,7 +283,7 @@ IDLE_S=${LANE_IDLE_S:-$(( ${LANE_IDLE_MIN:-12} * 60 ))}; RS=${LANE_RETRY_SLEEP:-
 #  - no new commit for LANE_WD_NOCOMMIT_MIN (30) min since the start or the last commit, or
 #  - the same test fails LANE_WD_TESTFAIL_N (3) times in this attempt's OWN test output: the live test
 #    ledger ($WDL, exported as LANE_TEST_LOG) that verify.sh appends to, one line per failure signature
-#    it reads in a step log of a test process THIS attempt started (go "--- FAIL: X", swift "✘ Test X()
+#    it reads in a step log of a test process THIS attempt started (go "--- FAIL: Name", swift "✘ Test Name()
 #    failed", XCTest "Test Case '-[C X]' failed", test-lanes/merge-queue "FAIL x", pytest "FAILED x").
 #    The agent's stdout is never scanned, so a failure line the agent merely echoes (a PR body, an issue,
 #    an old log) cannot trip the stop; only output from this run's own test processes counts.

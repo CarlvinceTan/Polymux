@@ -68,8 +68,8 @@ unit_free() {
 # out_has [grep -E opts] PATTERN: does stdin have a matching line? Reads ALL of stdin first, so the writer
 # never gets SIGPIPE. (`cmd | grep -q` under pipefail returns 141 when grep exits early on a long output.)
 out_has() { local s; s=$(cat); grep -qE "$@" <<< "$s"; }
-# wd_fail_names: failing test names from a test log on stdin, one per line (go "--- FAIL: X", swift
-# "✘ Test X() failed", XCTest "Test Case '-[C X]' failed", test-lanes/merge-queue "FAIL x", pytest
+# wd_fail_names: failing test names from a test log on stdin, one per line (go "--- FAIL: Name", swift
+# "✘ Test Name() failed", XCTest "Test Case '-[C X]' failed", test-lanes/merge-queue "FAIL x", pytest
 # "FAILED x"). verify.sh pipes its own step logs through this into the attempt's live test ledger, which
 # the lane watchdog counts so a real failing run can trip a loop stop; the agent's stdout never goes here.
 wd_fail_names() { perl -ne '
