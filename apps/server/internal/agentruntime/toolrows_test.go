@@ -45,6 +45,11 @@ func TestToolOutputExcerptCappedRedTwin(t *testing.T) {
 	if got := toolExcerpt([]ai.ToolResultMessageContent{ai.TextContent{Text: `password: test-only-value`}}); got != "[redacted]" {
 		t.Fatal("credential escaped excerpt redaction")
 	}
+	for _, input := range []string{`Authorization: Bearer test-only-token`, `PASSWORD='test only value'`, `"api_key": "test only value"`} {
+		if got := toolExcerpt([]ai.ToolResultMessageContent{ai.TextContent{Text: input}}); got != "[redacted]" {
+			t.Fatal("quoted credential or authentication header escaped redaction")
+		}
+	}
 	if got := toolExcerpt(nil); got != "" {
 		t.Fatal("absent output yielded an excerpt")
 	}

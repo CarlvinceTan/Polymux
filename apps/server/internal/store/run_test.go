@@ -55,8 +55,24 @@ func TestRunRecovery(t *testing.T) {
 		t.Fatalf("queued work lost %s %v", next, err)
 	}
 	thread, err := s.Thread(t.Context(), "a")
-	if err != nil || len(thread.Runs) != 1 || thread.Runs[0].JobID != "next" {
+	if err != nil || len(thread.Runs) != 2 || thread.Runs[0].JobID != "next" || thread.Runs[1].JobID != "active" {
 		t.Fatalf("snapshot %+v %v", thread, err)
+	}
+	if len(thread.Runs[1].Tools) != 1 || thread.Runs[1].Tools[0].Status != "interrupted" {
+		t.Fatal("recovery lost the interrupted call")
+	}
+	events, err := s.Events(t.Context(), "a", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interrupted bool
+	for _, event := range events {
+		if event.Type == "tool.done" && event.Tool != nil && event.Tool.ID == "call" && event.Tool.Status == "interrupted" {
+			interrupted = true
+		}
+	}
+	if !interrupted {
+		t.Fatal("interrupted tool.done was not replayable")
 	}
 	seq := run.Seq
 	if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil || run.Seq != seq {

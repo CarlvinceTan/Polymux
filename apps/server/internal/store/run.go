@@ -400,6 +400,9 @@ func (s *Store) recoverRuns(ctx context.Context) error {
 		for i := range run.Tools {
 			if run.Tools[i].Status == "running" {
 				run.Tools[i].Status = "interrupted"
+				if _, err := s.Append(ctx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &run.Tools[i]}, nil); err != nil {
+					return err
+				}
 			}
 		}
 		run.ToolID = nil

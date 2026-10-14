@@ -447,7 +447,7 @@ func (s *pigSession) Send(ctx context.Context, m contract.Message, emit func(Del
 }
 
 // redact and clip bound what chat rows show; a payload is never sent whole.
-var secrets = regexp.MustCompile(`(?i)\b(?:sk-|ghp_|github_pat_|xox[baprs]-|ntn_|secret_)[A-Za-z0-9_-]{12,}|\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:api[_-]?key|(?:access[_-]?)?token|secret|password|passwd|authorization)["']?\s*[=:]\s*["']?[^\s"']+|bearer\s+\S+`)
+var secrets = regexp.MustCompile(`(?i)\b(?:sk-|ghp_|github_pat_|xox[baprs]-|ntn_|secret_)[A-Za-z0-9_-]{12,}|\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|["']?(?:api[_-]?key|(?:access[_-]?)?token|secret|password|passwd|authorization)["']?\s*[=:]\s*(?:bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s"']+)|bearer\s+\S+`)
 
 func redact(text string) string { return secrets.ReplaceAllString(text, "[redacted]") }
 

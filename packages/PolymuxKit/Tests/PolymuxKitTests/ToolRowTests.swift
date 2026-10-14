@@ -60,4 +60,12 @@ import Testing
         #expect(restored.toolRows(for: failed.id).first?.failed == true)
         #expect(restored.toolRows(for: failed.id).first?.output == "false\nfailure")
     }
+
+    @Test func toolExcerptKeepsFirstTwentyLines() {
+        let output = (1...30).map { "line \($0)" }.joined(separator: "\n")
+        let rows = ActivityStore.toolRows(for: run([tool("1", "bash", "go test ./...", output: output)]))
+        #expect(rows[0].output == "go test ./...\n" + (1...20).map { "line \($0)" }.joined(separator: "\n"))
+        let reads = ActivityStore.toolRows(for: run([tool("1", "read", "one", output: output), tool("2", "read", "two", output: output)]))
+        #expect(!reads[0].output.contains("line 21"))
+    }
 }

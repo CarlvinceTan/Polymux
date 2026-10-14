@@ -220,7 +220,7 @@ public final class ActivityStore {
                 failed: ["failed", "cancelled", "interrupted"].contains(tool.status), running: tool.status == "running")
     }
     private static func readRow(_ group: [ToolActivity]) -> ToolRow {
-        let parts = group.flatMap { [$0.summary ?? "", $0.output ?? ""] }.filter { !$0.isEmpty }
+        let parts = group.flatMap { [$0.summary ?? "", ($0.output ?? "").components(separatedBy: "\n").prefix(20).joined(separator: "\n")] }.filter { !$0.isEmpty }
         return ToolRow(id: "reads:" + group[0].id, title: "Read \(group.count) files",
                        output: parts.joined(separator: "\n"),
                        failed: false, running: group.contains { $0.status == "running" })
