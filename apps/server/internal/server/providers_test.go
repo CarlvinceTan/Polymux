@@ -71,6 +71,9 @@ func TestProvidersAPI(t *testing.T) {
 		status                      int
 	}{
 		{"POST", "/providers", body, "unique IDs", 400},
+		{"POST", "/providers", `{"id":"q","type":"custom","name":"Test","baseURL":"https://u:p@host/v1"}`, "without credentials", 400},
+		{"PATCH", "/providers/p", `{"baseURL":"https://u:p@host/v1"}`, "without credentials", 400},
+		{"PATCH", "/providers/p", `{"baseURL":"https://u@host/v1"}`, "without credentials", 400},
 		{"PATCH", "/providers/p", `{"baseURL":"file:///tmp/models"}`, "HTTP or HTTPS", 400},
 		{"PATCH", "/providers/p", `{"id":"other"}`, "cannot change", 400},
 		{"PATCH", "/providers/p", `{"headers":{"Authorization":"secret"}}`, "credentials out of headers", 400},
@@ -81,6 +84,9 @@ func TestProvidersAPI(t *testing.T) {
 		if got := call(tc.method, tc.path, tc.body, tc.status); !strings.Contains(got, tc.message) {
 			t.Fatalf("missing specific error: %s", got)
 		}
+	}
+	if got := prefs.Providers(); len(got) != 1 || got[0].BaseURL != upstream.URL+"/v1" {
+		t.Fatalf("rejected URLs changed the saved provider: %+v", got)
 	}
 	call("DELETE", "/providers/p", "", 204)
 	if len(secrets) != 0 || len(prefs.Providers()) != 0 {
