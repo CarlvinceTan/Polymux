@@ -281,25 +281,40 @@ IDLE_S=${LANE_IDLE_S:-$(( ${LANE_IDLE_MIN:-12} * 60 ))}; RS=${LANE_RETRY_SLEEP:-
 #  - no new commit for LANE_WD_NOCOMMIT_MIN (30) min since the start or the last commit, or
 #  - the same test fails LANE_WD_TESTFAIL_N (3) times in this attempt's log (go "--- FAIL: X", swift "✘ Test X()
 #    failed", XCTest "Test Case '-[C X]' failed", test-lanes/merge-queue "FAIL x", pytest "FAILED x").
-# A test-loop stop keeps the same agent, pins branch: so the retry resumes at HEAD, and never counts toward the
-# breaker; runs that add test files get LANE_WD_TESTFAIL_NEW_N (6). Any run with commits skips the breaker too.
+# A test-loop stop that made commits keeps the same agent, pins branch: so the retry resumes at HEAD, and never counts toward the
+# breaker; tests the run added get LANE_WD_TESTFAIL_NEW_N (6). Any run with commits skips the breaker too.
 # Then: stop_agent (opencode-aware teardown) and a retry brief with "agent: <other>" (codex <-> opencode;
 # LANE_WD_ALT overrides) and a "## Watchdog" note. 0 disables a limit. Only attempt 1 is re-queued (stop rule).
 WDOG=""; wd_failname() { [ -f "$LOG" ] || return 1; tail -c +"${LOG0:-1}" "$LOG" 2>/dev/null | perl -ne '
     if (/--- FAIL: (\S+)/) { print "$1\n" } elsif (/✘ Test (\S+?)\(?\)? .*failed/) { print "$1\n" }
     elsif (/Test Case .-\[\S+ (\S+?)\]. failed/) { print "$1\n" } elsif (/^FAIL +(\S.*?)\s*$/) { print "$1\n" }
     elsif (/^FAILED (\S+)/) { print "$1\n" }' | sort | uniq -c | sort -rn | awk -v n="$1" '$1>=n{ $1=""; sub(/^ /,""); print; exit}'; }
+wd_failcounts() { [ -f "$LOG" ] || return 1; tail -c +"${LOG0:-1}" "$LOG" 2>/dev/null | perl -ne '
+    if (/--- FAIL: (\S+)/) { print "$1\n" } elsif (/✘ Test (\S+?)\(?\)? .*failed/) { print "$1\n" }
+    elsif (/Test Case .-\[\S+ (\S+?)\]. failed/) { print "$1\n" } elsif (/^FAIL +(\S.*?)\s*$/) { print "$1\n" }
+    elsif (/^FAILED (\S+)/) { print "$1\n" }' | sort | uniq -c | sort -rn | sed -E 's/^ *([0-9]+) /\1\t/'; }
+# test files the run added since START: *_test.go/.py/.sh, *Tests.swift / *Test.swift, test_*.py, test-*.sh, or under tests/ (not latest.go, contests.json)
+WD_TESTRE='(^|/)tests?/|_test\.[A-Za-z]+$|Tests?\.swift$|(^|/)test_[^/]*\.py$|(^|/)test-[^/]*\.sh$'
+wd_newtestfiles() { git -C "$WT" diff --name-only --diff-filter=A "$START" 2>/dev/null | grep -E "$WD_TESTRE"; }
 wd_check() {  # sets WDOG to the reason when a limit trips
   local nc=${LANE_WD_NOCOMMIT_MIN:-30} tf=${LANE_WD_TESTFAIL_N:-3} h t
-  # runs that add test files iterate on new tests: allow LANE_WD_TESTFAIL_NEW_N (6) same-test failures instead
-  [ "$tf" -gt 0 ] && [ -n "${START:-}" ] && git -C "$WT" diff --name-only --diff-filter=A "$START" 2>/dev/null | grep -qiE '(^|/)(tests?/|[^/]*_test\.|[^/]*tests?\.|test_[^/]*$|test-[^/]*\.sh$)' && tf=${LANE_WD_TESTFAIL_NEW_N:-6}
+  local tn=${LANE_WD_TESTFAIL_NEW_N:-6} c n lim nf=""
+  # tests this run added (#267): a failing test whose name appears in a test file the run added gets
+  # LANE_WD_TESTFAIL_NEW_N (6); every other failing test keeps LANE_WD_TESTFAIL_N.
+  [ "$tf" -gt 0 ] && [ -n "${START:-}" ] && nf=$(wd_newtestfiles)
   h=$(git -C "$WT" rev-parse HEAD 2>/dev/null); [ "$h" != "${WD_HEAD:-}" ] && { WD_HEAD=$h; WD_T=$(date +%s); }
   [ "${LANE_WD_NOCOMMIT_S:-$((nc * 60))}" -gt 0 ] && [ $(( $(date +%s) - ${WD_T:-$(date +%s)} )) -ge "${LANE_WD_NOCOMMIT_S:-$((nc * 60))}" ] && {
     WDOG="no new commit for $(( $(date +%s) - WD_T ))s (limit ${LANE_WD_NOCOMMIT_S:-$((nc * 60))}s)"; return 0; }
-  [ "$tf" -gt 0 ] && t=$(wd_failname "$tf") && [ -n "$t" ] && { WDOG="test '$t' failed $tf+ times in this attempt"; WD_KIND=test; return 0; }
+  [ "$tf" -gt 0 ] && while IFS=$'\t' read -r c n; do [ -n "$n" ] || continue; lim=$tf
+      [ -n "$nf" ] && (cd "$WT" && printf '%s\n' "$nf" | tr '\n' '\0' | xargs -0 grep -qF -- "${n%%/*}" 2>/dev/null) && lim=$tn
+      [ "$lim" -gt 0 ] && [ "$c" -ge "$lim" ] && { WDOG="test '$n' failed $lim+ times in this attempt"; WD_KIND=test
+        [ -n "$(git -C "$WT" log --oneline "${START:-HEAD}"..HEAD 2>/dev/null)" ] && RUN_COMMITS=1; return 0; }
+    done < <(wd_failcounts)
   return 1; }
-# test-watchdog stops (#267) keep the same agent and continue from the run's latest commit (branch: pinned).
-wd_alt() { [ "${WD_KIND:-}" = test ] && { cfg lane "$L" agent; return; }; [ -n "${LANE_WD_ALT:-}" ] && { echo "$LANE_WD_ALT"; return; }; case $(cfg lane "$L" agent) in opencode) echo codex;; *) echo opencode;; esac; }
+# test-watchdog stops (#267) with commits keep the same agent and continue from the run's latest commit (branch:
+# pinned); with no commits they fail over to the other agent like any other watchdog stop.
+wd_same() { [ "${WD_KIND:-}" = test ] && [ -n "${RUN_COMMITS:-}" ]; }   # test loop AND the run committed: resume, same agent
+wd_alt() { wd_same && { cfg lane "$L" agent; return; }; [ -n "${LANE_WD_ALT:-}" ] && { echo "$LANE_WD_ALT"; return; }; case $(cfg lane "$L" agent) in opencode) echo codex;; *) echo opencode;; esac; }
 # opencode lanes: "opencode run" attaches to the shared "opencode serve --service", so killing our process group
 # leaves the SESSION running on the server (it keeps calling the model and tools). oc_capture records this
 # attempt's session id (newest session whose directory is our worktree, created since the attempt began) in the
@@ -331,6 +346,12 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   TRIED="$TRIED $L"; BL=$(branch_lock_dir "$B")
   lock_take "$BL" || { ev failed "$L" "branch $B has another writer (pid $(lock_holder "$BL"))"; continue; }; BLS="$BLS $BL"
   ev running "$L" "$WT"
+  # The path comes from the 32-char slug, so a retry can land on attempt 1's tree, which unit_free left detached
+  # with its changes kept. Never carry (or delete) those changes: a dirty existing tree -> fresh unique path.
+  if [ -d "$WT" ] && [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; then
+    echo "worktree $WT has uncommitted changes from an earlier attempt; kept as is, using a fresh worktree" >> "$LOG"
+    ev wt_dirty "$L" "reuse refused: $WT dirty; fresh worktree"; WT="$WTR/$L-$SLUG-$(date +%m%d%H%M%S)"
+    [ -e "$WT" ] && { ev failed "$L" "worktree $WT exists; refusing to reuse a dirty tree"; continue; }; fi
   [ -d "$WT" ] || free_branch "$B" "$WT"
   if [ ! -d "$WT" ]; then  # reuse an existing local branch, else track origin/<B> (continuing a PR), else create from BASE
     WOK=""; for wtry in 1 2 3; do   # transient failures (index.lock, stale admin dir): prune and retry; the agent never ran
@@ -356,7 +377,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   fi
   [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash "$SD/wt-setup.sh") >> "$LOG" 2>&1
   START=$(git -C "$WT" rev-parse HEAD)   # branch head at unit start: size, trailer and no-commit checks measure only this run's work
-  OCS=""; WDOG=""; WD_KIND=""; WD_HEAD=""; WD_T=""; LOG0=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 )); set -m; run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; set +m; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
+  OCS=""; WDOG=""; WD_KIND=""; RUN_COMMITS=""; WD_HEAD=""; WD_T=""; LOG0=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 )); set -m; run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; set +m; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
   while kill -0 $AP 2>/dev/null; do sleep "${LANE_POLL:-30}"   # liveness = new commit/push/change, not log mtime
     oc_capture
     wd_check && { ev watchdog "$L" "$WDOG; stopping, retry on $(wd_alt)"; echo "watchdog: $WDOG" >> "$LOG"; stop_agent; break; }
@@ -434,10 +455,10 @@ if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to 
   DEF=$(deferred_hit "$BT" "$SLUG") && QD="$OPS/deferred"   # deferred by policy: park the retry beside it, never back in queue/
   if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)-$SLUG-retry.task"
     QB=$(mktemp); { echo "$BT (attempt 2)"; echo "needs: ${NEEDS:-none}"; echo "expected_min: $EXP"   # title first (queue-write rule)
-      [ -n "$TASKF" ] && grep -iE '^(unit|scope|card|issue|labels|after|type|area):' "$TASKF"; { [ "$BRANCH" != "agent/$SLUG" ] || [ "${WD_KIND:-}" = test ]; } && echo "branch: $BRANCH"   # test watchdog: resume this branch at HEAD
+      [ -n "$TASKF" ] && grep -iE '^(unit|scope|card|issue|labels|after|type|area):' "$TASKF"; { [ "$BRANCH" != "agent/$SLUG" ] || wd_same; } && echo "branch: $BRANCH"   # test watchdog with commits: resume this branch at HEAD
       [ -n "$WDOG" ] && echo "agent: $(wd_alt)"
       echo "$TASK" | tail -n +2
-      [ -n "$WDOG" ] && printf '\n## Watchdog (attempt 1 on %s/%s stopped)\n%s. %s\nLast log lines:\n```\n%s\n```\n' "$L" "$(cfg lane "$L" agent)" "$WDOG" "$([ "${WD_KIND:-}" = test ] && echo "Continue from the latest commit on this branch; fix the failing test, do not start over." || echo "The previous agent looped; take a different approach.")" "$(tail -n 20 "$LOG" | sed 's/```//g')"; } > "$QB"
+      [ -n "$WDOG" ] && printf '\n## Watchdog (attempt 1 on %s/%s stopped)\n%s. %s\nLast log lines:\n```\n%s\n```\n' "$L" "$(cfg lane "$L" agent)" "$WDOG" "$(wd_same && echo "Continue from the latest commit on this branch; fix the failing test, do not start over." || echo "The previous agent looped; take a different approach.")" "$(tail -n 20 "$LOG" | sed 's/```//g')"; } > "$QB"
     sleep 1   # file newer than our events (lane-guard drop rule)
     if [ -n "$DEF" ]; then
       if QW --dir "$QD" --name "$(basename "$Q")" "$QB" >/dev/null 2>"$QB.err"; then ev deferred "$L" "failed on $L; unit is deferred ($(basename "$DEF")), retry parked in deferred/ ($Q)"
