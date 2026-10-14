@@ -84,6 +84,7 @@ final class ReadinessTests: XCTestCase {
         }
         app.launch()
         #if os(macOS)
+        // A GUI-session launch can leave the test runner in front.
         app.activate()
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10), "Sidebar launch opens a window")
         #endif

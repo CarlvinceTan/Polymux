@@ -21,7 +21,8 @@ cmd = "true"
 agent = "codex"
 cmd = "true"
 TOML
-echo .build/ > .gitignore; echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
+printf '.build/\n' > .gitignore   # same ignore as the real repo: scratch homes stay invisible to git status
+echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
 export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" LANE_SKIP_SETUP=1 LANE_TARGET=testmac
 export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
@@ -198,6 +199,7 @@ check "cleanup would prune old proof branch only" 'echo "$OUT" | grep -q "would:
 check "dry run kept the old proof branch" 'git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null'
 check "cleanup would remove merged" 'echo "$OUT" | grep -q "remove: $HOME/code/wt/merged (merged=1"'
 check "cleanup dry run deleted nothing" '[ -d "$HOME/code/wt/merged" ] && echo "$OUT" | grep -q "dry run"'
+check "cleanup dry run would trash (move), not delete" 'echo "$OUT" | grep -q "would: git -C .* worktree move $HOME/code/wt/merged $HOME/code/wt-trash/merged"'
 PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1
 # 8b cleanup never deletes a shut-down sim whose verify is still running (live verify.lock or fresh marker)
 SB="$T/simbin"; mkdir -p "$SB" "$LANES_HOME/locks/active"; git worktree add -q --detach "$HOME/code/wt/vlive" main
@@ -208,6 +210,22 @@ OUT=$(PATH="$SB:$T/bin:$PATH" bash scripts/cleanup.sh --apply 2>&1)
 check "cleanup keeps worktree + sim with a live verify.lock and a sim with a fresh marker; deletes the stale one" 'echo "$OUT" | grep -q "keep: $HOME/code/wt/vlive (in use" && ! grep -q "delete U1" "$T/simctl.log" && ! grep -q "delete U2" "$T/simctl.log" && grep -q "simctl delete U3" "$T/simctl.log" && echo "$OUT" | grep -q "keep: polymux-prv-fresh (verify running"'
 rm -rf "$HOME/code/wt/vlive/.build"; git worktree remove "$HOME/code/wt/vlive"
 check "--apply prunes old proof branch, keeps recent" '! git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null && [ "$(git ls-remote origin "refs/heads/proof-media-verify-vo-one-*" | wc -l | tr -d " ")" = 2 ]'
+# 8c trashed worktrees: a removable tree goes to ~/code/wt-trash with build output (read-only Go
+# module cache included) stripped; the purge deletes old pushed+clean entries and keeps dirty ones.
+git worktree add -q --detach "$HOME/code/wt/trashme" main
+mkdir -p "$HOME/code/wt/trashme/.build/lanehome/go/pkg/mod/x@v"; echo x > "$HOME/code/wt/trashme/.build/lanehome/go/pkg/mod/x@v/x.go"
+chmod -R a-w "$HOME/code/wt/trashme/.build"   # like GOMODCACHE: a plain rm -rf fails until chmod -R u+w
+PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1
+check "cleanup trashes a removable tree: source kept, read-only build output stripped" '[ ! -d "$HOME/code/wt/trashme" ] && [ -f "$HOME/code/wt-trash/trashme/README" ] && [ ! -e "$HOME/code/wt-trash/trashme/.build" ]'
+mkdir -p "$HOME/code/wt-trash"
+git worktree add -q --detach "$HOME/code/wt-trash/oldclean" main && mkdir -p "$HOME/code/wt-trash/oldclean/.build"
+git worktree add -q --detach "$HOME/code/wt-trash/olddirty" main && mkdir -p "$HOME/code/wt-trash/olddirty/.build" && echo dirty >> "$HOME/code/wt-trash/olddirty/README"
+git worktree add -q --detach "$HOME/code/wt-trash/fresh" main && mkdir -p "$HOME/code/wt-trash/fresh/.build"
+mkdir -p "$HOME/code/wt-trash/plain"; echo lost > "$HOME/code/wt-trash/plain/file"
+touch -t 202001010000 "$HOME/code/wt-trash/oldclean" "$HOME/code/wt-trash/olddirty" "$HOME/code/wt-trash/plain"
+OUT=$(PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply 2>&1)
+check "trash purge deletes the old pushed clean tree, keeps the dirty tree" 'echo "$OUT" | grep -q "purge: $HOME/code/wt-trash/oldclean" && [ ! -d "$HOME/code/wt-trash/oldclean" ] && echo "$OUT" | grep -q "keep: $HOME/code/wt-trash/olddirty (uncommitted changes)" && [ "$(tail -1 "$HOME/code/wt-trash/olddirty/README")" = dirty ]'
+check "trash purge strips build output everywhere, keeps fresh and unreadable entries" '[ ! -e "$HOME/code/wt-trash/olddirty/.build" ] && [ ! -e "$HOME/code/wt-trash/fresh/.build" ] && [ -d "$HOME/code/wt-trash/fresh" ] && [ -f "$HOME/code/wt-trash/plain/file" ] && echo "$OUT" | grep -q "keep: $HOME/code/wt-trash/fresh (trashed 0h ago)" && echo "$OUT" | grep -q "keep: $HOME/code/wt-trash/plain (git state unreadable)"'
 # 18 continuous dispatch: once, after the unit lock is released, background, non-fatal
 export GLOG="$T/g18"; rm -rf "$LANES_HOME/chain-fails"
 OUT=$(LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain next' t16)" 2>&1); waitfor "$GLOG" dispatch
@@ -362,6 +380,31 @@ OUT=$(env LANES_TOML="$T/gate.toml" PATH="$VB:$PATH" CURSOR_API_KEY=main-should-
 check "lane2 runs with its own HOME and only its own vault key (inherited key stripped)" '[ "$(cat "$T/vault.log")" = "get student key" ] && grep -qx "HOME=$T/lane2home KEY=lanekey-test" "$T/agent.rec" && ! grep -q main-should-not-leak "$T/agent.rec"'
 OUT=$(env LANES_TOML="$T/gate.toml" CURSOR_API_KEY=main-should-not-leak LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='echo "SH=$HOME K=${CURSOR_API_KEY:-unset}" > "$HOME/../stub.rec"; echo s >> s.txt && git add s.txt && git commit -qm s -m "Lane: $LANE/$AGENT"' $RL lane4 "$(task 'Gate strip' g6)" 2>&1)
 check "non-cursor lane child never inherits CURSOR_API_KEY" 'grep -q "K=unset" "$HOME/../stub.rec"'
+# 22b codex lane child: HOME is a per-unit scratch dir inside the worktree (TCC: no $HOME scans of
+# the real Downloads/Documents/Music/Photos); auth/config stay reachable via explicit env vars.
+CXC="$T/codexbin"; mkdir -p "$CXC"
+cat > "$CXC/codex" <<'X'
+#!/bin/bash
+{ echo "HOME=$HOME"; echo "CODEX_HOME=$CODEX_HOME"; echo "GH_CONFIG_DIR=$GH_CONFIG_DIR"; echo "GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL"; echo "GOMODCACHE=$GOMODCACHE"; echo "GOCACHE=$GOCACHE"; echo "PWD=$PWD"; echo "ARGV=$*"; } > "$REC"
+echo z >> c.txt && git add c.txt && git commit -qm "stub change" -m "Lane: laneC/codex"
+X
+chmod +x "$CXC/codex"
+cat > "$T/codex.toml" <<TOML
+max_builds = 1
+lock_dir = "~/ops/lanes/locks"
+mac_hosts = ["testmac"]
+[laneC]
+agent = "codex"
+cmd = "$CXC/codex"
+TOML
+: > "$T/codex.rec"
+OUT=$(env -u CODEX_HOME -u GH_CONFIG_DIR -u GIT_CONFIG_GLOBAL LANES_TOML="$T/codex.toml" REC="$T/codex.rec" LANE_NO_CHAIN=1 LANE_DRY=1 $RL laneC "$(task 'Codex home' cx1)" 2>&1); RC=$?
+CWT="$LANES_WT/laneC-codex-home"
+check "codex lane: HOME is the worktree scratch dir, cwd is the worktree, sandbox unchanged" '[ $RC = 0 ] && grep -qx "HOME=$CWT/.build/lanehome" "$T/codex.rec" && grep -qx "PWD=$CWT" "$T/codex.rec" && grep -q -- "-s danger-full-access" "$T/codex.rec"'
+check "codex lane: CODEX_HOME/GH_CONFIG_DIR/GIT_CONFIG_GLOBAL point at the real home" 'grep -qx "CODEX_HOME=$HOME/.codex" "$T/codex.rec" && grep -qx "GH_CONFIG_DIR=$HOME/.config/gh" "$T/codex.rec" && grep -qx "GIT_CONFIG_GLOBAL=$HOME/.gitconfig" "$T/codex.rec"'
+check "codex lane: Go caches are shared outside the scratch HOME and created" 'grep -qx "GOMODCACHE=$HOME/Library/Caches/polymux-lanes/gomod" "$T/codex.rec" && grep -qx "GOCACHE=$HOME/Library/Caches/polymux-lanes/gobuild" "$T/codex.rec" && [ -d "$HOME/Library/Caches/polymux-lanes/gomod" ] && [ -d "$HOME/Library/Caches/polymux-lanes/gobuild" ]'
+check "codex lane: scratch HOME is ignored, worktree git status stays clean" '[ -z "$(git -C "$CWT" status --porcelain)" ] && { [ -e "$CWT/.build/lanehome/.local" ] || [ -L "$CWT/.build/lanehome/.local" ]; }'
+check "codex lane: scratch HOME links shared state back (ops/lanes, keychains) and .local to the real home" '[ -L "$CWT/.build/lanehome/ops/lanes" ] && [ -L "$CWT/.build/lanehome/.local" ] && [ -L "$CWT/.build/lanehome/Library/Keychains" ] && [ "$(cd "$CWT/.build/lanehome/ops/lanes" && pwd -P)" = "$(cd "$LANES_HOME" && pwd -P)" ]'
 # 23 main-account key guard up front (#72 round 3): exit 5 before claim/worktree/vault, case-insensitive
 cat >> "$T/gate.toml" <<TOML
 [lane6]
@@ -413,12 +456,13 @@ check "cap is atomic: 4 simultaneous starts with 1 live -> 1 runs, 3 refused" '[
 kill $LP1; wait $LP1 2>/dev/null; rm -rf "$LANES_HOME"/units/cap-*.lock "$LANES_HOME/queue/"*.task
 # 25 committed agents/lanes.toml matches Carlvince's final layout
 CT="$SRC/agents/lanes.toml"
-check "committed lanes.toml: lane3 only primary (max 2), lane4 fallback, lane1+lane2 disabled, no main key" '[ "$(LANES_TOML=$CT python3 scripts/lanes.py primaries)" = lane3 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py order lane4)" = "lane3 lane4" ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py maxconc lane3)" = 2 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane4 role)" = fallback ] && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane1 && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane2 && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane1 key)" ] && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane2 key)" ]'
+check "committed lanes.toml: lane3 (max 2) and temporary lane4 primary, lane1+lane2 disabled, no main key" '[ "$(LANES_TOML=$CT python3 scripts/lanes.py primaries)" = "lane3 lane4" ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py order lane4)" = "lane4 lane3" ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py maxconc lane3)" = 2 ] && [ "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane4 role)" = primary ] && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane1 && ! LANES_TOML=$CT python3 scripts/lanes.py usable lane2 && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane1 key)" ] && [ -z "$(LANES_TOML=$CT python3 scripts/lanes.py lane lane2 key)" ]'
 rm -f "$LANES_HOME/queue/"*.task
 # 24 (#75) prompt names the size cap and this run's start commit
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='printf "%s" "$PROMPT" > "$HOME/../prompt.txt"; '"$STUB_OK" $RL laneA "$(task 'Prompt start' p1)" 2>&1)
 PS0=$(git -C "$LANES_WT/laneA-prompt-start" rev-parse HEAD~1)
 check "prompt has size cap and the run's start commit (size base == START)" 'grep -q "Size cap: 300 changed lines" "$T/prompt.txt" && grep -q "git diff --stat $PS0..HEAD" "$T/prompt.txt"'
+check "prompt forbids searching or listing outside the worktree" 'grep -q "Never search or list outside it" "$T/prompt.txt"'
 # 25 idle agent: whole process group stopped, no surviving grandchild
 OUT=$(LANE_NO_CHAIN=1 LANE_IDLE_S=2 LANE_KILL_WAIT=1 LANE_STUB_CMD='trap "" TERM; (trap "" TERM; sleep 300) & echo $! > "$HOME/../gc.pid"; sleep 300' $RL laneA "$(task 'Idle group' p2)" 2>&1)
 GC=$(cat "$T/gc.pid" 2>/dev/null); sleep 0.5
@@ -490,12 +534,25 @@ check "diverged local branch kept as cody-stale/<branch>-<sha>, run continues fr
 rm -f "$LANES_HOME/queue/"*.task
 # 28 GitHub labels (brief_labels) and Notion-free GitHub writes (gh_write)
 . scripts/lanelib.sh
+labels_valid() {
+  local kind value label
+  for kind in type area extra; do
+    case "$kind" in type) set -- $LANE_TYPES;; area) set -- $LANE_AREAS;; extra) set -- "Flaky test" dogfood;; esac
+    for value; do
+      label=$(gh_label "$kind" "$value")
+      case "$label" in Feature|Bug|Infra|Test|Docs|Pairing|Chat|Routines|Server|UI|Lanes|"Flaky test"|dogfood) ;; *) return 1;; esac
+    done
+  done
+}
+check "labels: every type, area and extra maps to a live label name" 'labels_valid'
+OUT=$(bash "$SRC/scripts/test-board.sh" 2>&1); RC=$?
+check "test-board: standalone run exits 2 with sourcing instructions" '[ $RC = 2 ] && [ "$OUT" = "test-board.sh is sourced by test-lanes.sh; run bash scripts/test-lanes.sh" ]'
 bl() { printf "$1" > "$T/bl.task"; brief_labels "$T/bl.task" "${2:-bl.task}"; }
-check "labels: type:/area: headers win over inference" '[ "$(bl "# FIX thing\nneeds: xcode\ntype: infra\narea: chat, area:routines\n")" = "type:infra,area:chat,area:routines" ]'
-check "labels: needs xcode -> area:ui, FIX title -> type:bug" '[ "$(bl "# FIX chat switch\nneeds: xcode\n")" = "type:bug,area:ui" ]'
-check "labels: server/go path -> area:server, bug title -> type:bug" '[ "$(bl "# Pairing bug\nneeds: go\nscope: apps/server/**\n")" = "type:bug,area:server" ]'
-check "labels: scripts/ path -> area:lanes, otherwise type:feature" '[ "$(bl "# Queue tweak\nneeds: none\nscope: scripts/*\n")" = "type:feature,area:lanes" ]'
-check "labels: dogfood for 00NN-- names and dogfood briefs, flake for deflake tasks" '[ "$(bl "# Thing\nneeds: xcode\n" 0012--thing.task)" = "type:feature,area:ui,dogfood" ] && [ "$(bl "# Deflake pairing test\nneeds: go\nscope: apps/server/p.go\nFound while dogfooding.\n")" = "type:feature,area:server,dogfood,flake" ] && [ "$(bl "# Plain\nneeds: xcode\n" 0012-x.task)" = "type:feature,area:ui" ]'
+check "labels: type:/area: headers win over inference" '[ "$(bl "# FIX thing\nneeds: xcode\ntype: infra\narea: chat, area:routines\n")" = "Infra,Chat,Routines" ]'
+check "labels: needs xcode -> UI, FIX title -> Bug" '[ "$(bl "# FIX chat switch\nneeds: xcode\n")" = "Bug,UI" ]'
+check "labels: server/go path -> Server, bug title -> Bug" '[ "$(bl "# Pairing bug\nneeds: go\nscope: apps/server/**\n")" = "Bug,Server" ]'
+check "labels: scripts/ path -> Lanes, otherwise Feature" '[ "$(bl "# Queue tweak\nneeds: none\nscope: scripts/*\n")" = "Feature,Lanes" ]'
+check "labels: dogfood for 00NN-- names and dogfood briefs, Flaky test for deflake tasks" '[ "$(bl "# Thing\nneeds: xcode\n" 0012--thing.task)" = "Feature,UI,dogfood" ] && [ "$(bl "# Deflake pairing test\nneeds: go\nscope: apps/server/p.go\nFound while dogfooding.\n")" = "Feature,Server,dogfood,Flaky test" ] && [ "$(bl "# Plain\nneeds: xcode\n" 0012-x.task)" = "Feature,UI" ]'
 Z40=$(printf "%040d" 0); NID=3f60dbb6e05381518ce5c571f278c93d
 printf 'Summary ok\nMigrated from Notion card: https://www.notion.so/%s\nboard https://app.notion.com/p/x\nNotion page 3f60dbb6-e053-8151-8ce5-c571f278c93d\nhead %s\n' "$NID" "$Z40" > "$T/nb.md"
 SC=$(notion_scrub < "$T/nb.md")
@@ -516,7 +573,7 @@ G4="$T/ghbin4"; mkdir -p "$G4"
 printf '#!/bin/bash\ncase "$1 $2" in\n"pr create") printf "%%s\\n" "$@" > "%s/prargs"; echo https://github.com/o/r/pull/103;;\nesac\nexit 0\n' "$T" > "$G4/gh"; chmod +x "$G4/gh"
 printf '# Chat lane labels\nneeds: none\nexpected_min: 5\ntype: test\narea: chat\ncard: https://www.notion.so/%s\nNotes from https://app.notion.com/p/%s\n' "$NID" "$NID" > "$T/lb.task"
 OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/lb.task" --branch test/labels 2>&1); RC=$?
-check "run-lane PR: labels from type:/area: headers, no Notion text in title or body" '[ $RC = 0 ] && grep -qx "type:test,area:chat" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
+check "run-lane PR: labels from type:/area: headers, no Notion text in title or body" '[ $RC = 0 ] && grep -qx "Test,Chat" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
 grep -v pull/103 "$LANES_HOME/results.tsv" > "$T/r.tsv"; cat "$T/r.tsv" > "$LANES_HOME/results.tsv"; rm -f "$LANES_HOME"/cards/chat-lane-labels*   # keep later cleanup cases exact
 git worktree remove --force "$LANES_WT/laneA-chat-lane-labels" 2>/dev/null
 printf '# Good\nneeds: none\nexpected_min: 5\ntype: bug\narea: ui, area:server\n' > "$T/qh1.task"; printf '# Bad\nneeds: none\nexpected_min: 5\ntype: chore\narea: web\n' > "$T/qh2.task"

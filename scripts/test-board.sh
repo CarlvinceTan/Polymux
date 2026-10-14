@@ -1,5 +1,9 @@
 # test-board.sh: board-update.sh cases (GitHub Project 3 via gh GraphQL), sourced by test-lanes.sh
 # (uses its check/T/HOME/LANES_HOME/RL). Stub gh (+ tripwire vault/curl); no network.
+if ! declare -F check >/dev/null; then
+  echo "test-board.sh is sourced by test-lanes.sh; run bash scripts/test-lanes.sh" >&2
+  exit 2
+fi
 B="$T/bb"; mkdir -p "$B"; BLOG="$LANES_HOME/board.log"; BU="bash scripts/board-update.sh"; C=$LANES_HOME/cards
 export BOARD_T="$T" BOARD_MAP="$T/board-map.tsv"; BP="$B:$T/bin:$PATH"
 cp "$SRC"/scripts/{board-update.sh,lanelib.sh,media-check.py} scripts/
@@ -38,7 +42,7 @@ echo Backlog > "$T/cur"; PATH=$BP $BU start fake-unit
 check "board: no BOARD_LIVE -> dry run logs the write, zero gh calls" 'grep -q "fake-unit start: DRY-RUN would set Status of the issue #42 item -> .In progress." "$BLOG" && [ ! -s "$T/ghb.log" ]'
 touch "$LANES_HOME/BOARD_LIVE"; PATH=$BP $BU start fake-unit
 check "board: live start from Backlog = add issue item (map node, no lookup) + one Status write" \
-  '[ "$(NA "c=I_node42")" = 1 ] && [ "$(NW "o=65b9edf8")" = 1 ] && [ "$(NW "f=PVTSSF_lAHOCDGEdM4Bmy5szhlabM8")" = 1 ] && ! grep -q "issue(number" "$T/ghb.log" && grep -q "p=PVT_kwHOCDGEdM4Bmy5s" "$T/ghb.log"'
+  '[ "$(NA "c=I_node42")" = 1 ] && [ "$(NW "o=65b9edf8")" = 1 ] && [ "$(NW "f=PVTSSF_lADOEFHK5c4Bm7iszhlifJg")" = 1 ] && ! grep -q "issue(number" "$T/ghb.log" && grep -q "p=PVT_kwDOEFHK5c4Bm7is" "$T/ghb.log"'
 : > "$T/ghb.log"; for s in "In review" Done; do echo "$s" > "$T/cur"; PATH=$BP $BU start fake-unit; done
 check "board: start never moves In review/Done backwards (Status from the add result, no extra read)" '[ "$(NW)" = 0 ] && [ "$(NA)" = 2 ] && [ "$(grep -c "never backwards" "$BLOG")" = 2 ]'
 echo Done > "$T/cur"; : > "$T/ghb.log"; PATH=$BP $BU merged fake-unit
@@ -51,7 +55,7 @@ echo Backlog > "$T/cur"; : > "$T/ghb.log"; PATH=$BP $BU pr fake-unit https://git
 check "board: pr adds the PR as an item, PR field + In review on the issue item" \
   '[ "$(NA "c=PRNODE_1")" = 1 ] && [ "$(NA "c=I_node42")" = 1 ] && [ "$(NW "t=https://github.com/o/r/pull/9")" = 1 ] && [ "$(NW "o=abdef12c")" = 2 ] && [ "$(cat "$C/fake-unit.pr")" = PRNODE_1 ]'
 : > "$T/ghb.log"; PATH=$BP $BU verify fake-unit UI-verified; PATH=$BP $BU verify fake-unit bogus >/dev/null
-check "board: Verification exact option; unknown level refused" '[ "$(NW "f=PVTSSF_lAHOCDGEdM4Bmy5szhlabeg.*o=f9b24fa7")" = 1 ] && [ "$(NW)" = 1 ] && grep -q "board_error	verify	level .bogus. is not a board option" "$LANES_HOME/events.tsv"'
+check "board: Verification exact option; unknown level refused" '[ "$(NW "f=PVTSSF_lADOEFHK5c4Bm7iszhlifKc.*o=f9b24fa7")" = 1 ] && [ "$(NW)" = 1 ] && grep -q "board_error	verify	level .bogus. is not a board option" "$LANES_HOME/events.tsv"'
 for l in unit-test-verified:38201913 build-only:0f2c4aa2 blocked:b8e8ce46 failed:77449e23; do : > "$T/ghb.log"; PATH=$BP $BU verify fake-unit ${l%:*}
   [ "$(NW "o=${l#*:}")" = 1 ] || echo "level ${l%:*} wrong" >> "$T/lvbad"; done
 check "board: every Verification level maps to its Project option" '[ ! -f "$T/lvbad" ]'
@@ -98,10 +102,10 @@ printf 'needs: none\nexpected_min: 5\nissue: 31\nBoard works\n' > "$T/bw.task"
 PATH=$BP LANE_DRY=1 LANE_STUB_CMD="sleep 2; grep -q \"board-works start\" \"$BLOG\" && echo early > \"$T/bw.seen\"; $STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
 check "run-lane: start not written before the agent works, written after its first commit" '[ ! -f "$T/bw.seen" ] && grep -q "board-works start: DRY-RUN .*-> .In progress." "$BLOG"'
 VCN='mkdir -p .build/proof && printf "verified: see https://app.notion.com/p/'"$LID"'\n" > .build/proof/summary.md && echo unit-test-verified > .build/proof/level'
-printf '# Closes issue\nneeds: none\nexpected_min: 5\nIssue: 42\nLabels: type:infra,area:lanes\n' > "$T/ci.task"; : > "$T/ghb.log"
+printf '# Closes issue\nneeds: none\nexpected_min: 5\nIssue: 42\nLabels: Infra,Lanes\n' > "$T/ci.task"; : > "$T/ghb.log"
 OUT=$(PATH=$BP LANE_NO_CHAIN=1 LANE_RETRY_SLEEP=0 LANE_VERIFY_CMD="$VCN" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/ci.task" --branch test/closes 2>&1); RC=$?
 PRB=$(sed -n '/^pr create/,$p' "$T/ghb.log" | head -1)
-check "run-lane: PR body has Closes #42, ends with Release Notes, no Notion ref reaches gh" '[ $RC = 0 ] && echo "$PRB" | grep -q "Closes #42" && echo "$PRB" | grep -q "Release Notes:  - N/A" && echo "$PRB" | grep -q -- "--label type:infra,area:lanes" && ! notion_ref < "$T/ghb.log"'
+check "run-lane: PR body has Closes #42, ends with Release Notes, no Notion ref reaches gh" '[ $RC = 0 ] && echo "$PRB" | grep -q "Closes #42" && echo "$PRB" | grep -q "Release Notes:  - N/A" && echo "$PRB" | grep -q -- "--label Infra,Lanes" && ! notion_ref < "$T/ghb.log"'
 check "run-lane: issue: header is not part of the brief/title" '! echo "$PRB" | grep -qi "issue: 42" && ! echo "$PRB" | grep -q "Labels:" && grep -q -- "--title # Closes issue" "$T/ghb.log"'
 # approve-proof.sh + cleanup.sh route through the same board writer
 AW="$HOME/code/wt/laneA-approve-me"; AP="$AW/.build/proof"; mkdir -p "$AP"; cp "$V/ok.mp4" "$AP/"; echo ok.mp4 > "$AP/uploaded"
