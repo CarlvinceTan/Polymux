@@ -46,7 +46,7 @@ if not refs:
                 try: met = any(re.match(r"^#?\s*" + re.escape(unit) + r"(?:\s|:|$)", pr["title"]) for pr in json.loads(n))
                 except (ValueError, TypeError, KeyError): met = False
             if not met: stop("dep", f"Deps: {unit} is not merged; add after: refs")
-pattern = r"(?<![\w/~-])((?:[\w.-]+/)*[\w.-]+\.(?:md|task))(?:#([\w.-]+)|[ `]*§\s*([\d.]+))?"
+pattern = r"(?<![\w/.~-])((?:[\w.-]+/)*[\w.-]+\.(?:md|task))(?:#([\w.-]+)|[ `]*§\s*([\d.]+))?"
 branch = re.search(r"^branch:[ \t]*(\S+)", text, re.M)
 for line in text.splitlines():
     header = re.match(r"^[Ss]pec:[ \t]*", line)

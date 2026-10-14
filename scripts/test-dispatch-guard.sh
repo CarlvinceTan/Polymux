@@ -48,6 +48,8 @@ with tempfile.TemporaryDirectory() as directory:
         ('bare unit', 'Deps: SB1.', 0),
         ('other prose', 'Deps: (cloud RT1.', 0),
         ('tilde', 'Spec: ~/specs/X.md#missing', 0),
+        ('absolute dotted', 'Spec: /workspace/polymux.merge/X.md#missing', 0),
+        ('output with input', 'Create result.md using missing.md#section', 4),
         ('queue index', 'Spec: QUEUE.md', 0),
         ('output anchor', 'Create capture-notes.md#result', 0),
         ('proof anchor', 'Spec: .proof/unit/pr-body.md#result', 0),
