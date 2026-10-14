@@ -76,14 +76,17 @@ wts | while IFS= read -r W; do
   strip_build "$W"
   trash_move "$W"
 done
-# Trash purge: strip build output from every trashed tree, then delete entries older than 24 h whose
-# branch is pushed and that have no tracked changes (untracked agent debris doesn't count, same as the
-# keep rule above). A trashed tree whose git state can't be read is kept: never delete unverifiable work.
+# Trash purge: strip build output, then delete copies without .git after 24 h; dirty files are in verify-evidence.
+# Older entries with .git must be pushed and have no tracked changes; keep unreadable git state.
 if [ -d "$TRASH" ]; then
   for d in "$TRASH"/*; do [ -d "$d" ] || continue
     H=$(( ( $(date +%s) - $(_mtime "$d") ) / 3600 ))   # read the age first: rm .build would reset the tree's mtime
     strip_build "$d"
     [ "$H" -ge 24 ] || { keep "$d" "trashed ${H}h ago"; continue; }
+    if [ ! -e "$d/.git" ] && [ ! -L "$d/.git" ]; then
+      echo "purge: $d (trashed ${H}h ago, source copy)"
+      do_ rm -rf "$d"; continue
+    fi
     TL=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null); [ -n "$TL" ] && [ "$TL" = "$(cd "$d" && pwd -P)" ] || {
       keep "$d" "git state unreadable"; continue; }
     [ -z "$(git -C "$d" status --porcelain --untracked-files=no 2>/dev/null)" ] || { keep "$d" "uncommitted changes"; continue; }
