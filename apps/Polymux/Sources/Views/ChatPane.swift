@@ -18,14 +18,16 @@ struct ChatPane: View {
     @State private var showSearch = false
     @State private var searchQuery = ""
     @State private var paneWidth: CGFloat = 720
-    @State private var headerHeight: CGFloat = 88
-    @State private var toolbarInset: CGFloat = 44
+    @State private var headerHeight: CGFloat = 0
+    @State private var toolbarHeight: CGFloat?
     @FocusState private var searchFocused: Bool
     @State private var showVoice = false
     @State private var voiceStore: (any VoiceSession)?
     @State private var openingVoice = false
     @State private var voiceIssue: String?
     @State private var showProfile = false
+    @State private var profileTap: ContinuousClock.Instant?
+    @State private var headerTrace = SignpostTrace()
     @State private var target: ReplyTarget?
     @State private var highlight: ReplyTarget?
     @State private var jumpID = UUID()
@@ -84,9 +86,6 @@ struct ChatPane: View {
         .simultaneousGesture(TapGesture().onEnded { searchFocused = false }, isEnabled: showSearch)
         #endif
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { paneWidth = $0 }
-        #if os(macOS)
-        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { toolbarInset = $0 }
-        #endif
         .overlay(alignment: .bottom) {
             composer
                 .opacity(showSearch ? 0 : 1)
@@ -111,26 +110,6 @@ struct ChatPane: View {
             }
         }
         .navigationTitle("")
-        .overlay(alignment: .top) {
-            if showHeader && !showSearch {
-                ZStack(alignment: .top) {
-                    ChatHeader(title: chatTitle, subtitle: headerRole, members: members,
-                               conversationID: thread.id, runs: store.runs, activity: store.activity,
-                                connected: store.isConnected, speakingID: showVoice && voiceStore?.phase == .speaking ? voiceStore?.agentID : nil,
-                               edit: { showProfile = true })
-                        .padding(.top, 8)
-                        .offset(y: -toolbarInset)
-                        .accessibilityLabel(thread.isGroup ? "Edit chat" : "Edit \(agent.name)’s profile")
-                        .help(thread.isGroup ? "Edit chat" : "Edit agent profile")
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
-                }
-                #if os(iOS)
-                .background {
-                    ToolbarAnchor { top, safeTop in alignHeader(top: top, safeTop: safeTop) }
-                }
-                #endif
-            }
-        }
         .toolbar {
             if showHeader {
             ToolbarItem(placement: .principal) {
@@ -138,11 +117,13 @@ struct ChatPane: View {
                     searchField
                         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { headerHeight = $0 }
                 } else {
-                    // The overlapping avatar occupies the native toolbar's hit region.
-                    Button { showProfile = true } label: {
-                        Color.clear.frame(width: 80, height: 44).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain).accessibilityHidden(true)
+                    HeaderCapsule(title: chatTitle, members: members,
+                                  conversationID: thread.id, runs: store.runs,
+                                  activity: store.activity, connected: store.isConnected,
+                                  speakingID: showVoice && voiceStore?.phase == .speaking ? voiceStore?.agentID : nil,
+                                  height: toolbarHeight, edit: openProfile)
+                        .accessibilityLabel(thread.isGroup ? "Edit chat" : "Edit \(agent.name)’s profile")
+                        .help(thread.isGroup ? "Edit chat" : "Edit agent profile")
                 }
             }
             .sharedBackgroundVisibility(.hidden)
@@ -153,13 +134,23 @@ struct ChatPane: View {
                 } else {
                     Button("Search conversation", systemImage: "magnifyingglass") { showSearch = true }
                         .keyboardShortcut("f", modifiers: .command)
+                        .accessibilityIdentifier("header.search")
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { toolbarHeight = $0 }
                 }
             }
             }
         }
         .panel(isPresented: $showProfile) {
-            if thread.isGroup { GroupEditor(thread: thread, session: session) }
-            else { AgentEditor(agent: agent, session: session) }
+            Group {
+                if thread.isGroup { GroupEditor(thread: thread, session: session) }
+                else { AgentEditor(agent: agent, session: session) }
+            }
+            .onAppear {
+                if let profileTap {
+                    InstantUI.interval("HeaderFeedback", budget: InstantUI.feedbackBudget,
+                                       trace: headerTrace, from: profileTap) {}
+                }
+            }
         }
         .task {
             store.isVisible = scenePhase == .active
@@ -175,23 +166,23 @@ struct ChatPane: View {
         }
     }
 
-    private var members: [Agent] {
-        thread.participantIDs.compactMap { id in session.sidebar.agents.first { $0.id == id } }
+    private func openProfile() {
+        let tap = ContinuousClock().now
+        profileTap = tap
+        InstantUI.interval("HeaderState", budget: InstantUI.stateBudget,
+                           trace: headerTrace, from: tap) { showProfile = true }
     }
 
-    #if os(iOS)
-    private func alignHeader(top: CGFloat, safeTop: CGFloat) {
-        let inset = max(0, top + 8 - safeTop)
-        guard abs(toolbarInset - inset) > 0.5 else { return }
-        toolbarInset = inset
+    private var members: [Agent] {
+        #if DEBUG
+        if thread.isGroup && CommandLine.arguments.contains("--verify-header-five") {
+            return Array(session.sidebar.agents.prefix(5))
+        }
+        #endif
+        return thread.participantIDs.compactMap { id in session.sidebar.agents.first { $0.id == id } }
     }
-    #endif
 
     private var chatTitle: String { thread.isGroup ? thread.title : agent.name }
-
-    private var headerRole: String {
-        thread.isGroup ? "" : agent.role.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     private func author(_ message: Message) -> String {
         session.sidebar.agents.first { $0.id == message.agentID }?.name ?? agent.name
@@ -258,7 +249,7 @@ struct ChatPane: View {
         .accessibilityHidden(true)
     }
 
-    private var topInset: CGFloat { showHeader ? (showSearch ? 8 : max(0, headerHeight - toolbarInset) + 8) : 0 }
+    private var topInset: CGFloat { showHeader ? 8 : 0 }
 
     private var composer: some View {
         VStack(spacing: 4) {
@@ -437,7 +428,7 @@ struct ChatPane: View {
     }
 
     private func updateDate() {
-        let top = showHeader ? max(0, headerHeight - toolbarInset) : 0
+        let top = topInset
         let height = max(0, scrollHeight - composerHeight)
         let first = dateFrames.values
             .filter { $0.frame.maxY > top && $0.frame.minY < height }
@@ -678,50 +669,3 @@ private struct ThinkingDots: View {
     }
 }
 
-#if os(iOS)
-private struct ToolbarAnchor: UIViewRepresentable {
-    let changed: (CGFloat, CGFloat) -> Void
-
-    func makeUIView(context: Context) -> ToolbarView {
-        let view = ToolbarView()
-        view.isUserInteractionEnabled = false
-        view.isAccessibilityElement = false
-        return view
-    }
-
-    func updateUIView(_ view: ToolbarView, context: Context) {
-        view.changed = changed
-        view.measure()
-    }
-}
-
-private final class ToolbarView: UIView {
-    var changed: (CGFloat, CGFloat) -> Void = { _, _ in }
-    private var pending = false
-    private var lastTop: CGFloat?
-    private var lastSafeTop: CGFloat?
-
-    override func layoutSubviews() { super.layoutSubviews(); measure() }
-    override func didMoveToWindow() { super.didMoveToWindow(); measure() }
-    override func didMoveToSuperview() { super.didMoveToSuperview(); measure() }
-    override func safeAreaInsetsDidChange() { super.safeAreaInsetsDidChange(); measure() }
-
-    func measure() {
-        guard !pending else { return }
-        pending = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            pending = false
-            guard let window else { return }
-            let top = convert(bounds, to: window).minY
-            let safeTop = window.safeAreaInsets.top
-            guard top.isFinite, safeTop.isFinite,
-                  (lastTop.map { abs($0 - top) > 0.5 } ?? true) ||
-                  (lastSafeTop.map { abs($0 - safeTop) > 0.5 } ?? true) else { return }
-            lastTop = top
-            lastSafeTop = safeTop
-            changed(top, safeTop)
-        }
-    }
-}
-#endif
