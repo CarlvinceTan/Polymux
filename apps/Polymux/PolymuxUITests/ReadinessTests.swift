@@ -39,7 +39,18 @@ final class ReadinessTests: XCTestCase {
             timed("activity.rows.\(theme)") { tool.exists && peers.exists && repeats.exists && memory.exists }
             let shot = XCTAttachment(screenshot: app.screenshot())
             shot.name = "inline-activity-\(theme)"; shot.lifetime = .keepAlways; add(shot)
-            memory.tap()
+            let chat = app.scrollViews.firstMatch
+            timed("activity.hittable.\(theme)") {
+                guard !memory.isHittable else { return true }
+                guard chat.exists else { return false }
+                #if os(macOS)
+                chat.scroll(byDeltaX: 0, deltaY: -180)
+                #else
+                chat.swipeUp()
+                #endif
+                return memory.isHittable
+            }
+            press(memory)
             timed("activity.object.\(theme)") {
                 any.matching(NSPredicate(format: "label CONTAINS 'verify the release before enabling'")).firstMatch.exists
             }
