@@ -1,5 +1,7 @@
 #!/bin/bash
 # Idempotent Mac bootstrap for Polymux agent lanes. Safe to re-run.
+# Manual: ~/.local/bin/lane-guard should symlink to this checkout:
+# ln -sf "<repo>/scripts/lane-guard" "$HOME/.local/bin/lane-guard"
 set -euo pipefail
 cd "$(dirname "$0")/.."
 command -v brew >/dev/null || { echo "install Homebrew first"; exit 1; }

@@ -658,6 +658,28 @@ WTL=$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep "/laneB-re
 check "retry on laneB detaches laneA's dirty tree, checks the branch out and commits there" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "detached stale dirty worktree $LANES_WT/laneA-retry-dirty (held test/retrydirty; changes kept)" "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log && [ -n "$WTL" ] && [ "$(git -C "$WTL" rev-parse HEAD)" = "$(git rev-parse test/retrydirty)" ]'
 check "laneA keeps its HEAD, staged, unstaged and untracked changes, detached" '[ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" rev-parse HEAD)" = "$OLD_HEAD" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff HEAD)" = "$OLD_DIFF" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)" = "$OLD_INDEX" ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD'
 rm -f "$LANES_HOME"/queue/*.task
+# 34 dispatcher retry cap: both ledgers block retries unless Cody resets the brief.
+GD="$T/guard"; mkdir -p "$GD"
+cat > "$GD/run-lane" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$LANES_HOME/invoked"
+SH
+chmod +x "$GD/run-lane"
+for ledger in tasks failures; do
+  GO="$GD/$ledger"; GS="$GO/state"; mkdir -p "$GO/queue" "$GS"
+  BRIEF="$GO/queue/0010-retry-cap.task"
+  printf '# Retry cap\nneeds: none\nexpected_min: 5\n' > "$BRIEF"
+  echo 100 > "$GS/cutoff"
+  if [ "$ledger" = tasks ]; then
+    printf '101\tlaneA\tfirst\t1\tfail\tlog\t# Retry cap\n102\tlaneA\tsecond\t1\tfail\tlog\t# Retry cap\n' > "$GS/tasks.tsv"
+  else printf '101\t# Retry cap (attempt 2)\tfail\n' > "$GO/failures.tsv"; fi
+  guard_dispatch() { LANES_HOME="$GO" LANE_GUARD_STATE="$GS" LANE_GUARD_NOW=200 LANES_REPO="$T/repo" LANE_GATE=/usr/bin/true QUEUE_WRITE="$GD/absent" RUN_LANE="$GD/run-lane" DISPATCH_WAIT=1 "$SRC/scripts/lane-guard" --dispatch laneA; }
+  OUT=$(guard_dispatch 2>&1); RC=$?
+  check "lane-guard $ledger: retry cap leaves unmarked brief queued" '[ $RC = 0 ] && [ -f "$BRIEF" ] && [ ! -e "$GO/invoked" ] && grep -qF "at retry cap (failed twice)" "$GS/lane-guard.log"'
+  printf 'retry-reset: cody\n' >> "$BRIEF"; : > "$GS/lane-guard.log"
+  OUT=$(guard_dispatch 2>&1); RC=$?
+  check "lane-guard $ledger: Cody reset invokes run-lane without cap skip" '[ $RC = 0 ] && grep -qF "laneA $GO/queue/starting/0010-retry-cap.task" "$GO/invoked" && ! grep -qF "at retry cap (failed twice)" "$GS/lane-guard.log"'
+done
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"
