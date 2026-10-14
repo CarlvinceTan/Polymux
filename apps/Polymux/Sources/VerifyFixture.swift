@@ -6,6 +6,8 @@ import PolymuxKit
 final class VerifyFixture: URLProtocol, @unchecked Sendable {
     static var enabled: Bool { CommandLine.arguments.contains("--verify-fixture") }
     static var local: Bool { enabled && UserDefaults.standard.string(forKey: "PolymuxServer") == nil }
+    // UI checks capture both themes: POLYMUX_VERIFY_THEME=light|dark forces the appearance.
+    static var appearance: String { ProcessInfo.processInfo.environment["POLYMUX_VERIFY_THEME"] ?? "system" }
     static let ids = ["t-chief", "t-aria", "t-milo", "t-nova", "t-long", "t-stream", "t-approval",
                       "grp-trip", "t-media", "t-activity", "t-fern", "grp-empty"]
     static let agents = ["Chief", "Aria", "Milo", "Nova", "Approval", "Fern"].map {
@@ -43,7 +45,7 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
                 switch request.url?.lastPathComponent {
                 case "agents": data = try JSONEncoder().encode(Self.agents)
                 case "threads": data = try JSONEncoder().encode(Self.threads)
-                case "settings": data = try JSONEncoder().encode(Settings(appearance: "system", sidebarWidth: 360))
+                case "settings": data = try JSONEncoder().encode(Settings(appearance: Self.appearance, sidebarWidth: 360))
                 default: data = Data("{}".utf8)
                 }
             }
