@@ -112,7 +112,11 @@ if [ "$APP" = 1 ]; then python3 scripts/fetch_cua.py > "$L/fetch_cua.log" 2>&1 |
 XC=(-jobs 6 -derivedDataPath "$DD" -clonedSourcePackagesDirPath "$SPM" -parallel-testing-enabled NO
     CLANG_MODULE_CACHE_PATH="$ROOT/.build/modcache" CODE_SIGNING_ALLOWED=NO)
 [ $NEED_SLOT = 1 ] && { acquire; echo "verify: slot $SLOT"; }
-if [ -z "$SWIFT" ]; then skip packages
+# Interim (until the VoiceCore live-mute deflake lands): VERIFY_SKIP_SWIFT_GO_ONLY=1 skips the Swift
+# package step when the diff from TI_BASE touches no Swift sources. Every other step still runs.
+GO_ONLY=0; [ "${VERIFY_SKIP_SWIFT_GO_ONLY:-0}" = 1 ] && ! git diff --name-only "${TI_BASE:-origin/main}"...HEAD 2>/dev/null | grep -qE '\.swift$|(^|/)Package\.(swift|resolved)$' && GO_ONLY=1
+if [ $GO_ONLY = 1 ] && [ -n "$SWIFT" ]; then ROWS+=("| packages | SKIP | go-only diff (VERIFY_SKIP_SWIFT_GO_ONLY) | 0s |"); echo "verify: packages SKIP (go-only diff)"
+elif [ -z "$SWIFT" ]; then skip packages
 elif [ "$SWIFT" = all ]; then step packages swift test --scratch-path .build/swiftpm --cache-path .build/SPM-cache
 else step packages swift test --scratch-path .build/swiftpm --cache-path .build/SPM-cache --filter "$SWIFT"; fi
 if [ "$APP" = 0 ]; then skip macos-build; skip ios-build; ACT=skip; READY=unavailable

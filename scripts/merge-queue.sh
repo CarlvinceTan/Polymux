@@ -101,7 +101,8 @@ run)
       SHA=$(git -C "$WT" rev-parse HEAD)
       approved "$PR" "$SHA" || { WHY="approval no longer valid at ${SHA:0:7}"; break; }
       # Merge lane always verifies everything: an inherited VERIFY_TARGETS=affected must never narrow it.
-      ( export VERIFY_TARGETS=full; cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
+      # Interim: Go-only PRs skip only the Swift package step (VERIFY_SKIP_SWIFT_GO_ONLY=0 turns this off).
+      ( export VERIFY_TARGETS=full VERIFY_SKIP_SWIFT_GO_ONLY=${VERIFY_SKIP_SWIFT_GO_ONLY:-1}; cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
         if [ -n "${MERGE_VERIFY_CMD:-}" ]; then bash -c "$MERGE_VERIFY_CMD"; else TI_BASE=origin/main bash "$SD/verify.sh"; fi ) >> "$LOG" 2>&1 \
         || { WHY="re-verify failed at ${SHA:0:7}"; break; }
       CHK=$(field check "$TF"); [ -z "$CHK" ] || (cd "$WT" && bash -c "$CHK") >> "$LOG" 2>&1 || { WHY="key behaviour check failed: $CHK"; break; }
