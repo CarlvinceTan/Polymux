@@ -1,0 +1,82 @@
+diff --git a/apps/Polymux/PolymuxUITests/ReadinessTests.swift b/apps/Polymux/PolymuxUITests/ReadinessTests.swift
+index c0e464b..efea79a 100644
+--- a/apps/Polymux/PolymuxUITests/ReadinessTests.swift
++++ b/apps/Polymux/PolymuxUITests/ReadinessTests.swift
+@@ -31,7 +31,7 @@ final class ReadinessTests: XCTestCase {
+                 #endif
+                 return false
+             }
+-            row.tap()
++            press(row)
+             let tool = any.matching(NSPredicate(format: "label CONTAINS 'release status'")).firstMatch
+             let peers = any.matching(NSPredicate(format: "label CONTAINS '1 message with'")).firstMatch
+             let repeats = any.matching(NSPredicate(format: "label CONTAINS 'Searched 3 activities'")).firstMatch
+@@ -39,7 +39,7 @@ final class ReadinessTests: XCTestCase {
+             timed("activity.rows.\(theme)") { tool.exists && peers.exists && repeats.exists && memory.exists }
+             let shot = XCTAttachment(screenshot: app.screenshot())
+             shot.name = "inline-activity-\(theme)"; shot.lifetime = .keepAlways; add(shot)
+-            memory.tap()
++            press(memory)
+             timed("activity.object.\(theme)") {
+                 any.matching(NSPredicate(format: "label CONTAINS 'verify the release before enabling'")).firstMatch.exists
+             }
+@@ -49,6 +49,59 @@ final class ReadinessTests: XCTestCase {
+         }
+     }
+ 
++    #if os(macOS)
++    func testReleaseScroll() throws {
++        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
++            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
++        let proof = root.appendingPathComponent(".proof/df2-release-scroll")
++        let release = root.appendingPathComponent(".build/DD/Build/Products/Release/Polymux.app")
++        XCTAssertTrue(FileManager.default.fileExists(atPath: release.path))
++        let app = XCUIApplication()
++        app.terminate()
++        let log = proof.appendingPathComponent("launch-command.txt")
++        let args = ["xctrace", "record", "--template", "Animation Hitches", "--time-limit", "30s",
++                    "--no-prompt", "--output", proof.appendingPathComponent("launch.trace").path,
++                    "--env", "POLYMUX_DATA_DIR=\(proof.appendingPathComponent("data").path)",
++                    "--launch", "--", release.path, "-serverAddress", "http://127.0.0.1:48739"]
++        try ("/usr/bin/xcrun " + args.joined(separator: " ") + "\n").write(to: log, atomically: true, encoding: .utf8)
++        let output = try FileHandle(forWritingTo: log)
++        try output.seekToEnd()
++        let recorder = Process()
++        recorder.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
++        recorder.arguments = args
++        recorder.standardOutput = output
++        recorder.standardError = output
++        try recorder.run()
++        defer {
++            recorder.waitUntilExit()
++            try? output.write(contentsOf: Data("\nExit: \(recorder.terminationStatus)\n".utf8))
++            try? output.close()
++            app.terminate()
++        }
++        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
++        app.activate()
++        let any = app.descendants(matching: .any)
++        let row = any["sidebar.row.t-long"]
++        timed("release.sidebar") {
++            if row.exists && row.isHittable { return true }
++            any["chats.list"].scroll(byDeltaX: 0, deltaY: -300)
++            return false
++        }
++        row.click()
++        let last = any.matching(NSPredicate(format: "label CONTAINS 'Review release 100'")).firstMatch
++        XCTAssertTrue(last.waitForExistence(timeout: 10))
++        capture(app, theme: "release", state: "before-scroll")
++        let options = XCTMeasureOptions()
++        options.iterationCount = 1
++        measure(metrics: [XCTOSSignpostMetric.scrollingAndDecelerationMetric], options: options) {
++            for index in 0..<8 {
++                app.scrollViews.element(boundBy: app.scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: index < 4 ? 600 : -600)
++            }
++        }
++        capture(app, theme: "release", state: "after-scroll")
++    }
++    #endif
++
+     override func setUp() {
+         super.setUp()
+         continueAfterFailure = false

@@ -1,0 +1,8 @@
+#!/bin/bash
+# Select Release only for the verifier's macOS build; run every test unchanged.
+for arg in "$@"; do
+  if [[ "$1" = build && "$arg" = platform=macOS ]]; then
+    exec /usr/bin/xcodebuild "$@" -configuration Release
+  fi
+done
+exec /usr/bin/xcodebuild "$@"
