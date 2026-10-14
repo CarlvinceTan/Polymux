@@ -658,6 +658,33 @@ WTL=$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep "/laneB-re
 check "retry on laneB detaches laneA's dirty tree, checks the branch out and commits there" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "detached stale dirty worktree $LANES_WT/laneA-retry-dirty (held test/retrydirty; changes kept)" "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log && [ -n "$WTL" ] && [ "$(git -C "$WTL" rev-parse HEAD)" = "$(git rev-parse test/retrydirty)" ]'
 check "laneA keeps its HEAD, staged, unstaged and untracked changes, detached" '[ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" rev-parse HEAD)" = "$OLD_HEAD" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff HEAD)" = "$OLD_DIFF" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)" = "$OLD_INDEX" ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD'
 rm -f "$LANES_HOME"/queue/*.task
+# 34 unready briefs are held before launch, and a hold is not a run failure. Tests run with
+# LANE_BREAKER_N=3, so a class that wrongly counted would trip PAUSE and fail the check.
+rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY" "$LANES_HOME/fast-fails.tsv"
+mkdir -p docs; printf '# Spec\n## Ready\n' > docs/input.md
+for i in 1 2 3; do
+  F=$(task "Missing section $i" "missing-$i")
+  printf 'Spec: docs/input.md#absent\n' >> "$F"
+  OUT=$(LANE_BREAKER_N=3 LANE_NO_CHAIN=1 $RL laneA "$F" 2>&1); RC=$?
+  check "missing section $i held before launch" '[ $RC = 4 ] && [ -f "$LANES_HOME/queue-hold/missing-$i.task" ] && grep -q "hold-reason: spec: missing section" "$LANES_HOME/queue-hold/missing-$i.task" && [ ! -d "$LANES_WT/laneA-missing-section-$i" ]'
+done
+check "three spec stops (N=3) do not trip the breaker: they are not run failures" '[ ! -f "$LANES_HOME/PAUSE" ] && [ "$(cut -f3 "$LANES_HOME/fast-fails.tsv" | grep -cx spec)" = 3 ]'
+mkdir -p "$T/ghdep"; printf '#!/bin/bash\ncase "$2" in view) echo OPEN;; *) echo "[]";; esac\n' > "$T/ghdep/gh"; chmod +x "$T/ghdep/gh"
+F=$(task 'Missing dependency' missing-dep); printf 'Deps: X\n' >> "$F"
+OUT=$(PATH="$T/ghdep:$PATH" LANE_BREAKER_N=3 LANE_NO_CHAIN=1 $RL laneA "$F" 2>&1); RC=$?
+check "Deps: X with no after: and X unmerged is held" '[ $RC = 4 ] && grep -q "hold-reason: dep: Deps: X is not merged" "$LANES_HOME/queue-hold/missing-dep.task" && [ ! -d "$LANES_WT/laneA-missing-dependency" ]'
+for i in 1 2; do OUT=$(LANE_BREAKER_N=3 LANE_NO_CHAIN=1 LANE_FORCE_FAIL=laneA $RL laneA "$(task "Real failure $i" "rf$i")" 2>&1); RC=$?; done
+check "two real run failures beside the stops: still no PAUSE" '[ ! -f "$LANES_HOME/PAUSE" ]'
+OUT=$(LANE_BREAKER_N=3 LANE_NO_CHAIN=1 LANE_FORCE_FAIL=laneA $RL laneA "$(task 'Real failure 3' rf3)" 2>&1); RC=$?
+check "third real run failure trips the breaker while dep/spec stops sit in the same window" '[ -f "$LANES_HOME/PAUSE" ] && [ "$(cut -f3 "$LANES_HOME/fast-fails.tsv" | grep -cx run)" = 3 ] && grep -q "BREAKER: 3 distinct tasks failed fast" "$LANES_HOME/NEEDS_CODY"'
+# A hold can surface a breaker state left by real run failures (Cody cleared PAUSE, rows still in the window).
+printf '%s\trun-a\trun\n%s\trun-b\trun\n%s\trun-c\trun\n' "$(date +%s)" "$(date +%s)" "$(date +%s)" > "$LANES_HOME/fast-fails.tsv"
+rm -f "$LANES_HOME/PAUSE"
+F=$(task 'Held on stale run rows' hold-rows); printf 'Spec: docs/input.md#absent\n' >> "$F"
+OUT=$(LANE_BREAKER_N=3 LANE_NO_CHAIN=1 $RL laneA "$F" 2>&1); RC=$?
+check "hold re-trips PAUSE from stale run rows without crashing" '[ $RC = 4 ] && [ -f "$LANES_HOME/queue-hold/hold-rows.task" ] && [ -f "$LANES_HOME/PAUSE" ] && ! grep -q "unbound variable" <<< "$OUT"'
+rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY" "$LANES_HOME"/queue/*.task
+if bash "$SRC/scripts/test-lane-guard.sh"; then PASS=$((PASS+1)); else FAILS=$((FAILS+1)); fi
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"

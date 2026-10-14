@@ -1,9 +1,10 @@
 #!/bin/bash
 # lane-guard: failure rules for the Polymux local-lanes flow (Cody's scripts/run-lane.sh; plan section 6). No LLM.
-#   lane-guard --task-end <lane> <task-id> <rc> <log>  hook after verify.sh (Cody adds it, non-fatal). rc 0 = ok.
+#   lane-guard --task-end <lane> <task-id> <rc> <log> [dep|spec|scope|run]  hook after verify.sh (Cody adds it, non-fatal). rc 0 = ok.
 #     1st failure of a task -> re-queue: $OPS/queue/<task-id>.task = brief (title " (attempt 2)", so run-lane's failures.tsv stop rule
 #     doesn't refuse it) + "## Previous attempt failed" + last 60 log lines, secrets redacted. 2nd failure -> no re-queue, alert Chief once.
-#     Breaker: 3 failures with one signature, or >30% of 5+ tasks failing -> $OPS/PAUSE + alert once.
+#     Stop class (5th arg, default run): a dep/spec/scope stop is recorded in $O/fast-fails.tsv and stops there, so a
+#     brief that could not run never counts as a run failure; only run failures reach the 3-in-900s breaker (run-lane owns it).
 #   lane-guard --preflight <lane> <task>   before a task starts: PAUSE -> no; lane-gate rc 1/2 -> defer (logged, not a failure).
 #   lane-guard --dispatch --free-lane <l>  prefer lane <l> (skips the busy check unless a unit lock is held on it), else rotate.
 #   max_concurrent (lanes.toml, default 1): a lane is busy, and --preflight/--free-lane refuse it, only once it holds that many unit locks.
@@ -87,7 +88,7 @@ deps_ok(){ # $1 task file: every 'after:' ref must be met; gh results cached per
     branch-on-main:*) n=${r#branch-on-main:}; h=${n#origin/}; st=$(awk -v n="b:$h" '$1==n{print $2}' "$DC")   # squash-merged + deleted: a merged PR with head <b> counts
       if [ -z "$st" ]; then st=$(gh pr list -R CarlvinceTan/polymux --state merged --head "$h" --json number --limit 1 -q '.[0].number // "none"' 2>/dev/null) || st=ERROR; echo "b:$h ${st:-ERROR}" >> "$DC"; fi
       [ "$st" = ERROR ] && log "dispatch: $(basename "$1"): gh merged-PR lookup for $h failed; trying ancestry" >&2
-      case $st in ''|none|ERROR) ;; *) continue;; esac
+      case $st in ''|*[!0-9]*|0) ;; *) continue;; esac
       [ -f "$DC.f" ] || { git -C "$LANES_REPO" fetch -q origin 2>/dev/null || log "dispatch: git fetch failed" >&2; : > "$DC.f"; }
       git -C "$LANES_REPO" merge-base --is-ancestor "$n" origin/main 2>/dev/null; st=$?
       [ $st -gt 1 ] && log "dispatch: $(basename "$1"): merge-base check for $n failed (rc $st); treating as unmet" >&2
@@ -146,7 +147,9 @@ case $1 in
     nf=$(awk -F'\t' -v c="$CUT" -v b="$b" '$1>=c&&$7==b&&$4!=0' "$ST/tasks.tsv" | wc -l | tr -d ' ')
     { [ "$nf" -ge 2 ] || awk -F'\t' -v t="$t" -v b="$b" '$2==t||$2==b||$2==b" (attempt 2)"{f=1}END{exit !f}' "$O/failures.tsv" 2>/dev/null; } && { skip "at retry cap (failed twice)"; continue; }
     awk -v c=$((NOW-SW)) -v i="$id" '$1>=c&&$2==i{f=1}END{exit !f}' "$RCF" 2>/dev/null && { skip "refused by run-lane <${SW}s ago"; continue; }
-    w=$(deps_ok "$f") || { log "dispatch: $id waits: after $w unmet; left in queue"; continue; }
+    w=$(bash "$LANES_REPO/scripts/dispatch-guard.sh" --brief "$f" "$LANES_REPO") || {
+      mkdir -p "$O/queue-hold"; printf '\nhold-reason: %s\n' "$w" >> "$f"
+      qmv "$f" "$O/queue-hold/"; log "dispatch: held $id: $w"; continue; }
     ensure_needs "$f" || log "dispatch: $id: could not insert default needs: line"
     [ -n "$RCK" ] && { r=$("$RLB" --check "$LN" "$f" 2>&1 </dev/null); rc=$?; [ $rc = 0 ] || { skip "run-lane preflight refuses (rc $rc: $(echo "$r" | tail -1 | cut -c1-120))"; continue; }; }
     while ! "$0" --preflight "$LN" "$id"; do   # lane-level (PAUSE, max_concurrent, lane-gate): no card can start on this lane
@@ -173,9 +176,11 @@ case $1 in
   if [ $((NOW-p)) -gt 10800 ]; then once "stall:$p" && { alert no_progress "Polymux lanes: no PR opened or merged for $(( (NOW-p)/3600 ))h while tasks are queued/running"; exit 0; }
     echo "stall already alerted"; else echo "ok: last PR activity $(( (NOW-p)/60 ))m ago"; fi; exit 0;;
 --task-end) [ "$NOW" -lt "$CUT" ] && { log "task-end $3: before fresh-window cutoff, ignored"; exit 0; };;
-*) echo "usage: lane-guard --task-end <lane> <task-id> <rc> <log> | --preflight <lane> <task> | --dispatch [lane | --free-lane <lane>] | --stall | --queued | --progress" >&2; exit 2;;
+*) echo "usage: lane-guard --task-end <lane> <task-id> <rc> <log> [dep|spec|scope|run] | --preflight <lane> <task> | --dispatch [lane | --free-lane <lane>] | --stall | --queued | --progress" >&2; exit 2;;
 esac
-LN=$2 ID=$3 RC=$4 LG=$5; IFS=$'\t' read -r T NEEDS EXP <<< "$(title "$ID")"; T=${T:-$ID}; BASE=$(echo "$T" | sed -E 's/ \(attempt [0-9]+\)$//')
+LN=$2 ID=$3 RC=$4 LG=$5 CLASS=${6:-run};
+case $CLASS in dep|spec|scope) printf '%s\t%s\t%s\n' "$NOW" "$ID" "$CLASS" >> "$O/fast-fails.tsv"; log "task-end $ID: $CLASS stop, not counted"; exit 0;; run) ;; *) exit 2;; esac
+ IFS=$'\t' read -r T NEEDS EXP <<< "$(title "$ID")"; T=${T:-$ID}; BASE=$(echo "$T" | sed -E 's/ \(attempt [0-9]+\)$//')
 S=$(tail -n 40 "$LG" 2>/dev/null | grep -iE 'error|fail|fatal' | tail -1 | redact | sed -E 's#(https?:|/)[^ ):]*##g; s/[0-9]+/N/g; s/ +/ /g' | cut -c1-120); S=${S:-rc=$RC}
 if [ "$RC" != 0 ] && grep -qE "$HX" <(tail -n 40 "$LG" 2>/dev/null); then log "task-end $ID rc=$RC: harness/env failure, not counted"; exit 0; fi
 awk -F'\t' -v i="$ID" '$3==i{f=1}END{exit !f}' "$ST/tasks.tsv" && { log "task-end $ID: already recorded (idempotent)"; exit 0; }
@@ -196,9 +201,5 @@ if [ "$RC" != 0 ]; then n=$(W | awk -F'\t' -v b="$BASE" '$7==b&&$4!=0' | wc -l |
     else log "REQUEUE $ID rejected by queue-write: $(echo "$err" | tr '\n' ' ')"; once "rq:$ID" && alert lane_escalation "re-queue of '$BASE' rejected: $(echo "$err" | head -2 | paste -sd'|' -)" "$LN" "$ID"; fi
   elif [ "$n" -ge 2 ]; then once "esc:$BASE" && alert lane_escalation "task '$BASE' failed $n times: $(W | awk -F'\t' -v b="$BASE" '$7==b&&$4!=0{print $5" ("$6")"}' | tail -2 | paste -sd'|' -)" "$LN" "$ID"; fi
 fi
-s=$(W | awk -F'\t' '$4!=0{c[$5]++}END{for(k in c)if(c[k]>=3)print c[k]"\t"k}' | head -1)
-[ -n "$s" ] && once "sig:${s#*	}" && { echo "lane-guard $(date '+%F %T'): ${s%%	*} x '${s#*	}'" > "$O/PAUSE"; log "PAUSE: 3 identical failures"; alert lane_pause "Polymux lanes paused: ${s%%	*} failures with '${s#*	}'" "$LN" "$ID"; }
-set -- $(W | awk -F'\t' '{o[$7]=$4}END{for(k in o){n++;if(o[k]!=0)x++}print n+0,x+0}')
-if [ "$1" -ge 5 ] && [ $(($2*10)) -gt $(($1*3)) ]; then once rate && { echo "lane-guard $(date '+%F %T'): $2/$1 failing" > "$O/PAUSE"; log "PAUSE: failure rate $2/$1"; alert lane_pause "Polymux lanes paused: $2 of $1 tasks failing (>30%)" "$LN" "$ID"; }
-else sed -i '' '/^rate$/d' "$ST/keys" 2>/dev/null; fi
+# run-lane owns the 3-in-900s breaker; do not apply a second signature/rate breaker.
 $RL carl-lane-guard ok "task-end rc=$RC" 0 n "$LN $ID"; exit 0
