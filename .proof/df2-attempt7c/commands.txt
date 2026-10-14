@@ -1,0 +1,15 @@
+Native Computer Use, attempt 7c:
+
+Call 1:
+let app = await cua.getApp("Polymux");
+Exact tool output:
+Sky Computer Use native pipe startup failed
+
+Call 2:
+let releaseApp = await cua.getApp("/Users/carlvincetan/code/wt/lane3-df2-fix-pr-39-ar-at-669bd88-usab/.build/DD/Build/Products/Release/Polymux.app");
+Exact tool output:
+Sky Computer Use native pipe startup failed
+
+Both calls failed before app selection or native scrolling. No scroll recording
+was collected; median/p95/max frame time and hitch rate remain unmeasured.
+Existing .proof/df2-attempt6b captures are unchanged.
