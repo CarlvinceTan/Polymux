@@ -1,0 +1,7 @@
+macos: apps/Polymux/PolymuxUITests/HeaderCapsuleUITests.swift:34: error: -[PolymuxUITests.HeaderCapsuleUITests testGroupPlusN] : XCTAssertEqual failed: ("Optional("2 avatars")") is not equal to ("Optional("3 avatars")")
+macos: apps/Polymux/PolymuxUITests/HeaderCapsuleUITests.swift:47: error: -[PolymuxUITests.HeaderCapsuleUITests testProfileOpens] : XCTAssertEqual failed: ("Optional("miss")") is not equal to ("Optional("met")")
+macos: apps/Polymux/PolymuxUITests/HeaderCapsuleUITests.swift:58: error: -[PolymuxUITests.HeaderCapsuleUITests testStallMissesBudget] : XCTAssertEqual failed: ("Optional("met")") is not equal to ("Optional("miss")")
+ios: apps/Polymux/PolymuxUITests/HeaderCapsuleUITests.swift:34: error: -[PolymuxUITests.HeaderCapsuleUITests testGroupPlusN] : XCTAssertEqual failed: ("Optional("2 avatars")") is not equal to ("Optional("3 avatars")")
+ios: apps/Polymux/PolymuxUITests/HeaderCapsuleUITests.swift:25: error: -[PolymuxUITests.HeaderCapsuleUITests testHeightMatchesToolbar] : XCTAssertEqualWithAccuracy failed: ("38.0") is not equal to ("44.0") +/- ("1.0")
+ios: apps/Polymux/PolymuxUITests/HeaderCapsuleUITests.swift:47: error: -[PolymuxUITests.HeaderCapsuleUITests testProfileOpens] : XCTAssertEqual failed: ("Optional("miss")") is not equal to ("Optional("met")")
+ios: apps/Polymux/PolymuxUITests/HeaderCapsuleUITests.swift:58: error: -[PolymuxUITests.HeaderCapsuleUITests testStallMissesBudget] : XCTAssertEqual failed: ("Optional("met")") is not equal to ("Optional("miss")")
