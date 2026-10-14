@@ -382,9 +382,8 @@ func (s *durableSession) Reusable() bool {
 func (s *durableSession) Abort(ctx context.Context) error { return s.conversation.Abort(ctx, nil) }
 
 func (s *durableSession) beforeMCP(ctx context.Context, id, name string, args json.RawMessage) agent.ToolCallHookResult {
-	s.mu.Lock()
+	// Send holds mu while inner tools run; BindTurn takes it before replacing hooks.
 	before := s.definition.BeforeTool
-	s.mu.Unlock()
 	if before == nil {
 		return agent.ToolCallHookResult{}
 	}
