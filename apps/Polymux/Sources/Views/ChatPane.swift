@@ -25,7 +25,6 @@ struct ChatPane: View {
     @State private var voiceIssue: String?
     @State private var showProfile = false
     @State private var headerBudget = ""
-    @State private var profileTap: ContinuousClock.Instant?
     @State private var headerTrace = SignpostTrace()
     @State private var target: ReplyTarget?
     @State private var highlight: ReplyTarget?
@@ -121,13 +120,6 @@ struct ChatPane: View {
                                   speakingID: showVoice && voiceStore?.phase == .speaking ? voiceStore?.agentID : nil,
                                   edit: openProfile)
                         .opacity(showProfile ? 0.6 : 1)
-                        .onChange(of: showProfile) { _, shown in
-                            if shown, let profileTap {
-                                InstantUI.interval("HeaderFeedback", budget: InstantUI.feedbackBudget,
-                                                   trace: headerTrace, from: profileTap) {}
-                                headerBudget = headerTrace.meetsBudgets ? "met" : "miss"
-                            }
-                        }
                         .accessibilityHint(thread.isGroup ? "Edit chat" : "Edit \(agent.name)’s profile")
                 }
             }
@@ -183,10 +175,13 @@ struct ChatPane: View {
 
     private func openProfile() {
         let tap = ContinuousClock().now
-        profileTap = tap
         let publish = {
             InstantUI.interval("HeaderState", budget: InstantUI.stateBudget,
-                               trace: headerTrace, from: tap) { showProfile = true }
+                               trace: headerTrace, from: tap) {
+                InstantUI.interval("HeaderFeedback", budget: InstantUI.feedbackBudget,
+                                   trace: headerTrace, from: tap) { showProfile = true }
+            }
+            headerBudget = headerTrace.meetsBudgets ? "met" : "miss"
         }
         #if DEBUG
         if CommandLine.arguments.contains("--verify-header-stall") {
