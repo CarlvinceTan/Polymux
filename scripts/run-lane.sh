@@ -235,7 +235,7 @@ cleanup_unit() {
   [ -n "$OWN_WT" ] && unit_free "$WT" "$SLUG" "$(cfg get lock_dir)" "$LOG"
   return 0
 }
-trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
+trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; oc_end; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
 BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
@@ -299,8 +299,8 @@ wd_alt() { [ -n "${LANE_WD_ALT:-}" ] && { echo "$LANE_WD_ALT"; return; }; case $
 # attempt's session id (newest session whose directory is our worktree, created since the attempt began) in the
 # log and $UL/oc_session; oc_end exports it next to the log, then ends it with "opencode session delete" (the
 # CLI has no abort; delete stops it on the server). The serve itself is never restarted. LANE_OC_CMD: test hook.
-OCS=""; ocli() { perl -e 'alarm shift; exec @ARGV' "${LANE_OC_TIMEOUT:-20}" "${LANE_OC_CMD:-$(cfg lane "$L" cmd)}" "$@"; }
-oc_capture() { [ -z "$OCS" ] && [ "$(cfg lane "$L" agent 2>/dev/null)" = opencode ] && [ -n "${WT:-}" ] || return 0
+OCS=""; OC_DONE=1; ocli() { perl -e 'alarm shift; exec @ARGV' "${LANE_OC_TIMEOUT:-20}" "${LANE_OC_CMD:-$(cfg lane "$L" cmd)}" "$@"; }
+oc_capture() { [ -z "${OC_DONE:-1}" ] && [ -z "$OCS" ] && [ "$(cfg lane "$L" agent 2>/dev/null)" = opencode ] && [ -n "${WT:-}" ] || return 0
   OCS=$( (cd "$WT" && ocli session list --format json -n 20) 2>/dev/null | python3 -c '
 import json,os,sys
 wt,since=sys.argv[1],int(sys.argv[2])*1000-5000; ds={wt,os.path.realpath(wt)}
@@ -310,11 +310,11 @@ ss=[x for x in ss if isinstance(x,dict) and x.get("directory") in ds and int(x.g
 ss.sort(key=lambda x:-int(x.get("created",0)))
 print(ss[0]["id"] if ss else "")' "$WT" "${T0:-0}")
   [ -n "$OCS" ] && { echo "opencode session: $OCS" >> "$LOG"; echo "$OCS" > "$UL/oc_session" 2>/dev/null; }; return 0; }
-oc_end() { oc_capture; [ -n "$OCS" ] || return 0
+oc_end() { [ -z "${OC_DONE:-1}" ] || return 0; oc_capture; [ -n "$OCS" ] || return 0
   ocli session export "$OCS" > "$LOG.oc-$OCS.json" 2>/dev/null
   if ocli session delete "$OCS" >> "$LOG" 2>&1; then echo "opencode session $OCS ended on the shared serve (transcript: $LOG.oc-$OCS.json)" >> "$LOG"
   else echo "warn: could not end opencode session $OCS on the shared serve" >> "$LOG"; fi
-  rm -f "$UL/oc_session"; OCS=""; }
+  rm -f "$UL/oc_session"; OCS=""; OC_DONE=1; }
 stop_agent() { local k; oc_end; kill -TERM -- -"$AP" 2>/dev/null
   for k in $(seq 1 $(( ${LANE_KILL_WAIT:-10} * 10 ))); do pgrep -g "$AP" >/dev/null 2>&1 || return 0; sleep 0.1; done
   kill -KILL -- -"$AP" 2>/dev/null; sleep 0.2
@@ -350,7 +350,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   fi
   [ -n "${LANE_SKIP_SETUP:-}" ] || (cd "$WT" && bash "$SD/wt-setup.sh") >> "$LOG" 2>&1
   START=$(git -C "$WT" rev-parse HEAD)   # branch head at unit start: size, trailer and no-commit checks measure only this run's work
-  OCS=""; WDOG=""; WD_HEAD=""; WD_T=""; LOG0=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 )); set -m; run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; set +m; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
+  OCS=""; OC_DONE=""; WDOG=""; WD_HEAD=""; WD_T=""; LOG0=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 )); set -m; run_agent "$L" "$WT" "$LOG" < /dev/null & AP=$!; set +m; LAST=$(date +%s); SIG=""; T0=$LAST; IDLE=""
   while kill -0 $AP 2>/dev/null; do sleep "${LANE_POLL:-30}"   # liveness = new commit/push/change, not log mtime
     oc_capture
     wd_check && { ev watchdog "$L" "$WDOG; stopping, retry on $(wd_alt)"; echo "watchdog: $WDOG" >> "$LOG"; stop_agent; break; }
@@ -365,7 +365,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   done; wait $AP; rc=$?; started
   # Whatever the outcome, end the session: the agent's group, then anything still running in the worktree
   # (a shared "opencode serve" spawns MCP servers and tools outside our group). A dead attempt must not keep running.
-  pgrep -g "$AP" >/dev/null 2>&1 && stop_agent; reap_wt "$WT" "$LOG"; AP=""
+  oc_end; pgrep -g "$AP" >/dev/null 2>&1 && stop_agent; reap_wt "$WT" "$LOG"; AP=""
   [ -n "$WDOG" ] && { ev failed "$L" "watchdog: $WDOG"; continue; }
   [ -n "$IDLE" ] && { ev failed "$L" "no commit (fast-fail: idle ${IDLE_S}s)"; continue; }
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi

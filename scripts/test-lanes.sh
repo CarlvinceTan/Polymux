@@ -597,10 +597,18 @@ check "opencode fast-fail: session id recorded, exported, deleted on the serve; 
 : > "$T/oc.log"
 LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='sleep 300' $RL laneA "$(task 'Oc killed' oc2)" >/dev/null 2>&1 & P=$!
 for k in $(seq 1 100); do grep -q "session list" "$T/oc.log" 2>/dev/null && break; sleep 0.1; done; sleep 1; kill -TERM $P; wait $P 2>/dev/null
-check "opencode unit killed (TERM): its session is deleted on the serve" 'grep -q "^session delete ses_.*oc_killed" "$T/oc.log"'
+check "opencode unit killed (TERM): session ended exactly once" 'grep -q "^session delete ses_.*oc_killed" "$T/oc.log" && [ "$(grep -c "session delete" "$T/oc.log")" = 1 ]'
 : > "$T/oc.log"
 OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Oc happy' oc3)" 2>&1); RC=$?
-check "opencode unit that finishes by itself: no session delete" '[ $RC = 0 ] && ! grep -q "session delete" "$T/oc.log"'
+check "opencode success ends its session exactly once" '[ $RC = 0 ] && [ "$(grep -c "session delete" "$T/oc.log")" = 1 ]'
+for mode in failure timeout; do
+  : > "$T/oc.log"
+  OC_STUB='exit 1'; OC_EXP=5
+  [ "$mode" = timeout ] && { OC_STUB='sleep 300'; OC_EXP=0; }
+  printf '# Oc %s\nneeds: none\nexpected_min: %s\n' "$mode" "$OC_EXP" > "$T/oc-$mode.task"
+  OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_STUB_CMD="$OC_STUB" $RL laneA "$T/oc-$mode.task" 2>&1); RC=$?
+  check "opencode $mode ends its session exactly once" '[ $RC = 1 ] && [ "$(grep -c "session delete" "$T/oc.log")" = 1 ]'
+done
 # 31 no-progress watchdog: no commit for N s, or the same test failing N times -> clean stop (opencode-aware), one retry on the OTHER agent
 QD="$LANES_HOME/queue"; rm -f "$QD"/*.task; : > "$T/oc.log"
 OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_NOCOMMIT_S=3 LANE_STUB_CMD='while :; do echo x >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd nocommit' wd1)" 2>&1); RC=$?
