@@ -33,6 +33,9 @@ final class ReadinessTests: XCTestCase {
                 press(chief)
                 let bash = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Ran go test ./...'")).firstMatch
                 XCTAssertTrue(bash.waitForExistence(timeout: 10))
+                XCTAssertTrue(app.staticTexts["Second reply from the same turn."].waitForExistence(timeout: 10))
+                XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS 'Ran go test ./...'")).count, 1,
+                               "Tool rows must draw once for a turn with two replies")
                 XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'Read 3 files'")).firstMatch.exists)
                 XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS 'Edited ChatPane.swift'")).firstMatch.exists)
                 XCTAssertFalse(app.staticTexts["go test ./...\nok polymux 0.2s"].exists)

@@ -46,8 +46,13 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
         let message = Message(runID: run.id, id: "tool-message", threadID: "t-chief", role: "assistant",
                               parts: [Part(kind: "text", text: "Checked the project and edited ChatPane.swift.")],
                               createdAt: date, status: "completed", seq: 2, agentID: "t-chief")
+        var second = message
+        second.id = "tool-second"
+        second.seq = 3
+        second.parts = [Part(kind: "text", text: "Second reply from the same turn.")]
         return [Event(seq: 1, conversationID: "t-chief", type: "run.done", createdAt: date, run: run),
-                Event(seq: 2, conversationID: "t-chief", type: "message.done", message: message, createdAt: date)]
+                Event(seq: 2, conversationID: "t-chief", type: "message.done", message: message, createdAt: date),
+                Event(seq: 3, conversationID: "t-chief", type: "message.done", message: second, createdAt: date)]
     }
 
     static func failAnswers() { answers.fail() }

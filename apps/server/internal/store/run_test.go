@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -374,4 +375,30 @@ func TestCancelledToolHistory(t *testing.T) {
 		if event.Type == "run.done" && len(event.Run.Tools) != 3 { t.Errorf("cancel replay: %d rows, want 3", len(event.Run.Tools)) }
 	}
 	if done != 1 { t.Errorf("tool.done events: %d, want 1", done) }
+}
+
+func TestToolHistoryListBound(t *testing.T) {
+	s := runStore(t)
+	latest := NewRun("latest", "a", "a", "message")
+	latest.Status = "completed"
+	if err := s.RunEvent(t.Context(), "run.done", &latest, nil); err != nil { t.Fatal(err) }
+	before, err := s.Threads(t.Context())
+	if err != nil { t.Fatal(err) }
+	baseline, _ := json.Marshal(before)
+	for i := 0; i < 50; i++ {
+		run := NewRun(fmt.Sprint("old-", i), "a", "a", "message")
+		run.Status, run.CreatedAt = "completed", "2020-01-01T00:00:00Z"
+		run.Tools = []contract.ToolActivity{{ID: run.ID, RunID: run.ID, Name: "bash", Status: "completed", Output: ptr(strings.Repeat("x", 2000))}}
+		if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil { t.Fatal(err) }
+	}
+	threads, err := s.Threads(t.Context())
+	if err != nil { t.Fatal(err) }
+	data, _ := json.Marshal(threads)
+	if len(data) > len(baseline)+100 { t.Errorf("list payload grew: %d -> %d bytes", len(baseline), len(data)) }
+	for _, thread := range threads {
+		if thread.ID == "a" && len(thread.Runs) != 1 { t.Errorf("list runs grew: 1 -> %d", len(thread.Runs)) }
+		for _, run := range thread.Runs {
+			if len(run.Tools) != 0 { t.Error("list contains tool history") }
+		}
+	}
 }
