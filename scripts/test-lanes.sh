@@ -609,7 +609,19 @@ check "watchdog: no commit within the limit -> stopped, opencode session ended, 
 rm -f "$QD"/*.task
 OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; echo "--- FAIL: TestOther$i (0.01s)"; done; while :; do echo y >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd testloop' wd2)" 2>&1); RC=$?
 WQ=$(ls "$QD"/*wd-testloop*-retry.task 2>/dev/null | head -1)
-check "watchdog: the same test failing 3 times -> stopped, retry on the other agent names the test" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: codex" "$WQ" && grep -q "test .TestLoopy. failed 3+ times" "$WQ"'
+check "watchdog: the same test failing 3 times -> stopped, retry keeps the same agent, resumes the branch, names the test" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -qx "agent: opencode" "$WQ" && ! grep -qx "agent: codex" "$WQ" && grep -qx "branch: agent/wd-testloop" "$WQ" && grep -q "test .TestLoopy. failed 3+ times" "$WQ" && grep -q "Continue from the latest commit" "$WQ" && bash scripts/queue-write.sh --check "$WQ" >/dev/null'
+rm -f "$QD"/*.task
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='mkdir -p tests && echo t > tests/new_test.sh && git add tests && git commit -qm "add test" -m "Lane: $LANE/$AGENT"; for i in 1 2 3 4; do echo "--- FAIL: TestNew (0.01s)"; done; sleep 2; '"$STUB_OK" $RL laneA "$(task 'Wd newtests' wd4)" 2>&1); RC=$?
+check "watchdog: a run that adds test files gets the higher limit (6): 4 same-test failures do not stop it" '[ $RC = 0 ] && ! grep -q "^watchdog" "$LANES_HOME"/logs/*wd-newtests-laneA.log'
+rm -f "$QD"/*.task
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='mkdir -p tests && echo t > tests/n2_test.sh && git add tests && git commit -qm "add test" -m "Lane: $LANE/$AGENT"; for i in 1 2 3 4 5 6; do echo "--- FAIL: TestNew2 (0.01s)"; done; while :; do echo y >> w.txt; sleep 0.3; done' $RL laneA "$(task 'Wd newtests six' wd5)" 2>&1); RC=$?
+check "watchdog: a run that adds test files still stops at 6 same-test failures" '[ $RC = 1 ] && grep -q "failed 6+ times" "$LANES_HOME"/logs/*wd-newtests-six-laneA.log'
+rm -f "$QD"/*.task "$LANES_HOME/PAUSE"; : > "$LANES_HOME/fast-fails.tsv"
+for n in a b c; do LANE_BREAKER_N=2 LANE_CHAIN_MIN_S=999 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestBrk (0.01s)"; done; while :; do echo y >> w.txt; sleep 0.3; done' $RL laneA "$(task "Wd brk $n" wdb$n)" >/dev/null 2>&1; done
+check "breaker: fast test-watchdog stops do not count (no PAUSE, no fast-fails entries)" '[ ! -f "$LANES_HOME/PAUSE" ] && ! grep -q wd-brk "$LANES_HOME/fast-fails.tsv"'
+for n in a b c; do LANE_BREAKER_N=2 LANE_CHAIN_MIN_S=999 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_IDLE_S=999 LANE_STUB_CMD="$STUB_OK; exit 3" $RL laneA "$(task "Cm brk $n" cmb$n)" >/dev/null 2>&1; done
+check "breaker: fast failures that made commits do not count" '[ ! -f "$LANES_HOME/PAUSE" ] && ! grep -q cm-brk "$LANES_HOME/fast-fails.tsv"'
+rm -f "$QD"/*.task "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY"; : > "$LANES_HOME/fast-fails.tsv"
 rm -f "$QD"/*.task
 OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=0 LANE_STUB_CMD='for i in 1 2 3; do echo "--- FAIL: TestLoopy (0.01s)"; done; sleep 2; '"$STUB_OK" $RL laneA "$(task 'Wd disabled' wd3)" 2>&1); RC=$?
 check "watchdog limits are configurable: LANE_WD_TESTFAIL_N=0 disables the test-loop stop" '[ $RC = 0 ] && ! grep -q watchdog "$LANES_HOME"/logs/*wd-disabled-laneA.log'
