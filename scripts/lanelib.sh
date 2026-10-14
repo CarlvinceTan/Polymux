@@ -35,6 +35,35 @@ scope_check() {
 }
 lock_holder() { cat "$1/pid" 2>/dev/null; }
 lock_drop() { [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] && rm -rf "$1"; return 0; }
+# Reclaim through the same gate as lock_take; never delete another live holder.
+lock_clear() {
+  [ -d "$1" ] || return 0
+  if [ "$(lock_holder "$1")" = "$$" ] || lock_take "$1"; then lock_drop "$1"; fi
+  return 0
+}
+# unit_free WT CARD LOCKS LOG: detach with changes kept unless a verifier is live.
+unit_free() {
+  local wt=$1 card=$2 locks=$3 log=$4 status count d p pre=""
+  status=$(git -C "$wt" status --porcelain -uall 2>/dev/null) || return 1
+  if [ -n "$status" ]; then
+    count=$(printf '%s\n' "$status" | wc -l | tr -d ' '); pre="dirty=$count; "
+    printf '%s\t%s\twt_dirty\t%s\t%s dirty=%s\n' "$(date '+%F %T')" "$ID" "$card" "$wt" "$count" >> "$OPS/events.tsv"
+  fi
+  p=$(lock_holder "$wt/.build/verify.lock")
+  if [ -n "$p" ] && [ "$p" != "$$" ] && kill -0 "$p" 2>/dev/null; then
+    echo "unit-free: $card wt=$wt ${pre}live verifier pid=$p; kept" >> "$log"; return 0
+  fi
+  git -C "$wt" switch -q --detach >> "$log" 2>&1 || return 1
+  rm -f "$wt/.build/verify-active" "$locks/active/polymux-$(basename "$wt")"
+  if [ "$(cat "$OPS/cards/$card.wt" 2>/dev/null)" = "$(basename "$wt")" ]; then rm -f "$OPS/cards/$card.wt"; fi
+  lock_clear "$wt/.build/verify.lock"
+  for d in "$locks"/slot*; do
+    [ "$(cat "$d/wt" 2>/dev/null)" = "$wt" ] && lock_clear "$d"
+  done
+  if [ -n "$pre" ]; then echo "unit-free: $card wt=$wt ${pre}detached (changes kept)" >> "$log"
+  else echo "unit-free: $card wt=$wt detached" >> "$log"; fi
+  return 0
+}
 # Lane scripts changed between BASE and HEAD in the current repo?
 # out_has [grep -E opts] PATTERN: does stdin have a matching line? Reads ALL of stdin first, so the writer
 # never gets SIGPIPE. (`cmd | grep -q` under pipefail returns 141 when grep exits early on a long output.)
@@ -49,7 +78,7 @@ repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|ht
 LANE_GUARD=${LANE_GUARD:-$HOME/.local/bin/lane-guard}
 guard() { [ -x "$LANE_GUARD" ] || return 0; "$LANE_GUARD" "$@"; }
 # --- GitHub labels and Notion-free GitHub writes ---------------------------------------------------
-# Shared label set: exactly one type:*, at least one area:*, plus dogfood / flake. Priority is a
+# Shared label set: exactly one type, at least one area, plus dogfood / Flaky test. Priority is a
 # Project field, never a label.
 LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines server ui lanes"
 # brief_labels FILE [NAME] -> comma-separated labels for a gh issue/PR made from this brief.
@@ -57,6 +86,11 @@ LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines serv
 # inferred: title with FIX or "bug" -> bug, else feature; needs: xcode -> ui; a server/ or .go path
 # -> server; a scripts/ or lanes path -> lanes; nothing matched -> lanes (logged by the caller's gh).
 # dogfood: NAME starts 00NN-- or the brief says dogfood. flake: the brief is a deflake task.
+# gh_label type|area VALUE -> GitHub label name. Labels are plain title case with no prefix
+# (Feature, Bug, Infra, UI, Lanes, ...).
+gh_label() { case "$1:$2" in
+  type:bug) echo Bug;; type:feature) echo Feature;; type:infra) echo Infra;; type:test) echo Test;; type:docs) echo Docs;;
+  area:ui) echo UI;; area:*) echo "$2" | awk '{print toupper(substr($0,1,1)) substr($0,2)}';; *) echo "$2";; esac; }
 brief_labels() {
   local f=$1 n=${2:-$(basename "$1")} t a title needs body x out
   title=$(grep -m1 '^# ' "$f" | sed 's/^# *//'); [ -n "$title" ] || title=$(head -1 "$f")
@@ -71,9 +105,9 @@ brief_labels() {
     echo "$body" | grep -qE '(^|[^A-Za-z0-9_])(apps/)?server/|[A-Za-z0-9_]\.go([^A-Za-z]|$)' && a="$a server"
     echo "$body" | grep -qE '(^|[^A-Za-z0-9_])scripts/|(^|[^A-Za-z0-9_])lanes?([^A-Za-z0-9_]|$)' && a="$a lanes"
     [ -n "$a" ] || a=lanes; fi
-  out="type:$t"; for x in $a; do case ",$out," in *",area:$x,"*) ;; *) out="$out,area:$x";; esac; done
+  out=$(gh_label type "$t"); for x in $a; do x=$(gh_label area "$x"); case ",$out," in *",$x,"*) ;; *) out="$out,$x";; esac; done
   { echo "$n" | grep -qE '^00[0-9][0-9]--' || grep -qi 'dogfood' "$f"; } && out="$out,dogfood"
-  grep -qiE 'de-?flake' "$f" && out="$out,flake"
+  grep -qiE 'de-?flake' "$f" && out="$out,Flaky test"
   echo "$out"; }
 # Nothing written to GitHub may carry a Notion link or a Notion page id. Narrow on purpose:
 #  - links: notion.so / notion.site / app.notion.com URLs (a markdown link keeps its text, a bare URL

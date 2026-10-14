@@ -68,7 +68,8 @@ acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
     sleep 15
   done
 }
-declare -a ROWS; FAIL=0
+declare -a ROWS; FAIL=0; UI_UNAVAILABLE=0
+. "$ROOT/scripts/verify-result.sh"
 skip() { ROWS+=("| $1 | SKIP | not affected | 0s |"); echo "verify: $1 SKIP (not affected)"; }
 # Target selection (scripts/verify-targets.sh): unset/full -> everything; affected -> affected.py, falling back to full.
 VT=full GO_PKGS=./... SWIFT=all APP=1 WHY="verify-targets.sh missing"; [ -f "$SD/verify-targets.sh" ] && eval "$(bash "$SD/verify-targets.sh" "${TI_BASE:-origin/main}" "$L/affected.log")"
@@ -76,11 +77,17 @@ VT=full GO_PKGS=./... SWIFT=all APP=1 WHY="verify-targets.sh missing"; [ -f "$SD
 step() {  # step NAME cmd...
   local n=$1; shift; local t=$SECONDS; mark
   perl -e 'alarm shift; exec @ARGV' 2400 "$@" > "$L/$n.log" 2>&1; local rc=$?
-  local res=PASS; [ $rc -ne 0 ] && { res=FAIL; FAIL=1; }
+  local res; res=$(verify_result "$n" "$rc" "$L/$n.log")
+  [ "$res" = FAIL ] && FAIL=1
+  if [ "$res" = UNAVAILABLE ]; then
+    UI_UNAVAILABLE=1
+    echo "verify: $n readiness unavailable (runner automation timeout); caps level below UI-verified"
+  fi
   local tests=$(awk '/^Test Case .* passed/||/^. Test .* passed after/{p++} /^Test Case .* failed/||/^. Test .* failed after/{f++}
     END{if(p+f) printf "%d passed, %d failed", p, f}' "$L/$n.log")
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
+step readiness-tests bash "$ROOT/scripts/test-readiness.sh"
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 [ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"
 # Lane scripts changed -> run their hermetic tests too.
@@ -114,15 +121,10 @@ step macos-build xcodebuild build -project apps/Polymux/Polymux.xcodeproj -schem
   -destination platform=macOS "${XC[@]}"
 # App scheme gains a test action later (UI tests); until then build it and rely on package tests.
 ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme && ACT=test
-# cvmini macOS XCUITest runner hangs before connecting when PolymuxUITests is a TestableReference.
-# Readiness proof is ios-ready (-only-testing on the simulator); skip launching macos-test in that case.
 if [ $ACT = test ]; then
-  if [ -f apps/Polymux/PolymuxUITests/ReadinessTests.swift ]; then
-    echo "verify: skipping macos-test (cvmini macOS XCUITest runner hangs; ios-ready covers readiness)"
-  else
-    step macos-test xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
-      -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
-  fi
+  # XCUITest needs the GUI (Aqua) session; gui-run.sh runs it there when verify.sh came from ssh.
+  step macos-test bash "$ROOT/scripts/gui-run.sh" xcodebuild test -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
+    -destination platform=macOS -resultBundlePath "$R/mac.xcresult" "${XC[@]}"
 fi
 xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1
 step ios-$ACT xcodebuild $ACT -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
@@ -156,7 +158,7 @@ MEDIA=$(cd "$P" && ls *.png *.mp4 *.mov 2>/dev/null | tr '\n' ' ')
 ok() { printf '%s\n' "${ROWS[@]}" | grep -q "^| $1 | PASS | [1-9]"; }
 LEVEL=build-only; ok packages && LEVEL=unit-test-verified
 [ "$VT" = affected ] && [ -z "$SWIFT" ] && printf "%s\n" "${ROWS[@]}" | grep -q "^| go-test | PASS" && LEVEL=unit-test-verified   # Go-only change
-[ $READY = yes ] && [ -s "$P/ready.json" ] && ls "$P"/ready-*.png >/dev/null 2>&1 && LEVEL=UI-verified   # readiness + ready.json required
+[ $READY = yes ] && [ $UI_UNAVAILABLE = 0 ] && [ -s "$P/ready.json" ] && ls "$P"/ready-*.png >/dev/null 2>&1 && LEVEL=UI-verified   # readiness + ready.json required
 BUILT=0; printf '%s\n' "${ROWS[@]}" | grep -qE '^\| (go-test|packages|macos-build|ios-build) \| PASS' && BUILT=1
 NOTE=""; [ $BUILT = 0 ] && NOTE="nothing built or tested (inert-only change in affected mode); not a build"
 [ $FAIL = 1 ] && LEVEL=failed

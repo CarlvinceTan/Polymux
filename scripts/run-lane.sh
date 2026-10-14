@@ -16,7 +16,7 @@ cfg() { python3 "$SD/lanes.py" "$@"; }
 BU() { bash "$SD/board-update.sh" "$@" >> "${LOG:-$OPS/logs/$ID-board.log}" 2>&1 || true; }   # board; errors -> board_error event + lane log
 started() { [ -n "$STARTED" ] && return; { [ -n "$(git -C "$WT" log --oneline "$BASE"..HEAD 2>/dev/null)" ] || [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; } && { STARTED=1; BU start "$SLUG"; }; }  # first real output
 publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own branch proof-media/<id>
-  local wt=$1 id=$2 idx c err ref="proof-media/$2-$(date +%Y%m%d%H%M%S)-$$" n=0; idx=$(mktemp)   # unique per run; never force
+  local wt=$1 id=$2 idx c err ref="proof-media-$2-$(date +%Y%m%d%H%M%S)-$$" n=0; idx=$(mktemp)   # unique per run; never force
   for f in "$wt"/.build/proof/*.png "$wt"/.build/proof/*.mp4; do [ -f "$f" ] && n=$((n+1)); done
   [ $n = 0 ] && { echo "_no media captured_"; return; }
   err=$( cd "$wt" && export GIT_INDEX_FILE=$idx && git read-tree --empty &&
@@ -50,6 +50,7 @@ LANE=$1; TASK=$2; UNIT=$2; shift 2; BASE=origin/main; BRANCH=""; NEEDS=none; EXP
 TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "issue: N" (GitHub issue on Project 3; legacy "card:" ids map through board-map.tsv), "needs:", "expected_min:", "scope: a/**,b/*" (allowed files); rest is the brief
   NEEDS=$(sed -n 's/^needs: *//p' "$TASK" | head -1); EXP=$(sed -n 's/^expected_min: *//p' "$TASK" | head -1)
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
+  BRANCH=$(sed -n 's/^branch: *//p' "$TASK" | head -1)
   WANT_AGENT=$(sed -n 's/^agent: *//p' "$TASK" | head -1 | tr -d ' ')   # watchdog retry: run only on this agent (codex|opencode|cursor)
   TASK=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|agent):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
 fi
@@ -67,7 +68,7 @@ while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2
 TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32 | sed 's/-*$//')   # '# SA1: x' -> sa1-x (no leading '-')
 ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
 prompt() { echo "Task: $TASK
-Rules: work only in this worktree. Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
+Rules: work only in this worktree. Never search or list outside it (no ls, find or grep above it; no \$HOME scans). Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
@@ -87,11 +88,32 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
       K=$(vault get "$KT" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       # Key only in this child's environment: never argv (ps), never exported, keychain untouched.
       (cd "$2" && HOME="${H:-$HOME}" CURSOR_API_KEY="$K" "$cmd" -p --force --trust --workspace "$2" --output-format text "$P") >> "$3" 2>&1;;
-    # No workspace-write sandbox (tested 13 Oct, codex 0.162 seatbelt, network on, .git common dir +
-    # ~/ops/lanes as writable roots): .git stays read-only inside the sandbox, so the agent can't
-    # commit, and simctl/CoreSimulator XPC is refused, so verify.sh (iOS sim build) fails. Re-test
-    # before tightening. (--full-auto no longer exists in codex exec.)
-    codex) (cd "$2" && "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
+    # codex has no per-lane home (unlike cursor): the child gets a scratch HOME inside the worktree
+    # (.build/lanehome, git-ignored) so anything it or its shell reaches via $HOME stays in the
+    # worktree. On 14 Oct 00:56 a run with the real HOME prompted TCC for Downloads, Documents,
+    # Music and Photos; those dialogs block XCUITest alert handling. Auth stays in the real
+    # CODEX_HOME, gh/git config stay reachable through GH_CONFIG_DIR/GIT_CONFIG_GLOBAL, and the
+    # links keep the shared state $HOME-relative paths point at: .local (go toolchain for verify.sh)
+    # and ops/lanes (build slots, sim-warm markers; OPS).
+    # The Go caches stay shared too (GOMODCACHE/GOCACHE below): under a scratch HOME every lane would
+    # build its own ~1.8 GB module+build cache, and the read-only module cache survives a plain rm.
+    # workspace-write re-tested 14 Oct (codex 0.162.1, network on): the agent still cannot commit
+    # ("index.lock: Operation not permitted" under the worktree gitdir, with -c
+    # sandbox_workspace_write.writable_roots=[git common dir, ~/ops/lanes] or --add-dir), and
+    # simctl/CoreSimulator XPC is refused, so verify.sh cannot pass in the sandbox; keep
+    # danger-full-access. Re-test before tightening. (--full-auto no longer exists in codex exec.)
+    codex) local LH="$2/.build/lanehome" RH=$HOME
+      local GC="$RH/Library/Caches/polymux-lanes"
+      mkdir -p "$LH" "$LH/ops" "$GC/gomod" "$GC/gobuild"
+      [ -e "$LH/.local" ] || [ -L "$LH/.local" ] || ln -s "$RH/.local" "$LH/.local"
+      [ -e "$LH/ops/lanes" ] || [ -L "$LH/ops/lanes" ] || ln -s "$OPS" "$LH/ops/lanes"
+      # gh keeps its token in the login keychain (hosts.yml has none); with HOME=$LH the keychain is
+      # not found and every gh call 401s (14 Oct 02:14-02:48). Keychains is not TCC-protected.
+      mkdir -p "$LH/Library"; [ -e "$LH/Library/Keychains" ] || [ -L "$LH/Library/Keychains" ] || ln -s "$RH/Library/Keychains" "$LH/Library/Keychains"
+      (cd "$2" && HOME="$LH" CODEX_HOME="${CODEX_HOME:-$RH/.codex}" \
+        GH_CONFIG_DIR="${GH_CONFIG_DIR:-$RH/.config/gh}" GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$RH/.gitconfig}" \
+        GOMODCACHE="$GC/gomod" GOCACHE="$GC/gobuild" \
+        "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
     opencode) (cd "$2" && "$cmd" run "$P") >> "$3" 2>&1;;
     *) echo "unknown agent $a" >> "$3"; return 99;;
   esac
@@ -206,7 +228,14 @@ lock_take "$UL" || { lock_drop "$CAPL" 2>/dev/null; echo "unit '$SLUG' already h
 echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
 for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
 rm -f "$OPS/refusals.tsv"; lock_drop "$OPS/chain-state.lock"   # a unit started: the refusal streak is broken
-trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
+OWN_WT=""; CLEANED=""
+cleanup_unit() {
+  [ -n "$CLEANED" ] && return 0
+  CLEANED=1
+  [ -n "$OWN_WT" ] && unit_free "$WT" "$SLUG" "$(cfg get lock_dir)" "$LOG"
+  return 0
+}
+trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
 BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
@@ -218,9 +247,9 @@ git -C "$REPO" fetch -q origin; TRIED=""
 # free_branch BRANCH WT: another worktree holding refs/heads/BRANCH makes `git worktree add` fail. If no live
 # process has its cwd in it (lsof; missing/failing lsof = in use, fail closed) and lanelib in_use (cleanup.sh's
 # rule: live verify lock / fresh marker, build slot, live unit lock, pgrep) says free, it is stale (.build/proof is
-# archived to $OPS/proof-archive first): a clean one is removed, a dirty one is
-# detached (changes kept). A local branch that has diverged from origin/BRANCH is kept as
-# cody-stale/<branch>-<sha7> and the local branch is moved to origin/BRANCH.
+# archived to $OPS/proof-archive first): a clean one is removed, a dirty one is detached
+# with its changes kept so the branch is free for this attempt. A local branch that has diverged from
+# origin/BRANCH is kept as cody-stale/<branch>-<sha7> and the local branch is moved to origin/BRANCH.
 free_branch() {
   local b=$1 me=$2 p="" cur="" sha
   while IFS= read -r line; do case $line in "worktree "*) cur=${line#worktree };; "branch refs/heads/$b") p=$cur;; esac; done \
@@ -233,7 +262,9 @@ free_branch() {
     elif [ -z "$(git -C "$p" status --porcelain 2>/dev/null)" ]; then
       [ -d "$p/.build/proof" ] && mkdir -p "$OPS/proof-archive" && cp -R "$p/.build/proof" "$OPS/proof-archive/$(basename "$p")-$(date +%Y%m%d%H%M%S)" 2>/dev/null   # keep evidence (ignored files go with the tree)
       git -C "$REPO" worktree remove "$p" >> "$LOG" 2>&1 && echo "removed stale worktree $p (held $b)" >> "$LOG"
-    else git -C "$p" checkout -q --detach >> "$LOG" 2>&1 && echo "detached stale dirty worktree $p (held $b; changes kept)" >> "$LOG"; fi
+    elif git -C "$p" switch -q --detach >> "$LOG" 2>&1; then   # dirty: detach (changes kept) frees $b for this attempt
+      echo "detached stale dirty worktree $p (held $b; changes kept)" >> "$LOG"
+    else echo "could not detach dirty worktree $p (held $b); leaving it" >> "$LOG"; fi
   fi
   git -C "$REPO" show-ref -q "refs/heads/$b" && git -C "$REPO" show-ref -q "refs/remotes/origin/$b" || return 0
   git -C "$REPO" merge-base --is-ancestor "refs/heads/$b" "refs/remotes/origin/$b" && return 0   # behind or equal: fine
@@ -305,6 +336,12 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
       echo "worktree add failed (try $wtry); pruning and retrying" >> "$LOG"; git -C "$REPO" worktree prune; rm -rf "$WT"; sleep $((wtry * 5 * RS)); done; rm -f "$LOG.wt"
     [ -n "$WOK" ] || { ev failed "$L" "worktree add failed"; continue; }
   fi
+  OWN_WT=1
+  if ! git -C "$WT" symbolic-ref -q HEAD >/dev/null; then
+    git -C "$WT" checkout -q "$B" >> "$LOG" 2>&1 || { ev failed "$L" "branch attach failed"; continue; }
+  elif [ "$(git -C "$WT" symbolic-ref --short HEAD)" != "$B" ]; then
+    OWN_WT=""; ev failed "$L" "worktree holds another branch"; continue
+  fi
   if git -C "$REPO" show-ref -q "refs/remotes/origin/$B" && [ "$(git -C "$WT" rev-parse HEAD)" != "$(git -C "$REPO" rev-parse "origin/$B")" ]; then
     if git -C "$WT" merge-base --is-ancestor HEAD "origin/$B"; then   # local branch behind origin: fast-forward, never reset
       git -C "$WT" merge -q --ff-only "origin/$B" >> "$LOG" 2>&1 && echo "fast-forwarded $B to origin/$B" >> "$LOG" || { ev failed "$L" "fast-forward of $B failed"; continue; }
@@ -375,6 +412,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   basename "$WT" > "$OPS/cards/$SLUG.wt"; BU pr "$SLUG" "$URL"   # .wt: exact worktree name for cleanup
   BU verify "$SLUG" "$LV" "$WT/.build/proof" "$(echo "$BODY" | grep -oE "https://github.com/$SLUG_REPO/raw/proof-media/[^/) ]+" | head -1)"
   ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV" >> "$OPS/results.tsv"
+  cleanup_unit
   echo "$URL ($LV)"; exit 0
 done
 BT=$(base_title "$TITLE"); AT=$(echo "$TITLE" | sed -nE 's/.* \(attempt ([0-9]+)\)$/\1/p'); AT=${AT:-1}

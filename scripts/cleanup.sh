@@ -2,6 +2,9 @@
 # cleanup.sh [--days N] [--proof-days M] [--apply]   (default: dry run, N=7, M=14)
 # pstack-style worktree + simulator cleanup: merged or stale lane worktrees, their cloned sims,
 # per-worktree DerivedData, unavailable sims, and ~/verify-evidence older than N days.
+# A removable tree is trashed (moved to ~/code/wt-trash, or $WT_TRASH) with .build/DerivedData
+# stripped first, never deleted; trash entries older than 24 h are purged on later runs unless
+# they are dirty or unpushed.
 # Scans ~/code/wt and ~/.cursor/worktrees; age = last activity (commit, index, newest file).
 # Never touches: the main checkout, dirty or unpushed worktrees, anything holding a build slot
 # or unit lock, a running verify/agent (live .build/verify.lock, or a verify marker newer than
@@ -15,6 +18,15 @@ REPO=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel); MAIN=$(git -C "$R
 OPS=${LANES_HOME:-$HOME/ops/lanes}; LOCKS=$(python3 "$REPO/scripts/lanes.py" get lock_dir)
 do_() { if [ $APPLY = 1 ]; then echo "+ $*"; "$@"; else echo "would: $*"; fi; }
 keep() { echo "keep: $1 ($2)"; }
+# Removable trees are moved to $WT_TRASH (default ~/code/wt-trash), never deleted, so a wrong removal is
+# recoverable for 24 h (purge below). Build output goes first: .build holds DerivedData and the Go caches,
+# and the module cache is read-only, so chmod -R u+w before rm; only the source tree goes to the trash.
+TRASH=${WT_TRASH:-$HOME/code/wt-trash}
+strip_build() { local x; for x in .build DerivedData; do [ -e "$1/$x" ] || continue
+  do_ chmod -R u+w "$1/$x"; do_ rm -rf "$1/$x"; done; }
+trash_move() {  # git worktree move keeps branch refs and git status working in the trash; never overwrite
+  local d="$TRASH/${1##*/}"; [ -e "$d" ] && d="$d-$(date +%Y%m%d%H%M%S)"
+  do_ mkdir -p "$TRASH"; do_ git -C "$REPO" worktree move "$1" "$d"; }
 board_merged() {  # --apply only: card whose .wt is exactly this worktree, PR (results.tsv) merged per gh
   local c u n=$(basename "$1"); [ $APPLY = 1 ] || return 0
   for c in "$OPS"/cards/*.wt; do [ -f "$c" ] && [ "$(cat "$c")" = "$n" ] || continue; c=$(basename "$c" .wt)
@@ -55,9 +67,25 @@ wts | while IFS= read -r W; do
   echo "remove: $W (merged=$MERGED age=${AGE}d)"
   U=$(sed -n 's/^SIM_UDID=//p' "$W/.build/env" 2>/dev/null)
   [ -n "$U" ] && { do_ xcrun simctl shutdown "$U" 2>/dev/null; do_ xcrun simctl delete "$U"; }
-  do_ rm -rf "$W/.build"
-  do_ git -C "$REPO" worktree remove "$W"   # refuses if dirty; no --force
+  strip_build "$W"
+  trash_move "$W"
 done
+# Trash purge: strip build output from every trashed tree, then delete entries older than 24 h whose
+# branch is pushed and that have no tracked changes (untracked agent debris doesn't count, same as the
+# keep rule above). A trashed tree whose git state can't be read is kept: never delete unverifiable work.
+if [ -d "$TRASH" ]; then
+  for d in "$TRASH"/*; do [ -d "$d" ] || continue
+    H=$(( ( $(date +%s) - $(_mtime "$d") ) / 3600 ))   # read the age first: rm .build would reset the tree's mtime
+    strip_build "$d"
+    [ "$H" -ge 24 ] || { keep "$d" "trashed ${H}h ago"; continue; }
+    TL=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null); [ -n "$TL" ] && [ "$TL" = "$(cd "$d" && pwd -P)" ] || {
+      keep "$d" "git state unreadable"; continue; }
+    [ -z "$(git -C "$d" status --porcelain --untracked-files=no 2>/dev/null)" ] || { keep "$d" "uncommitted changes"; continue; }
+    [ -n "$(git -C "$d" branch -r --contains HEAD 2>/dev/null)" ] || { keep "$d" "unpushed commits"; continue; }
+    echo "purge: $d (trashed ${H}h ago, pushed and clean)"
+    do_ git -C "$REPO" worktree remove --force "$d" || do_ rm -rf "$d"
+  done
+fi
 # Cloned sims whose worktree is gone (name polymux-<wt>, never the template)
 TPL=$(python3 "$REPO/scripts/lanes.py" get sim_template)
 xcrun simctl list devices -j | python3 -c "import json,sys
@@ -79,7 +107,7 @@ for d in "$CW"/*/*; do [ -d "$d" ] || continue
 do_ xcrun simctl delete unavailable
 git -C "$REPO" worktree prune --dry-run -v; [ $APPLY = 1 ] && git -C "$REPO" worktree prune
 # proof-media/* branches (one per verify run) older than PROOF_DAYS (default 14): delete on origin.
-NOW=$(date +%s); git -C "$REPO" for-each-ref --format='%(refname:lstrip=3) %(committerdate:unix)' refs/remotes/origin/proof-media/ | \
+NOW=$(date +%s); git -C "$REPO" for-each-ref --format='%(refname:lstrip=3) %(committerdate:unix)' refs/remotes/origin/proof-media/ 'refs/remotes/origin/proof-media-*' | \
   while read -r b t; do [ $(( (NOW - t) / 86400 )) -ge "$PROOF_DAYS" ] && do_ git -C "$REPO" push -q origin --delete "$b"; done
 [ -d "$HOME/verify-evidence" ] && find "$HOME/verify-evidence" -mindepth 2 -maxdepth 2 -type d -mtime +"$DAYS" | \
   while read -r d; do do_ rm -rf "$d"; done

@@ -23,9 +23,9 @@
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd); . "$SD/lanelib.sh"
 OPS=${LANES_HOME:-$HOME/ops/lanes}; mkdir -p "$OPS/cards" "$OPS/board"
-BOARD_MAP=${BOARD_MAP:-$OPS/board-map.tsv}; REPO_SLUG=${BOARD_REPO:-CarlvinceTan/Polymux}
+BOARD_MAP=${BOARD_MAP:-$OPS/board-map.tsv}; REPO_SLUG=${BOARD_REPO:-CarlvinceTan/polymux}
 PROJ=${BOARD_PROJECT_ID:-PVT_kwHOCDGEdM4Bmy5s}
-F_STATUS=PVTSSF_lAHOCDGEdM4Bmy5szhlabM8; F_VER=PVTSSF_lAHOCDGEdM4Bmy5szhlabeg; F_PR=PVTF_lAHOCDGEdM4Bmy5szhlabjc
+: ${F_STATUS:=PVTSSF_lAHOCDGEdM4Bmy5szhlabM8}; : ${F_VER:=PVTSSF_lAHOCDGEdM4Bmy5szhlabeg}; : ${F_PR:=PVTF_lAHOCDGEdM4Bmy5szhlabjc}
 opt() { case $1 in Proposals) echo 5acdac3d;; Backlog) echo 483c23c2;; "In progress") echo 65b9edf8;; "In review") echo abdef12c;; Done) echo c1f2c7d6;;
   UI-verified) echo f9b24fa7;; unit-test-verified) echo 38201913;; build-only) echo 0f2c4aa2;; blocked) echo b8e8ce46;; failed) echo 77449e23;; esac; }
 DRY=0; DA=""; [ "${1:-}" = --dry-run ] && { DRY=1; DA=--dry-run; shift; }

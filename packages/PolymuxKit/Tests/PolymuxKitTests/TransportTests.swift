@@ -534,6 +534,20 @@ struct TransportTests {
         #expect(released == nil)
     }
 
+    @Test func apiSendsCredential() async throws {
+        let host = ProbeProtocol.routes.add { request in
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-device-token")
+            return (200, Data("[]".utf8))
+        }
+        defer { ProbeProtocol.routes.remove(host) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProbeProtocol.self]
+        let api = APIClient(baseURL: URL(string: "http://\(host)")!,
+                            session: URLSession(configuration: configuration), token: "test-device-token")
+        #expect(try await api.agents().isEmpty)
+        #expect(APIClient.localToken(URL(string: "https://untrusted.example")!) == nil)
+    }
+
     @Test func speechUsesServerTransportWithoutClientCredentials() async throws {
         let host = ProbeProtocol.routes.add { request in
             #expect(request.url?.path == "/speech/text")

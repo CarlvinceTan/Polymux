@@ -1,0 +1,73 @@
+diff --git a/apps/Polymux/Polymux.xcodeproj/project.pbxproj b/apps/Polymux/Polymux.xcodeproj/project.pbxproj
+index a635614..48fe5db 100644
+--- a/apps/Polymux/Polymux.xcodeproj/project.pbxproj
++++ b/apps/Polymux/Polymux.xcodeproj/project.pbxproj
+@@ -234,6 +234,7 @@
+ 			buildSettings = {
+ 				CLANG_ENABLE_MODULES = YES;
+ 				SWIFT_COMPILATION_MODE = wholemodule;
++				SWIFT_ACTIVE_COMPILATION_CONDITIONS = APPROVAL_PROOF;
+ 			};
+ 			name = Release;
+ 		};
+diff --git a/apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme b/apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme
+index aadaf97..ca47959 100644
+--- a/apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme
++++ b/apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme
+@@ -20,7 +20,7 @@
+       <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B10000000000000000000008" BuildableName="PolymuxUITests.xctest" BlueprintName="PolymuxUITests" ReferencedContainer="container:Polymux.xcodeproj"/>
+     </TestableReference></Testables>
+   </TestAction>
+-  <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES">
++  <LaunchAction buildConfiguration="Release" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES">
+     <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A10000000000000000000009" BuildableName="Polymux.app" BlueprintName="Polymux" ReferencedContainer="container:Polymux.xcodeproj"/></BuildableProductRunnable>
+   </LaunchAction>
+   <ProfileAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES" savedToolIdentifier="" useCustomWorkingDirectory="NO" debugDocumentVersioning="YES">
+diff --git a/apps/Polymux/Sources/PolymuxApp.swift b/apps/Polymux/Sources/PolymuxApp.swift
+index 23c5369..88dead3 100644
+--- a/apps/Polymux/Sources/PolymuxApp.swift
++++ b/apps/Polymux/Sources/PolymuxApp.swift
+@@ -33,7 +33,7 @@ struct PolymuxApp: App {
+     }
+     var body: some Scene {
+         WindowGroup {
+-            #if DEBUG
++            #if DEBUG || APPROVAL_PROOF
+             if CommandLine.arguments.contains("--verify-approval") {
+                 ApprovalFixture()
+             } else {
+diff --git a/apps/Polymux/Sources/VerifyFixture.swift b/apps/Polymux/Sources/VerifyFixture.swift
+index e3a3bb3..f7e4320 100644
+--- a/apps/Polymux/Sources/VerifyFixture.swift
++++ b/apps/Polymux/Sources/VerifyFixture.swift
+@@ -1,4 +1,4 @@
+-#if DEBUG
++#if DEBUG || APPROVAL_PROOF
+ import Foundation
+ import SwiftUI
+ import PolymuxKit
+diff --git a/apps/Polymux/Sources/Views/FocusCard.swift b/apps/Polymux/Sources/Views/FocusCard.swift
+index 50663bb..7beb1bf 100644
+--- a/apps/Polymux/Sources/Views/FocusCard.swift
++++ b/apps/Polymux/Sources/Views/FocusCard.swift
+@@ -43,7 +43,19 @@ struct FocusCard: View {
+             }
+             if choice.failed, part.answerID == nil {
+                 Text("Couldn’t record that choice.").font(.caption).foregroundStyle(.secondary)
+-                    .onAppear { clock.rollbackAppeared() }
++                    .onAppear {
++                        clock.rollbackAppeared()
++                        #if APPROVAL_PROOF
++                        if let path = ProcessInfo.processInfo.environment["APPROVAL_TRACE"] {
++                            let rows = clock.trace.spans.map { span in
++                                let c = span.duration.components
++                                let ms = Double(c.seconds) * 1000 + Double(c.attoseconds) / 1e15
++                                return "\(span.name),\(ms),\(span.withinBudget)"
++                            }
++                            try? (rows.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
++                        }
++                        #endif
++                    }
+             }
+         }
+         .padding(12)
