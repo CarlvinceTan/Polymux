@@ -87,10 +87,9 @@ LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines serv
 # -> server; a scripts/ or lanes path -> lanes; nothing matched -> lanes (logged by the caller's gh).
 # dogfood: NAME starts 00NN-- or the brief says dogfood. flake: the brief is a deflake task.
 # gh_label type|area VALUE -> GitHub label name. Labels are plain title case with no prefix
-# (Feature, Infra, UI, Lanes, ...). Bug stays "type:bug" until the repo's unused default "bug" label
-# is removed (GitHub label names are case-insensitive, so "Bug" clashes); then change that one case.
+# (Feature, Bug, Infra, UI, Lanes, ...).
 gh_label() { case "$1:$2" in
-  type:bug) echo "type:bug";; type:feature) echo Feature;; type:infra) echo Infra;; type:test) echo Test;; type:docs) echo Docs;;
+  type:bug) echo Bug;; type:feature) echo Feature;; type:infra) echo Infra;; type:test) echo Test;; type:docs) echo Docs;;
   area:ui) echo UI;; area:*) echo "$2" | awk '{print toupper(substr($0,1,1)) substr($0,2)}';; *) echo "$2";; esac; }
 brief_labels() {
   local f=$1 n=${2:-$(basename "$1")} t a title needs body x out

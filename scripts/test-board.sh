@@ -1,5 +1,9 @@
 # test-board.sh: board-update.sh cases (GitHub Project 3 via gh GraphQL), sourced by test-lanes.sh
 # (uses its check/T/HOME/LANES_HOME/RL). Stub gh (+ tripwire vault/curl); no network.
+if ! declare -F check >/dev/null; then
+  echo "test-board.sh is sourced by test-lanes.sh; run bash scripts/test-lanes.sh" >&2
+  exit 2
+fi
 B="$T/bb"; mkdir -p "$B"; BLOG="$LANES_HOME/board.log"; BU="bash scripts/board-update.sh"; C=$LANES_HOME/cards
 export BOARD_T="$T" BOARD_MAP="$T/board-map.tsv"; BP="$B:$T/bin:$PATH"
 cp "$SRC"/scripts/{board-update.sh,lanelib.sh,media-check.py} scripts/

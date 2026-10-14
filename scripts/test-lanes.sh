@@ -490,10 +490,23 @@ check "diverged local branch kept as cody-stale/<branch>-<sha>, run continues fr
 rm -f "$LANES_HOME/queue/"*.task
 # 28 GitHub labels (brief_labels) and Notion-free GitHub writes (gh_write)
 . scripts/lanelib.sh
+labels_valid() {
+  local kind value label
+  for kind in type area extra; do
+    case "$kind" in type) set -- $LANE_TYPES;; area) set -- $LANE_AREAS;; extra) set -- "Flaky test" dogfood;; esac
+    for value; do
+      label=$(gh_label "$kind" "$value")
+      case "$label" in Feature|Bug|Infra|Test|Docs|Pairing|Chat|Routines|Server|UI|Lanes|"Flaky test"|dogfood) ;; *) return 1;; esac
+    done
+  done
+}
+check "labels: every type, area and extra maps to a live label name" 'labels_valid'
+OUT=$(bash "$SRC/scripts/test-board.sh" 2>&1); RC=$?
+check "test-board: standalone run exits 2 with sourcing instructions" '[ $RC = 2 ] && [ "$OUT" = "test-board.sh is sourced by test-lanes.sh; run bash scripts/test-lanes.sh" ]'
 bl() { printf "$1" > "$T/bl.task"; brief_labels "$T/bl.task" "${2:-bl.task}"; }
 check "labels: type:/area: headers win over inference" '[ "$(bl "# FIX thing\nneeds: xcode\ntype: infra\narea: chat, area:routines\n")" = "Infra,Chat,Routines" ]'
-check "labels: needs xcode -> UI, FIX title -> type:bug" '[ "$(bl "# FIX chat switch\nneeds: xcode\n")" = "type:bug,UI" ]'
-check "labels: server/go path -> Server, bug title -> type:bug" '[ "$(bl "# Pairing bug\nneeds: go\nscope: apps/server/**\n")" = "type:bug,Server" ]'
+check "labels: needs xcode -> UI, FIX title -> Bug" '[ "$(bl "# FIX chat switch\nneeds: xcode\n")" = "Bug,UI" ]'
+check "labels: server/go path -> Server, bug title -> Bug" '[ "$(bl "# Pairing bug\nneeds: go\nscope: apps/server/**\n")" = "Bug,Server" ]'
 check "labels: scripts/ path -> Lanes, otherwise Feature" '[ "$(bl "# Queue tweak\nneeds: none\nscope: scripts/*\n")" = "Feature,Lanes" ]'
 check "labels: dogfood for 00NN-- names and dogfood briefs, Flaky test for deflake tasks" '[ "$(bl "# Thing\nneeds: xcode\n" 0012--thing.task)" = "Feature,UI,dogfood" ] && [ "$(bl "# Deflake pairing test\nneeds: go\nscope: apps/server/p.go\nFound while dogfooding.\n")" = "Feature,Server,dogfood,Flaky test" ] && [ "$(bl "# Plain\nneeds: xcode\n" 0012-x.task)" = "Feature,UI" ]'
 Z40=$(printf "%040d" 0); NID=3f60dbb6e05381518ce5c571f278c93d
