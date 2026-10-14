@@ -208,6 +208,7 @@ func (r *Runtime) Open(ctx context.Context, d Definition, path string) (Session,
 		servers = nil
 	}
 	tools, clients, err := connectMCP(ctx, servers, cwd)
+	tools = wrapMCP(tools, d.BeforeTool)
 	unavailable := err != nil
 	if err != nil {
 		tools, clients = nil, nil

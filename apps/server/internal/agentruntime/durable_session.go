@@ -110,6 +110,15 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	}
 	connected, clients, mcpErr := connectMCP(ctx, servers, cwd)
 	session := &durableSession{conversation: conversation, definition: d, attachments: filepath.Join(r.dir, "attachments"), clients: clients, runtime: r, degraded: mcpErr != nil}
+	connected = wrapMCP(connected, func(ctx context.Context, id, name string, args json.RawMessage) agent.ToolCallHookResult {
+		session.mu.Lock()
+		before := session.definition.BeforeTool
+		session.mu.Unlock()
+		if before == nil { return agent.ToolCallHookResult{} }
+		decision := before(ctx, id, name, args)
+		if decision.Terminate { session.park.Store(true) }
+		return decision
+	})
 	opened := false
 	defer func() {
 		if !opened {
