@@ -1165,11 +1165,15 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	var pending strings.Builder
 	var lastFlush time.Time
 	tools := map[string]contract.ToolActivity{}
-	history := []contract.ToolActivity{}
-	keep := func(finished contract.ToolActivity) {
-		if history = append(history, finished); len(history) > 32 {
-			history = history[len(history)-32:]
+	history := slices.Clone(run.Tools)
+	keep := func(tool contract.ToolActivity) {
+		for i := range history {
+			if history[i].ID == tool.ID {
+				history[i] = tool
+				return
+			}
 		}
+		history = append(history, tool)
 	}
 	syncTools := func() {
 		run.Tools = slices.Clone(history)
@@ -1180,7 +1184,6 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		}
 		slices.Sort(ids)
 		for _, id := range ids {
-			run.Tools = append(run.Tools, tools[id])
 			run.ToolID = pointer(id)
 		}
 	}
@@ -1370,6 +1373,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				tool := contract.ToolActivity{ID: toolID, RunID: run.ID, Name: bounded(delta.Tool, 128), Status: "running"}
 				tool.Summary = pointer(bounded(delta.Brief, 200))
 				tools[toolID] = tool
+				keep(tool)
 				syncTools()
 				run.Activity, run.Summary = "tool", "Using "+bounded(delta.Tool, 128)
 				if delta.Tool == "show_html" {

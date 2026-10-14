@@ -125,7 +125,7 @@ func (s *Store) Run(ctx context.Context, id string) (contract.Run, error) {
 
 func (s *Store) Runs(ctx context.Context, thread string) ([]contract.Run, error) {
 	const query = `SELECT r.data FROM runs r WHERE r.thread_id=? AND
-(r.status IN('queued','running','waiting_input','waiting_peer') OR NOT EXISTS(
+(r.status IN('queued','running','waiting_input','waiting_peer') OR json_array_length(r.data,'$.tools')>0 OR NOT EXISTS(
 SELECT 1 FROM runs newer WHERE newer.thread_id=r.thread_id AND newer.agent_id=r.agent_id AND
 (json_extract(newer.data,'$.createdAt')>json_extract(r.data,'$.createdAt') OR
 (json_extract(newer.data,'$.createdAt')=json_extract(r.data,'$.createdAt') AND

@@ -32,7 +32,32 @@ import Testing
         live.status = "completed"
         live.seq = 2
         store.receive(Event(seq: 2, conversationID: "a", type: "tool.done", createdAt: live.updatedAt, run: live), live: true)
+        let restored = ActivityStore()
+        restored.restore([try! JSONDecoder().decode(Run.self, from: JSONEncoder().encode(live))])
+        #expect(restored.toolRows(for: live.id) == store.toolRows(for: live.id))
         #expect(store.toolRows(for: live.id) == [ToolRow(id: "1", title: "Ran go test ./...",
                                                          output: "go test ./...\nok\tpolymux\t0.2s", failed: false, running: false)])
+    }
+
+    @Test func activityToolRowsCollapseReadsRedTwin() {
+        for status in ["failed", "cancelled", "interrupted"] {
+            let rows = ActivityStore.toolRows(for: run([
+                tool("1", "read", "one"), tool("2", "read", "two", status: status, output: "denied"), tool("3", "read", "three")
+            ]))
+            #expect(rows.count == 3)
+            #expect(rows[1].failed && rows[1].output == "two\ndenied")
+        }
+    }
+
+    @Test func activityToolRowsSurviveReplayRedTwin() {
+        let restored = ActivityStore()
+        let failed = run([tool("1", "bash", "false", status: "failed", output: "failure")])
+        restored.restore([failed])
+        var stale = failed
+        stale.seq = 0
+        stale.tools = []
+        restored.receive(Event(seq: 0, conversationID: "a", type: "run.done", createdAt: stale.updatedAt, run: stale), live: false)
+        #expect(restored.toolRows(for: failed.id).first?.failed == true)
+        #expect(restored.toolRows(for: failed.id).first?.output == "false\nfailure")
     }
 }

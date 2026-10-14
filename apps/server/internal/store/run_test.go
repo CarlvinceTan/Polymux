@@ -300,3 +300,31 @@ func TestWithdrawAtomic(t *testing.T) {
 		t.Fatalf("withdrawn work %+v %v", run, err)
 	}
 }
+
+func TestToolRunsSurviveNewerTurns(t *testing.T) {
+	s := runStore(t)
+	for _, id := range []string{"first", "second"} {
+		req := contract.SendRequest{ID: id, Text: "Hello", AttachmentIDs: []string{}}
+		if _, _, err := s.Send(t.Context(), "a", req, []contract.Part{{Kind: "text", Text: &req.Text}}, "a"); err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.Run(t.Context(), NewRun(id, "a", "a", "message").ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.Status = "completed"
+		run.Tools = []contract.ToolActivity{{ID: id, RunID: run.ID, Name: "bash", Status: "failed", Summary: ptr("false"), Output: ptr("failed")}}
+		if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs, err := s.Runs(t.Context(), "a")
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("relaunch rows: %d runs, %v", len(runs), err)
+	}
+	for _, run := range runs {
+		if len(run.Tools) != 1 || run.Tools[0].Status != "failed" || *run.Tools[0].Output != "failed" {
+			t.Fatal("failed tool row lost on replay")
+		}
+	}
+}

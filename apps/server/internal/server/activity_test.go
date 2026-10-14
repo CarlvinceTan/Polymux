@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -255,9 +256,18 @@ func TestToolsAreRedacted(t *testing.T) {
 	}
 }
 
-type cycleSession struct{}
+type cycleSession struct{ calls int }
 
-func (*cycleSession) Send(_ context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
+func (s *cycleSession) Send(_ context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
+	for i := 0; i < s.calls; i++ {
+		id := fmt.Sprint(i)
+		if err := emit(agentruntime.Delta{Kind: "tool.start", ToolID: id, Tool: "bash", Brief: "false"}); err != nil {
+			return agentruntime.Result{}, err
+		}
+		if err := emit(agentruntime.Delta{Kind: "tool.done", ToolID: id, Tool: "bash", Failed: true, Output: "failed"}); err != nil {
+			return agentruntime.Result{}, err
+		}
+	}
 	for _, d := range []agentruntime.Delta{
 		{Kind: "generating"},
 		{Kind: "tool.start", ToolID: "call", Tool: "read", Args: "secret", Brief: "go test ./..."},
@@ -582,5 +592,23 @@ func TestPersistenceCleanup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestToolHistoryRetainsEveryCall(t *testing.T) {
+	api, _ := startTest(t, &testFactory{})
+	a := api.actors["assistant"]
+	a.session = &cycleSession{calls: 40}
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/threads/assistant/messages", strings.NewReader(`{"id":"history","text":"Run"}`)))
+	if w.Code != http.StatusAccepted {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	run := awaitRun(t, api.Store, store.NewRun("history", "assistant", "assistant", "message").ID, "completed")
+	if len(run.Tools) != 41 {
+		t.Fatalf("retained %d calls", len(run.Tools))
+	}
+	if run.Tools[0].Status != "failed" || value(run.Tools[0].Output) != "failed" || value(run.Tools[0].Summary) != "false" {
+		t.Fatal("first failed call lost its details")
 	}
 }

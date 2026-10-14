@@ -24,7 +24,7 @@ struct ToolRowView: View {
             .buttonStyle(.plain)
             if expanded {
                 Text(row.output).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    .lineLimit(20).frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
             }

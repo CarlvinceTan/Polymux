@@ -31,3 +31,21 @@ func TestToolOutputExcerptCapped(t *testing.T) {
 		t.Fatalf("multibyte excerpt %d bytes", len(got))
 	}
 }
+
+func TestToolEventCarriesArgsSummaryRedTwin(t *testing.T) {
+	if got := toolSummary("bash", json.RawMessage(`{"command":"echo sk-abcdefghijklmnop"}`)); got != "echo [redacted]" {
+		t.Fatalf("credential escaped summary redaction")
+	}
+	if got := toolSummary("read", json.RawMessage(`{"path":42}`)); got != "" {
+		t.Fatalf("non-string path yielded a summary")
+	}
+}
+
+func TestToolOutputExcerptCappedRedTwin(t *testing.T) {
+	if got := toolExcerpt([]ai.ToolResultMessageContent{ai.TextContent{Text: `password: test-only-value`}}); got != "[redacted]" {
+		t.Fatal("credential escaped excerpt redaction")
+	}
+	if got := toolExcerpt(nil); got != "" {
+		t.Fatal("absent output yielded an excerpt")
+	}
+}

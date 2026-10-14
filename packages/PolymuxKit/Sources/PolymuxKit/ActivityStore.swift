@@ -198,9 +198,9 @@ public final class ActivityStore {
         var rows: [ToolRow] = []
         var index = 0
         while index < tools.count {
-            let reads = tools[index].name == "read" && tools[index].status != "failed"
+            let reads = tools[index].name == "read" && ["completed", "running"].contains(tools[index].status)
             var group = [tools[index]]
-            while reads, index + 1 < tools.count, tools[index + 1].name == "read", tools[index + 1].status != "failed" {
+            while reads, index + 1 < tools.count, tools[index + 1].name == "read", ["completed", "running"].contains(tools[index + 1].status) {
                 index += 1
                 group.append(tools[index])
             }
@@ -216,7 +216,7 @@ public final class ActivityStore {
     }
     private static func row(_ tool: ToolActivity) -> ToolRow {
         ToolRow(id: tool.id, title: title(for: tool.name, summary: tool.summary ?? ""),
-                output: [tool.summary ?? "", tool.output ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"),
+                output: [tool.summary ?? "", (tool.output ?? "").components(separatedBy: "\n").prefix(20).joined(separator: "\n")].filter { !$0.isEmpty }.joined(separator: "\n"),
                 failed: ["failed", "cancelled", "interrupted"].contains(tool.status), running: tool.status == "running")
     }
     private static func readRow(_ group: [ToolActivity]) -> ToolRow {
