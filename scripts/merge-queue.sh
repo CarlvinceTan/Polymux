@@ -11,6 +11,12 @@
 #   3. Gate: the head contains current origin/main AND verify passed at exactly that sha. If main moved
 #      meanwhile, go back to 1. Then: gh pr merge --squash --match-head-commit <sha>.
 #   4. Fast-forward the cvmini main checkout (only when it's on main; --ff-only).
+#   5. Prune the task's lane worktree ($WTR/<lane>-<unit>, else the name in $OPS/cards/<unit>.wt) once
+#      the PR merged or closed: the worktree only, never a branch (local or remote). It is kept, with a
+#      summary line in the log and an events.tsv row, when a lane is running it, its brief is still
+#      unfinished (queue/started, queue/, deferred/), another merge-queue entry for the task is pending,
+#      or it is dirty or has unpushed commits. An entry whose PR is already MERGED or CLOSED only gets
+#      pruned: there is nothing left to merge.
 # Approval gate (before step 1, again after each merge of main, and again just before the merge):
 #   Every account posts as CarlvinceTan, so a comment's author proves nothing. Only a SIGNED verdict counts:
 #   scripts/review-verdict.sh (Liam's tooling) posts "Liam: PASS — head <sha7>" plus
@@ -31,6 +37,9 @@ SD=$(cd "$(dirname "$0")" && pwd); REPO=$(git -C "$SD/.." rev-parse --show-tople
 OPS=${LANES_HOME:-$HOME/ops/lanes}; WTR=${LANES_WT:-$HOME/code/wt}; MQ="$OPS/merge-queue"; EV="$OPS/events.tsv"
 MAIN=${MERGE_MAIN_CHECKOUT:-$HOME/code/proj/Polymux}; SLUG_REPO=$(repo_slug "$REPO"); mkdir -p "$MQ/done" "$MQ/failed" "$MQ/blocked" "$OPS/logs"
 ev() { printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$1" "$2" merge "${3:-}" >> "$EV"; }
+say() { printf '%s\n' "$*" | tee -a "$LOG"; }   # log + one summary line (the queue posts no PR comments)
+if [ -z "${LOCKS:-}" ] && [ -f "$SD/lanes.py" ]; then LOCKS=$(python3 "$SD/lanes.py" get lock_dir 2>/dev/null); fi
+LOCKS=${LOCKS:-$OPS/locks}   # in_use (lanelib.sh): build-slot dir
 BU() { [ -n "$UNIT" ] && bash "$SD/board-update.sh" "$@" >> "$LOG" 2>&1 || true; }
 field() { sed -n "s/^$1: *//p" "$2" 2>/dev/null | head -1; }
 QMARK="<!-- polymux-merge-queue -->"   # tags anything the queue ever writes to GitHub; verdict.py ignores it
@@ -66,6 +75,50 @@ fix_brief() { local pr=$1 br=$2 ln=$3 tf=$4 why=$5 log=$6 t="" tl="" nd="" ty=""
   [ -n "$tf" ] && [ -f "$tf" ] && grep -E '^(unit|scope|card|issue|labels|after|area|priority):' "$tf"
   if [ -n "$tl" ]; then echo; grep -vE "$h" "$tf" | awk -v t="$tl" '!d && $0 == t { d = 1; next } { print }'; fi
   printf '\n## Post-approval re-verify failed (merge lane)\n%s. Merge origin/main into this branch (no rebase or force-push), fix, verify, and push to PR #%s.\n```\n%s\n```\n' "$why" "$pr" "$(tail -n 40 "$log")"; }
+# ---- task worktree prune (issue #290) ------------------------------------------------------------
+# The task's lane worktree is removed once its PR merged or closed: the worktree only, never a branch.
+# Slug rule = run-lane.sh's SLUG (brief title -> sa1-thing): the queue entry's unit is that slug.
+slug() { printf '%s\n' "$1" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32 | sed 's/-*$//'; }
+brief_open() {  # $1 unit slug: is a brief for this unit still unfinished anywhere a lane can pick it up?
+  local f t
+  for f in "$OPS"/queue/started/*.task "$OPS"/queue/*.task "$OPS"/deferred/*.task; do [ -f "$f" ] || continue
+    t=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|agent):' "$f" | grep -m1 -vE '^[[:space:]]*$')
+    [ "$(slug "$t")" = "$1" ] && return 0; done
+  return 1; }
+mq_pending() {  # $1 our entry, $2 branch, $3 unit: does another queued entry cover the same task?
+  local x; for x in "$MQ"/*-pr*; do [ -f "$x" ] || continue; [ "$x" = "$1" ] && continue
+    { [ -n "$2" ] && [ "$(field branch "$x")" = "$2" ]; } || { [ -n "$3" ] && [ "$(field unit "$x")" = "$3" ]; } && return 0; done
+  return 1; }
+is_wt() {  # $1 path: a lane worktree of this repo under $WTR (never the merge lane's own, nothing else)
+  case $1 in "$WTR"/*) ;; *) return 1;; esac   # lane worktrees only ever live under $WTR
+  case ${1##*/} in merge-pr*) return 1;; esac
+  [ -d "$1" ] && git -C "$REPO" worktree list --porcelain | grep -Fqx "worktree $1"; }
+task_wt() {  # $1 lane, $2 unit -> the task's worktree path when it is one of ours
+  local n; [ -n "$1" ] && [ -n "$2" ] || return 1
+  n=$(cat "$OPS/cards/$2.wt" 2>/dev/null)
+  if [ -n "$n" ] && is_wt "$WTR/$n"; then echo "$WTR/$n"; return 0; fi
+  is_wt "$WTR/$1-$2" && { echo "$WTR/$1-$2"; return 0; }
+  return 1; }
+wt_unpushed() {  # $1 worktree: commits that exist in no remote branch (attached or detached HEAD)
+  local b; b=$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  if [ -n "$b" ] && [ "$b" != HEAD ] && git -C "$1" show-ref -q --verify "refs/remotes/origin/$b"; then
+    [ -n "$(git -C "$1" log --oneline "origin/$b..HEAD" 2>/dev/null)" ] && return 0; return 1; fi
+  git -C "$1" merge-base --is-ancestor HEAD origin/main 2>/dev/null && return 1
+  [ -n "$(git -C "$1" branch -r --contains HEAD 2>/dev/null)" ] && return 1
+  return 0; }
+prune_wt() {  # $1 entry, $2 pr, $3 branch, $4 lane, $5 unit, $6 merged|closed -> sets SUMM
+  local wt n
+  if ! wt=$(task_wt "$4" "$5"); then SUMM="PR #$2 $6: no task worktree recorded; nothing to prune"; return 0; fi
+  if in_use "$wt"; then SUMM="PR #$2 $6: kept $wt (a lane is running it)"; return 0; fi
+  if brief_open "$5"; then SUMM="PR #$2 $6: kept $wt (brief still started or queued)"; return 0; fi
+  if mq_pending "$1" "$3" "$5"; then SUMM="PR #$2 $6: kept $wt (another merge-queue entry is pending)"; return 0; fi
+  if n=$(git -C "$wt" status --porcelain 2>/dev/null) && [ -n "$n" ]; then
+    SUMM="PR #$2 $6: kept $wt (dirty: $(printf '%s\n' "$n" | wc -l | tr -d ' ') file(s))"; return 0; fi
+  if wt_unpushed "$wt"; then SUMM="PR #$2 $6: kept $wt (unpushed commits)"; return 0; fi
+  if git -C "$REPO" worktree remove "$wt" >> "$LOG" 2>&1; then [ -n "$5" ] && rm -f "$OPS/cards/$5.wt"
+    SUMM="PR #$2 $6: pruned task worktree $wt (no branch touched)"
+  else SUMM="PR #$2 $6: kept $wt (git worktree remove refused; see $LOG)"; fi
+  return 0; }
 case ${1:-} in
 enqueue)
   PR=${2:?pr number}; TF=${3:-}; E="$MQ/$(date +%Y%m%d%H%M%S)-pr$PR"
@@ -87,6 +140,12 @@ run)
     LOG="$OPS/logs/merge-pr$PR.log"; WT="$WTR/merge-pr$PR"; OK=0; WHY=""
     echo "== $(date '+%F %T') merge lane: PR #$PR ($BR)" >> "$LOG"; ev "pr$PR" running "$BR"
     BLK=$(branch_lock_dir "$BR"); lock_take "$BLK" || { echo "branch busy; retry next tick" >> "$LOG"; continue; }
+    ST=$(gh pr view "$PR" -R "$SLUG_REPO" --json state -q .state 2>>"$LOG"); STATE=""
+    case $ST in CLOSED) STATE=closed;; MERGED) STATE=merged;; esac
+    if [ -n "$STATE" ]; then   # nothing left to merge: prune the task worktree and close the entry out
+      echo "PR #$PR is $STATE at the source; nothing to merge; pruning its task worktree" >> "$LOG"
+      prune_wt "$E" "$PR" "$BR" "$LN" "$UNIT" "$STATE"; say "$SUMM"; ev "pr$PR" "$STATE" "$SUMM"
+      lock_drop "$BLK"; mv "$E" "$MQ/done/"; continue; fi
     git -C "$REPO" fetch -q origin main "$BR" >> "$LOG" 2>&1; H0=$(git -C "$REPO" rev-parse -q --verify "origin/$BR")
     if [ -z "$H0" ] || ! approved "$PR" "$H0"; then
       echo "BLOCKED: no valid signed Liam PASS for head ${H0:0:7}; not merging (re-enqueue after review)" >> "$LOG"
@@ -120,7 +179,9 @@ run)
     [ $OK = 0 ] && [ -z "$WHY" ] && WHY="main kept moving (3 rounds)"
     lock_drop "$BLK"; git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
     if [ $OK = 1 ]; then
-      BU merged "$UNIT"; ev "pr$PR" merged "$SHA"; mv "$E" "$MQ/done/"
+      BU merged "$UNIT"; ev "pr$PR" merged "$SHA"
+      prune_wt "$E" "$PR" "$BR" "$LN" "$UNIT" merged; say "$SUMM"; ev "pr$PR" prune "$SUMM"
+      mv "$E" "$MQ/done/"
       [ "$(git -C "$MAIN" rev-parse --abbrev-ref HEAD)" = main ] && git -C "$MAIN" pull -q --ff-only origin main >> "$LOG" 2>&1
     else
       echo "FAILED: $WHY" >> "$LOG"; BU verify "$UNIT" failed; BU requeued "$UNIT"; ev "pr$PR" failed "$WHY"

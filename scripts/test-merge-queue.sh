@@ -1,5 +1,6 @@
 #!/bin/bash
-# test-merge-queue.sh: hermetic tests for the merge lane approval gate (no network, no vault, fake gh).
+# test-merge-queue.sh: hermetic tests for the merge lane approval gate and task-worktree prune
+# (no network, no vault, fake gh).
 set -uo pipefail
 SRC=$(cd "$(dirname "$0")/.." && pwd); T=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$T"' EXIT
 PASS=0; FAILS=0
@@ -11,7 +12,7 @@ echo base > README; printf 'a\nb\nc\n' > f.txt; git add -A; git commit -qm base;
 mkdir -p "$T/bin"; cat > "$T/bin/gh" <<GH
 #!/bin/bash
 echo "\$*" >> "$T/gh.log"
-case "\$1 \$2" in "api repos"*) cat "$T/comments.jsonl";; "pr merge") exit 0;; esac; exit 0
+case "\$1 \$2" in "api repos"*) cat "$T/comments.jsonl";; "pr view") [ -f "$T/prstate" ] && cat "$T/prstate";; "pr merge") exit 0;; esac; exit 0
 GH
 chmod +x "$T/bin/gh"
 export PATH="$T/bin:$PATH" HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/wt" LANE_SKIP_SETUP=1
@@ -89,6 +90,42 @@ check "merge whose tree equals a CONFLICTED merge-tree result (exit 1) voids the
 S=$(mkpr p18); enq 18 p18; cm 1 "$(verdict 18 "$S" PASS)" > "$T/comments.jsonl"
 : > "$T/gh.log"; VERIFY_TARGETS=affected MERGE_VERIFY_CMD='echo "VT=$VERIFY_TARGETS" > "$HOME/vt18"; mkdir -p .build/proof && echo unit-test-verified > .build/proof/level' bash scripts/merge-queue.sh run >/dev/null 2>&1
 check "merge lane forces VERIFY_TARGETS=full (inherited affected ignored)" 'merged 18 && [ "$(cat "$HOME/vt18")" = VT=full ]'
+# ---- task worktree prune (issue #290): the task's worktree goes when its PR merged or closed -------
+enqwt() {  # $1 pr, $2 branch, $3 unit: the worktree run-lane leaves behind, plus its merge-queue entry
+  mkdir -p "$LANES_HOME/cards"
+  git worktree add -q --detach "$LANES_WT/lane3-$3" "$2" && echo "lane3-$3" > "$LANES_HOME/cards/$3.wt"
+  printf 'pr: %s\nbranch: %s\nlane: lane3\nunit: %s\ntask: \n' "$1" "$2" "$3" > "$MQ/2026-pr$1"; }
+state() { printf '%s\n' "$1" > "$T/prstate"; }   # fake gh: pr view -> CLOSED / MERGED
+# 23 merged PR: the task worktree is pruned, the local and remote branch stay
+S=$(mkpr p23); enqwt 23 p23 sa23-thing; rm -f "$T/prstate"; cm 1 "$(verdict 23 "$S" PASS)" > "$T/comments.jsonl"; run
+check "merged PR: task worktree pruned, branches untouched" '[ ! -d "$LANES_WT/lane3-sa23-thing" ] && git show-ref -q --verify refs/heads/p23 && git ls-remote --exit-code origin refs/heads/p23 >/dev/null 2>&1 && grep -q "pruned task worktree" "$LANES_HOME/logs/merge-pr23.log" && merged 23'
+# 24 closed PR: nothing to merge; the worktree goes, the entry is done, the branches stay
+mkpr p24 >/dev/null; enqwt 24 p24 sa24-thing; state CLOSED; run
+check "closed PR: task worktree pruned, entry done, nothing merged, branches kept" '[ ! -d "$LANES_WT/lane3-sa24-thing" ] && [ -f "$MQ/done/2026-pr24" ] && ! merged 24 && git show-ref -q --verify refs/heads/p24 && git ls-remote --exit-code origin refs/heads/p24 >/dev/null 2>&1 && grep -q "pruned task worktree" "$LANES_HOME/logs/merge-pr24.log"'
+# 25 skip: a live unit lock names the unit, so a lane is running it (merged path)
+S=$(mkpr p25); enqwt 25 p25 sa25-thing
+mkdir -p "$LANES_HOME/units/sa25-thing.lock"; echo $$ > "$LANES_HOME/units/sa25-thing.lock/pid"
+rm -f "$T/prstate"; cm 1 "$(verdict 25 "$S" PASS)" > "$T/comments.jsonl"; run
+check "running lane: worktree kept, merge still happens" '[ -d "$LANES_WT/lane3-sa25-thing" ] && merged 25 && grep -q "kept $LANES_WT/lane3-sa25-thing (a lane is running it)" "$LANES_HOME/logs/merge-pr25.log"'
+rm -rf "$LANES_HOME/units/sa25-thing.lock"
+# 26 skip: the brief is still started (queue/started) -> kept
+mkpr p26 >/dev/null; enqwt 26 p26 sa26-thing
+mkdir -p "$LANES_HOME/queue/started"; printf '# SA26 Thing\nneeds: none\nexpected_min: 60\n\nBody.\n' > "$LANES_HOME/queue/started/2026-sa26-thing.task"
+state CLOSED; run
+check "started brief (queue/started): worktree kept" '[ -d "$LANES_WT/lane3-sa26-thing" ] && grep -q "brief still started or queued" "$LANES_HOME/logs/merge-pr26.log"'
+# 27 skip: another merge-queue entry for the same task is pending (merged, so 99 stays in the queue)
+S=$(mkpr p27); enqwt 27 p27 sa27-thing
+printf 'pr: 99\nbranch: p27-other\nlane: lane3\nunit: sa27-thing\ntask: \n' > "$MQ/2026-pr99"
+rm -f "$T/prstate"; cm 1 "$(verdict 27 "$S" PASS)" > "$T/comments.jsonl"; run
+check "pending merge-queue entry: worktree kept" '[ -d "$LANES_WT/lane3-sa27-thing" ] && merged 27 && grep -q "another merge-queue entry is pending" "$LANES_HOME/logs/merge-pr27.log"'
+rm -f "$MQ/2026-pr99" "$MQ/blocked/2026-pr99"
+# 28 skip: dirty worktree (an untracked file) -> kept and reported
+S=$(mkpr p28); enqwt 28 p28 sa28-thing; echo dirt > "$LANES_WT/lane3-sa28-thing/dirt.txt"; state CLOSED; run
+check "dirty worktree: kept and reported" '[ -f "$LANES_WT/lane3-sa28-thing/dirt.txt" ] && grep -q "kept $LANES_WT/lane3-sa28-thing (dirty: 1 file" "$LANES_HOME/logs/merge-pr28.log"'
+# 29 skip: unpushed commit (detached head on no remote branch) -> kept and reported
+mkpr p29 >/dev/null; enqwt 29 p29 sa29-thing; (cd "$LANES_WT/lane3-sa29-thing" && git commit -q --allow-empty -m local-only); state CLOSED; run
+check "unpushed commits: kept and reported" '[ -d "$LANES_WT/lane3-sa29-thing" ] && grep -q "kept $LANES_WT/lane3-sa29-thing (unpushed commits)" "$LANES_HOME/logs/merge-pr29.log"'
+rm -f "$T/prstate" "$LANES_HOME/queue/started/"*.task
 # 12 review-verdict.sh output is accepted by the checker; key never printed
 S=$(mkpr p12); cp "$SRC/scripts/review-verdict.sh" scripts/
 printf '#!/bin/bash\necho "$*" >> "%s/gh.log"\ncase "$1 $2" in "pr view") echo %s;; "api repos"*) cat "%s/comments.jsonl";; esac; exit 0\n' "$T" "$S" "$T" > "$T/bin/gh"
