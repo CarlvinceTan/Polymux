@@ -94,6 +94,7 @@ deps_ok(){ # $1 task file: every 'after:' ref must be met; gh results cached per
       [ $st -gt 1 ] && log "dispatch: $(basename "$1"): merge-base check for $n failed (rc $st); treating as unmet" >&2
       [ $st = 0 ] || { echo "$r"; return 1; };;
     *) log "dispatch: $(basename "$1"): unknown after ref '$r'; treating as unmet" >&2; echo "$r"; return 1;; esac; done; return 0; }
+holds(){ python3 "$(dirname "$0")/hold-release.py" "$O" "$ST" | while IFS= read -r line; do log "$line"; done; }
 case $1 in
 --deps) DC=$(mktemp); trap 'rm -f "$DC" "$DC.f"' EXIT; shift   # dry check: are the after: deps of these task files met? never dispatches
   for f; do if w=$(deps_ok "$f"); then echo "MET    $(basename "$f")"; else echo "UNMET  $(basename "$f"): $w"; fi; done; exit 0;;
@@ -119,6 +120,7 @@ case $1 in
   storm && { log "dispatch: STORM: $SN+ units refused in a row within ${SW}s ($(cut -f2,3 "$RF" | tail -3 | tr '\t\n' ': ')); not dispatching until it clears (600 s tick)"; exit 0; }
   shift; LN=""; FREE=""; while [ $# -gt 0 ]; do case $1 in --free-lane) FREE=${2:-}; shift; shift;; *) LN=$1; shift;; esac; done
   DC=$(mktemp); FETCHED=""; trap fin EXIT
+  holds
   RLB=${RUN_LANE:-$LANES_REPO/scripts/run-lane.sh}; RCK=""; grep -q -- '--check' "$RLB" 2>/dev/null && RCK=1   # run-lane's own refusal rules, side-effect free
   RCF=$ST/refused-cards   # "<epoch> <id>": a card whose child run-lane refused is skipped for SW s
   held_titles=$(for h in "$O"/queue-hold/*.task; do [ -f "$h" ] && grep -vE '^(unit|needs|scope|expected_min|branch|after|card):' "$h" | head -1 | sed -E 's/ \(attempt [0-9]+\)$//'; done)
@@ -169,7 +171,8 @@ case $1 in
     # max_concurrent, then the rotation) and keep going through the queue. Ends when no slot or no runnable card is left.
     NSTART=$((NSTART+1)); pick_lane || { log "dispatch: all slots filled (started $NSTART this pass)"; exit 0; }
   done; exit 0;;
---stall) { [ -f "$O/PAUSE" ] || { ! queued && ! ls -d "$O"/units/*.lock >/dev/null 2>&1; }; } && { echo "idle: paused or nothing queued/running"; exit 0; }
+--stall) holds
+  { [ -f "$O/PAUSE" ] || { ! queued && ! ls -d "$O"/units/*.lock >/dev/null 2>&1; }; } && { echo "idle: paused or nothing queued/running"; exit 0; }
   p=$(progress) || { $RL carl-lane-guard failed stall 0 n "gh failed"; exit 1; }
   if [ $((NOW-p)) -gt 10800 ]; then once "stall:$p" && { alert no_progress "Polymux lanes: no PR opened or merged for $(( (NOW-p)/3600 ))h while tasks are queued/running"; exit 0; }
     echo "stall already alerted"; else echo "ok: last PR activity $(( (NOW-p)/60 ))m ago"; fi; exit 0;;

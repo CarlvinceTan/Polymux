@@ -82,6 +82,7 @@ put() {  # $1 content file, $2 dir, $3 name ('' = derive), $4 force
 move() { [ -e "$1" ] || die "$1 is gone (moved by someone else?)" 5
   local t=$2; [ -d "$t" ] && t="$t/$(basename "$1")"
   [ -e "$t" ] && [ -z "$FORCE" ] && die "$t already exists" 4
+  case $(basename "$(dirname "$t")") in queue-hold) python3 "$SD/hold-release.py" --creation "$1" "$t" || return 2;; esac
   mv -f "$1" "$t" && echo "$t"; }
 remove() { local f rc=0; for f in "$@"; do [ -e "$f" ] || { echo "queue-write: $f is gone" >&2; rc=5; continue; }; rm -f "$f"; done; return $rc; }
 fix_one() {  # move the title to the top when only header/blank lines precede it
@@ -116,4 +117,5 @@ LABEL=${NAME:-${SRC/#-/stdin}}
 if [ -n "$NOCHECK" ]; then
   [ -d "$DIR" ] && [ "$(cd "$DIR" && pwd -P)" = "$(cd "$Q" 2>/dev/null && pwd -P)" ] && die "--no-check is not allowed for $Q"
 elif ! validate "$IN" "$LABEL" >&2; then echo "queue-write: rejected $LABEL (nothing written)" >&2; exit 2; fi
+case $(basename "$DIR") in queue-hold) python3 "$SD/hold-release.py" --creation "$IN" "$LABEL" || exit 2;; esac
 locked put "$IN" "$DIR" "$NAME" "$FORCE"
