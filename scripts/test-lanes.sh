@@ -580,9 +580,10 @@ git worktree remove --force "$LANES_WT/laneA-chat-lane-labels" 2>/dev/null
 PT() { ( . scripts/lanelib.sh; plain_title "$1" ); }
 check "plain_title: '# MN:', '# P0-208:', 'SB2 -', '[UI]' and 'word:' prefixes are stripped" '[ "$(PT "# MN: Stable tool names")" = "Stable tool names" ] && [ "$(PT "# P0-208: Require creds")" = "Require creds" ] && [ "$(PT "SB2 - User folders")" = "User folders" ] && [ "$(PT "[UI] Fix menu")" = "Fix menu" ]'
 check "plain_title: a plain title is unchanged; over 70 chars is cut on a word boundary" '[ "$(PT "Stable tool names")" = "Stable tool names" ] && [ "$(PT "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff gggggggggg")" = "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff" ]'
-for title in "MCP tools via codemode" "API keys" "A plain title" "UI polish for the menu"; do
+for title in "MCP tools via codemode" "API keys" "A plain title" "UI polish for the menu" "MCP" "API"; do
   check "plain_title: '$title' stays unchanged" '[ "$(PT "$title")" = "$title" ]'
 done
+check "plain_title: an acronym with a spaced dash is stripped" '[ "$(PT "MN - keep x")" = "Keep x" ]'
 check "plain_title: capitalise after stripping a prefix" '[ "$(PT "Lanes: keep x")" = "Keep x" ]'
 check "plain_title: digit-bearing code tokens without punctuation are stripped" '[ "$(PT "SB2 keep x")" = "Keep x" ] && [ "$(PT "P0-208 keep x")" = "Keep x" ]'
 check "plain_title: a title that is only a code prefix is rejected" '! PT "# MN:" >/dev/null && ! PT "SB2 -" >/dev/null'

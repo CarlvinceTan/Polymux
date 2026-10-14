@@ -110,16 +110,16 @@ brief_labels() {
   grep -qiE 'de-?flake' "$f" && out="$out,Flaky test"
   echo "$out"; }
 # plain_title TITLE: the GitHub title for a brief's first line. Strip leading '#'s and whitespace,
-# then repeatedly drop a leading [..] tag, "word:" prefix and code token (MN:, P0-208:, SB2 -);
-# trim and cut to 70 chars on a word boundary. Prints nothing and returns 1 when nothing plain is
-# left: callers must not create the PR/issue with that title.
+# then repeatedly drop a leading [..] tag, "word:" prefix and code token (MN:, P0-208:, SB2 -).
+# Capitalise after stripping; trim and cut to 70 chars on a word boundary. Return 1 when nothing is
+# left: callers must not create a PR with that title.
 plain_title() {
   local t=$1 s n
   while :; do s=$t
-    t=$(printf '%s' "$t" | sed -E 's/^[[:space:]]+//; s/^#+[[:space:]]*//; s/^\[[^]]+\][[:space:]]*//; s/^[A-Za-z0-9-]+:[[:space:]]*//; s/^[A-Z0-9]+(-[0-9]+)?[a-z]?[[:space:]:-]+//; s/[[:space:]]+$//')
+    t=$(printf '%s' "$t" | sed -E 's/^[[:space:]]+//; s/^#+[[:space:]]*//; s/^\[[^]]+\][[:space:]]*//; s/^[A-Za-z0-9-]+:[[:space:]]*//; s/^[A-Z0-9]+(-[0-9]+)?[a-z]? -([[:space:]]+|$)//; s/^[A-Z0-9]*[0-9][A-Z0-9]*(-[0-9]+)?[a-z]?([[:space:]:-]+|$)//; s/[[:space:]]+$//')
     [ "$t" = "$s" ] && break; done
   [ -n "$t" ] || return 1
-  out_has '^(\[[^]]+\]|#+|[A-Za-z-]+:)[[:space:]]|^[A-Z0-9]+(-[0-9]+)?[a-z]?[[:space:]:-]' <<< "$t" && return 1
+  [ "$t" = "$1" ] || t="$(printf '%s' "${t:0:1}" | tr '[:lower:]' '[:upper:]')${t:1}"
   if [ "${#t}" -gt 70 ]; then n=${t:70:1}; t=${t:0:70}
     case $n in [![:space:]]) t=${t% *};; esac; t=${t% }   # 71st char mid-word: end at the last space
   fi
