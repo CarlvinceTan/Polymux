@@ -534,12 +534,25 @@ check "diverged local branch kept as cody-stale/<branch>-<sha>, run continues fr
 rm -f "$LANES_HOME/queue/"*.task
 # 28 GitHub labels (brief_labels) and Notion-free GitHub writes (gh_write)
 . scripts/lanelib.sh
+labels_valid() {
+  local kind value label
+  for kind in type area extra; do
+    case "$kind" in type) set -- $LANE_TYPES;; area) set -- $LANE_AREAS;; extra) set -- "Flaky test" dogfood;; esac
+    for value; do
+      label=$(gh_label "$kind" "$value")
+      case "$label" in Feature|Bug|Infra|Test|Docs|Pairing|Chat|Routines|Server|UI|Lanes|"Flaky test"|dogfood) ;; *) return 1;; esac
+    done
+  done
+}
+check "labels: every type, area and extra maps to a live label name" 'labels_valid'
+OUT=$(bash "$SRC/scripts/test-board.sh" 2>&1); RC=$?
+check "test-board: standalone run exits 2 with sourcing instructions" '[ $RC = 2 ] && [ "$OUT" = "test-board.sh is sourced by test-lanes.sh; run bash scripts/test-lanes.sh" ]'
 bl() { printf "$1" > "$T/bl.task"; brief_labels "$T/bl.task" "${2:-bl.task}"; }
-check "labels: type:/area: headers win over inference" '[ "$(bl "# FIX thing\nneeds: xcode\ntype: infra\narea: chat, area:routines\n")" = "type:infra,area:chat,area:routines" ]'
-check "labels: needs xcode -> area:ui, FIX title -> type:bug" '[ "$(bl "# FIX chat switch\nneeds: xcode\n")" = "type:bug,area:ui" ]'
-check "labels: server/go path -> area:server, bug title -> type:bug" '[ "$(bl "# Pairing bug\nneeds: go\nscope: apps/server/**\n")" = "type:bug,area:server" ]'
-check "labels: scripts/ path -> area:lanes, otherwise type:feature" '[ "$(bl "# Queue tweak\nneeds: none\nscope: scripts/*\n")" = "type:feature,area:lanes" ]'
-check "labels: dogfood for 00NN-- names and dogfood briefs, flake for deflake tasks" '[ "$(bl "# Thing\nneeds: xcode\n" 0012--thing.task)" = "type:feature,area:ui,dogfood" ] && [ "$(bl "# Deflake pairing test\nneeds: go\nscope: apps/server/p.go\nFound while dogfooding.\n")" = "type:feature,area:server,dogfood,flake" ] && [ "$(bl "# Plain\nneeds: xcode\n" 0012-x.task)" = "type:feature,area:ui" ]'
+check "labels: type:/area: headers win over inference" '[ "$(bl "# FIX thing\nneeds: xcode\ntype: infra\narea: chat, area:routines\n")" = "Infra,Chat,Routines" ]'
+check "labels: needs xcode -> UI, FIX title -> Bug" '[ "$(bl "# FIX chat switch\nneeds: xcode\n")" = "Bug,UI" ]'
+check "labels: server/go path -> Server, bug title -> Bug" '[ "$(bl "# Pairing bug\nneeds: go\nscope: apps/server/**\n")" = "Bug,Server" ]'
+check "labels: scripts/ path -> Lanes, otherwise Feature" '[ "$(bl "# Queue tweak\nneeds: none\nscope: scripts/*\n")" = "Feature,Lanes" ]'
+check "labels: dogfood for 00NN-- names and dogfood briefs, Flaky test for deflake tasks" '[ "$(bl "# Thing\nneeds: xcode\n" 0012--thing.task)" = "Feature,UI,dogfood" ] && [ "$(bl "# Deflake pairing test\nneeds: go\nscope: apps/server/p.go\nFound while dogfooding.\n")" = "Feature,Server,dogfood,Flaky test" ] && [ "$(bl "# Plain\nneeds: xcode\n" 0012-x.task)" = "Feature,UI" ]'
 Z40=$(printf "%040d" 0); NID=3f60dbb6e05381518ce5c571f278c93d
 printf 'Summary ok\nMigrated from Notion card: https://www.notion.so/%s\nboard https://app.notion.com/p/x\nNotion page 3f60dbb6-e053-8151-8ce5-c571f278c93d\nhead %s\n' "$NID" "$Z40" > "$T/nb.md"
 SC=$(notion_scrub < "$T/nb.md")
@@ -560,7 +573,7 @@ G4="$T/ghbin4"; mkdir -p "$G4"
 printf '#!/bin/bash\ncase "$1 $2" in\n"pr create") printf "%%s\\n" "$@" > "%s/prargs"; echo https://github.com/o/r/pull/103;;\nesac\nexit 0\n' "$T" > "$G4/gh"; chmod +x "$G4/gh"
 printf '# Chat lane labels\nneeds: none\nexpected_min: 5\ntype: test\narea: chat\ncard: https://www.notion.so/%s\nNotes from https://app.notion.com/p/%s\n' "$NID" "$NID" > "$T/lb.task"
 OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/lb.task" --branch test/labels 2>&1); RC=$?
-check "run-lane PR: labels from type:/area: headers, no Notion text in title or body" '[ $RC = 0 ] && grep -qx "type:test,area:chat" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
+check "run-lane PR: labels from type:/area: headers, no Notion text in title or body" '[ $RC = 0 ] && grep -qx "Test,Chat" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
 grep -v pull/103 "$LANES_HOME/results.tsv" > "$T/r.tsv"; cat "$T/r.tsv" > "$LANES_HOME/results.tsv"; rm -f "$LANES_HOME"/cards/chat-lane-labels*   # keep later cleanup cases exact
 git worktree remove --force "$LANES_WT/laneA-chat-lane-labels" 2>/dev/null
 printf '# Good\nneeds: none\nexpected_min: 5\ntype: bug\narea: ui, area:server\n' > "$T/qh1.task"; printf '# Bad\nneeds: none\nexpected_min: 5\ntype: chore\narea: web\n' > "$T/qh2.task"

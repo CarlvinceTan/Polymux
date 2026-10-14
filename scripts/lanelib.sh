@@ -78,7 +78,7 @@ repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|ht
 LANE_GUARD=${LANE_GUARD:-$HOME/.local/bin/lane-guard}
 guard() { [ -x "$LANE_GUARD" ] || return 0; "$LANE_GUARD" "$@"; }
 # --- GitHub labels and Notion-free GitHub writes ---------------------------------------------------
-# Shared label set: exactly one type:*, at least one area:*, plus dogfood / flake. Priority is a
+# Shared label set: exactly one type, at least one area, plus dogfood / Flaky test. Priority is a
 # Project field, never a label.
 LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines server ui lanes"
 # brief_labels FILE [NAME] -> comma-separated labels for a gh issue/PR made from this brief.
@@ -86,6 +86,11 @@ LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines serv
 # inferred: title with FIX or "bug" -> bug, else feature; needs: xcode -> ui; a server/ or .go path
 # -> server; a scripts/ or lanes path -> lanes; nothing matched -> lanes (logged by the caller's gh).
 # dogfood: NAME starts 00NN-- or the brief says dogfood. flake: the brief is a deflake task.
+# gh_label type|area VALUE -> GitHub label name. Labels are plain title case with no prefix
+# (Feature, Bug, Infra, UI, Lanes, ...).
+gh_label() { case "$1:$2" in
+  type:bug) echo Bug;; type:feature) echo Feature;; type:infra) echo Infra;; type:test) echo Test;; type:docs) echo Docs;;
+  area:ui) echo UI;; area:*) echo "$2" | awk '{print toupper(substr($0,1,1)) substr($0,2)}';; *) echo "$2";; esac; }
 brief_labels() {
   local f=$1 n=${2:-$(basename "$1")} t a title needs body x out
   title=$(grep -m1 '^# ' "$f" | sed 's/^# *//'); [ -n "$title" ] || title=$(head -1 "$f")
@@ -100,9 +105,9 @@ brief_labels() {
     echo "$body" | grep -qE '(^|[^A-Za-z0-9_])(apps/)?server/|[A-Za-z0-9_]\.go([^A-Za-z]|$)' && a="$a server"
     echo "$body" | grep -qE '(^|[^A-Za-z0-9_])scripts/|(^|[^A-Za-z0-9_])lanes?([^A-Za-z0-9_]|$)' && a="$a lanes"
     [ -n "$a" ] || a=lanes; fi
-  out="type:$t"; for x in $a; do case ",$out," in *",area:$x,"*) ;; *) out="$out,area:$x";; esac; done
+  out=$(gh_label type "$t"); for x in $a; do x=$(gh_label area "$x"); case ",$out," in *",$x,"*) ;; *) out="$out,$x";; esac; done
   { echo "$n" | grep -qE '^00[0-9][0-9]--' || grep -qi 'dogfood' "$f"; } && out="$out,dogfood"
-  grep -qiE 'de-?flake' "$f" && out="$out,flake"
+  grep -qiE 'de-?flake' "$f" && out="$out,Flaky test"
   echo "$out"; }
 # Nothing written to GitHub may carry a Notion link or a Notion page id. Narrow on purpose:
 #  - links: notion.so / notion.site / app.notion.com URLs (a markdown link keeps its text, a bare URL
