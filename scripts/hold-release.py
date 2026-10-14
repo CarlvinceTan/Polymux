@@ -142,7 +142,6 @@ def scan(root, state, events):
             result = subprocess.run(["bash", str(Path(__file__).with_name("queue-write.sh")),
                                      "--mv", str(task), str(target)], stdout=subprocess.DEVNULL)
             if result.returncode == 0:
-                target.touch()
                 print(f"hold: released {task.name} -> {target.name}")
                 for prefix in ("hold-invalid-", "hold-met-"):
                     (state / (prefix + task.name)).unlink(missing_ok=True)
