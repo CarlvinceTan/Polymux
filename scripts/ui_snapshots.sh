@@ -49,11 +49,14 @@ import UIKit
     guard let image = bitmap.cgImage else { fatalError("No image") }
     return image
     #else
-    let controller = UIHostingController(rootView: view)
+    let controller = UIHostingController(rootView: view.ignoresSafeArea())
     let window = UIWindow(frame: CGRect(origin: .zero, size: container))
     window.overrideUserInterfaceStyle = dark ? .dark : .light
+    window.backgroundColor = .clear
     window.rootViewController = controller
     window.makeKeyAndVisible()
+    // Safe-area insets shift the container and the host view paints the whole window otherwise.
+    controller.view.backgroundColor = .clear
     controller.view.frame = window.bounds
     controller.beginAppearanceTransition(true, animated: false)
     controller.endAppearanceTransition()
@@ -69,15 +72,17 @@ import UIKit
 /// Fails a snapshot that escapes the container or draws a surface with no content on it.
 /// Returns the ink it found, so the run reports the weakest snapshot.
 @MainActor private func inspect(_ cg: CGImage, container: CGSize, label: String) -> Int {
-    var pixels = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
-    guard let context = CGContext(data: &pixels, width: cg.width, height: cg.height,
-        bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+    // Point-sized buffer: the iOS renderer returns 2x pixels, and the 8 pt inset is in points.
+    let width = Int(container.width), height = Int(container.height)
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    guard let context = CGContext(data: &pixels, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { fatalError("No pixel context") }
     context.draw(cg, in: CGRect(origin: .zero, size: container))
-    var minX = cg.width, minY = cg.height, maxX = -1, maxY = -1, opaque = 0
-    for y in 0..<cg.height {
-        for x in 0..<cg.width where pixels[(y * cg.width + x) * 4 + 3] > 0 {
-            precondition(x >= 8 && y >= 8 && x < cg.width - 8 && y < cg.height - 8,
+    var minX = width, minY = height, maxX = -1, maxY = -1, opaque = 0
+    for y in 0..<height {
+        for x in 0..<width where pixels[(y * width + x) * 4 + 3] > 0 {
+            precondition(x >= 8 && y >= 8 && x < width - 8 && y < height - 8,
                          "Rendered view escaped the 8 pt inset: \(label) at \(x),\(y)")
             opaque += 1
             minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
@@ -89,7 +94,7 @@ import UIKit
     var histogram: [UInt32: Int] = [:]
     for y in (minY + 4)..<(maxY - 4) {
         for x in (minX + 4)..<(maxX - 4) {
-            let offset = (y * cg.width + x) * 4
+            let offset = (y * width + x) * 4
             guard pixels[offset + 3] > 0 else { continue }
             let key = UInt32(pixels[offset]) << 16 | UInt32(pixels[offset + 1]) << 8 | UInt32(pixels[offset + 2])
             histogram[key, default: 0] += 1
