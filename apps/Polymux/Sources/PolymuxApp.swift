@@ -28,7 +28,13 @@ struct PolymuxApp: App {
     init() {
         _ = Notifications.shared
         #if os(macOS)
+        #if DEBUG
+        if !VerifyFixture.enabled && !CommandLine.arguments.contains("--verify-approval") {
+            ControlCoordinator.shared.start()
+        }
+        #else
         ControlCoordinator.shared.start()
+        #endif
         #endif
     }
     var body: some Scene {
@@ -63,7 +69,8 @@ final class AppSession {
             throw URLError(.badURL)
         }
         #if DEBUG
-        client = APIClient(baseURL: url, session: VerifyFixture.local ? VerifyFixture.session() : .shared)
+        client = APIClient(baseURL: url, session: VerifyFixture.local ? VerifyFixture.session() : .shared,
+                           token: VerifyFixture.local ? "" : nil)
         #else
         client = APIClient(baseURL: url)
         #endif
@@ -94,24 +101,24 @@ struct AppRoot: View {
 
     var body: some View {
         Group {
-            if let session {
-                ShellView(session: session, showSettings: $showSettings)
-                    .id(address)
+            #if DEBUG
+            if CommandLine.arguments.contains("--verify-approval") {
+                ApprovalFixture()
             } else {
-                ContentUnavailableView {
-                    Label("Connect to Polymux", systemImage: "network")
-                } description: {
-                    Text(error ?? "Opening your conversations…")
-                } actions: {
-                    Button("Connection settings") { showSettings = true }
-                }
+                content
             }
+            #else
+            content
+            #endif
         }
         #if os(macOS)
         .allowsWindowActivationEvents()
         #endif
         .neutralBackground()
         .task(id: address) {
+            #if DEBUG
+            guard !CommandLine.arguments.contains("--verify-approval") else { return }
+            #endif
             do {
                 session = try await AppSession(address: address)
                 error = nil
@@ -138,10 +145,36 @@ struct AppRoot: View {
         }
         .panelHost()
         .environment(session?.avatars)
-        .appAppearance(session?.settings.value?.appearance ?? "system")
+        .appAppearance(appearance)
         #if os(macOS)
         .background { InputFocus().frame(width: 0, height: 0).accessibilityHidden(true) }
         #endif
+    }
+
+    private var appearance: String {
+        #if DEBUG
+        if CommandLine.arguments.contains("--verify-approval") {
+            return CommandLine.arguments.contains("--approval-dark") ? "dark" : "light"
+        }
+        #endif
+        return session?.settings.value?.appearance ?? "system"
+    }
+
+    private var content: some View {
+        Group {
+            if let session {
+                ShellView(session: session, showSettings: $showSettings)
+                    .id(address)
+            } else {
+                ContentUnavailableView {
+                    Label("Connect to Polymux", systemImage: "network")
+                } description: {
+                    Text(error ?? "Opening your conversations…")
+                } actions: {
+                    Button("Connection settings") { showSettings = true }
+                }
+            }
+        }
     }
 }
 

@@ -1,0 +1,123 @@
+diff --git a/apps/Polymux/Polymux.xcodeproj/project.pbxproj b/apps/Polymux/Polymux.xcodeproj/project.pbxproj
+index a635614..48fe5db 100644
+--- a/apps/Polymux/Polymux.xcodeproj/project.pbxproj
++++ b/apps/Polymux/Polymux.xcodeproj/project.pbxproj
+@@ -234,6 +234,7 @@
+ 			buildSettings = {
+ 				CLANG_ENABLE_MODULES = YES;
+ 				SWIFT_COMPILATION_MODE = wholemodule;
++				SWIFT_ACTIVE_COMPILATION_CONDITIONS = APPROVAL_PROOF;
+ 			};
+ 			name = Release;
+ 		};
+diff --git a/apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme b/apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme
+index aadaf97..4f8dd90 100644
+--- a/apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme
++++ b/apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme
+@@ -8,7 +8,7 @@
+       <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B10000000000000000000008" BuildableName="PolymuxUITests.xctest" BlueprintName="PolymuxUITests" ReferencedContainer="container:Polymux.xcodeproj"/>
+     </BuildActionEntry></BuildActionEntries>
+   </BuildAction>
+-  <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
++  <TestAction buildConfiguration="Release" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
+     <PreActions>
+       <ExecutionAction ActionType="Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
+         <ActionContent title="Sign unsigned macOS test runner" scriptText="exec &gt;&quot;$PROJECT_DIR/../../.build/logs/runner-sign.log&quot; 2&gt;&amp;1&#10;echo &quot;Products: $BUILT_PRODUCTS_DIR&quot;&#10;if [ -d &quot;$BUILT_PRODUCTS_DIR/PolymuxUITests-Runner.app/Contents&quot; ] &amp;&amp; ! /usr/bin/codesign --verify &quot;$BUILT_PRODUCTS_DIR/PolymuxUITests-Runner.app&quot; 2&gt;/dev/null; then&#10;  /usr/bin/codesign --force --deep --sign - &quot;$BUILT_PRODUCTS_DIR/PolymuxUITests-Runner.app&quot;&#10;fi">
+diff --git a/apps/Polymux/PolymuxUITests/ReadinessTests.swift b/apps/Polymux/PolymuxUITests/ReadinessTests.swift
+index 2e60c3d..1841b43 100644
+--- a/apps/Polymux/PolymuxUITests/ReadinessTests.swift
++++ b/apps/Polymux/PolymuxUITests/ReadinessTests.swift
+@@ -28,6 +28,16 @@ final class ReadinessTests: XCTestCase {
+             XCTAssertTrue(app.staticTexts["Couldn’t record that choice."].waitForExistence(timeout: 10))
+             XCTAssertTrue(option.exists)
+             capture(app, theme: theme, state: "rollback")
++            #if APPROVAL_PROOF
++            let csv = app.staticTexts["Couldn’t record that choice."].value as? String ?? ""
++            for name in ["ApprovalFeedback", "ApprovalState", "ApprovalRollback"] {
++                XCTAssertTrue(csv.contains(name + ","), "Missing span: \(name)")
++            }
++            let trace = XCTAttachment(data: Data(csv.utf8), uniformTypeIdentifier: "public.comma-separated-values-text")
++            trace.name = "approval-release-\(theme).csv"
++            trace.lifetime = .keepAlways
++            add(trace)
++            #endif
+             app.terminate()
+         }
+     }
+diff --git a/apps/Polymux/Sources/PolymuxApp.swift b/apps/Polymux/Sources/PolymuxApp.swift
+index 23c5369..0f4fac3 100644
+--- a/apps/Polymux/Sources/PolymuxApp.swift
++++ b/apps/Polymux/Sources/PolymuxApp.swift
+@@ -33,7 +33,7 @@ struct PolymuxApp: App {
+     }
+     var body: some Scene {
+         WindowGroup {
+-            #if DEBUG
++            #if DEBUG || APPROVAL_PROOF
+             if CommandLine.arguments.contains("--verify-approval") {
+                 ApprovalFixture()
+             } else {
+@@ -74,7 +74,7 @@ final class AppSession {
+         guard let url = ServerAddress.parse(UserDefaults.standard.string(forKey: "PolymuxServer") ?? address) else {
+             throw URLError(.badURL)
+         }
+-        #if DEBUG
++        #if DEBUG || APPROVAL_PROOF
+         client = APIClient(baseURL: url, session: VerifyFixture.local ? VerifyFixture.session() : .shared)
+         #else
+         client = APIClient(baseURL: url)
+@@ -128,7 +128,7 @@ struct AppRoot: View {
+                 session = try await AppSession(address: address)
+                 error = nil
+                 if let session {
+-                    #if DEBUG
++                    #if DEBUG || APPROVAL_PROOF
+                     if !VerifyFixture.local { Notifications.shared.connect(session.client) }
+                     #else
+                     Notifications.shared.connect(session.client)
+diff --git a/apps/Polymux/Sources/VerifyFixture.swift b/apps/Polymux/Sources/VerifyFixture.swift
+index e3a3bb3..f7e4320 100644
+--- a/apps/Polymux/Sources/VerifyFixture.swift
++++ b/apps/Polymux/Sources/VerifyFixture.swift
+@@ -1,4 +1,4 @@
+-#if DEBUG
++#if DEBUG || APPROVAL_PROOF
+ import Foundation
+ import SwiftUI
+ import PolymuxKit
+diff --git a/apps/Polymux/Sources/Views/FocusCard.swift b/apps/Polymux/Sources/Views/FocusCard.swift
+index 50663bb..08c8ebf 100644
+--- a/apps/Polymux/Sources/Views/FocusCard.swift
++++ b/apps/Polymux/Sources/Views/FocusCard.swift
+@@ -10,6 +10,10 @@ struct FocusCard: View {
+     @State private var choice = ApprovalChoice()
+     @State private var clock = ApprovalClock()
+ 
++    #if APPROVAL_PROOF
++    @State private var proof = ""
++    #endif
++
+     private var answerID: String? { part.answerID ?? choice.shown }
+ 
+     var body: some View {
+@@ -43,7 +47,19 @@ struct FocusCard: View {
+             }
+             if choice.failed, part.answerID == nil {
+                 Text("Couldn’t record that choice.").font(.caption).foregroundStyle(.secondary)
+-                    .onAppear { clock.rollbackAppeared() }
++                    .onAppear {
++                        clock.rollbackAppeared()
++                        #if APPROVAL_PROOF
++                        proof = "name,ms,withinBudget\n" + clock.trace.spans.map { span in
++                            let c = span.duration.components
++                            let ms = Double(c.seconds) * 1000 + Double(c.attoseconds) / 1e15
++                            return "\(span.name),\(ms),\(span.withinBudget)"
++                        }.joined(separator: "\n")
++                        #endif
++                    }
++                    #if APPROVAL_PROOF
++                    .accessibilityValue(proof)
++                    #endif
+             }
+         }
+         .padding(12)
