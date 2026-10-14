@@ -673,9 +673,16 @@ for ledger in tasks failures; do
   if [ "$ledger" = tasks ]; then
     printf '101\tlaneA\tfirst\t1\tfail\tlog\t# Retry cap\n102\tlaneA\tsecond\t1\tfail\tlog\t# Retry cap\n' > "$GS/tasks.tsv"
   else printf '101\t# Retry cap (attempt 2)\tfail\n' > "$GO/failures.tsv"; fi
-  guard_dispatch() { LANES_HOME="$GO" LANE_GUARD_STATE="$GS" LANE_GUARD_NOW=200 LANES_REPO="$T/repo" LANE_GATE=/usr/bin/true QUEUE_WRITE="$GD/absent" RUN_LANE="$GD/run-lane" DISPATCH_WAIT=1 "$SRC/scripts/lane-guard" --dispatch laneA; }
+  guard_dispatch() { LANES_HOME="$GO" LANE_GUARD_STATE="$GS" LANE_GUARD_NOW=200 LANES_REPO="$T/repo" LANE_GATE=/usr/bin/true QUEUE_WRITE="$GD/absent" RUN_LANE="$GD/run-lane" DISPATCH_WAIT=1 "${GUARD_BIN:-$SRC/scripts/lane-guard}" --dispatch laneA; }
   OUT=$(guard_dispatch 2>&1); RC=$?
-  check "lane-guard $ledger: retry cap leaves unmarked brief queued" '[ $RC = 0 ] && [ -f "$BRIEF" ] && [ ! -e "$GO/invoked" ] && grep -qF "at retry cap (failed twice)" "$GS/lane-guard.log"'
+  cap_blocked() { [ "$RC" = 0 ] && [ -f "$BRIEF" ] && [ ! -e "$GO/invoked" ] && grep -qF "at retry cap (failed twice)" "$GS/lane-guard.log"; }
+  check "lane-guard $ledger: retry cap leaves unmarked brief queued" 'cap_blocked'
+  # Removing the cap must invalidate the same no-marker assertion.
+  sed '/skip "at retry cap (failed twice)"/d' "$SRC/scripts/lane-guard" > "$GD/uncapped"
+  chmod +x "$GD/uncapped"; : > "$GS/lane-guard.log"
+  OUT=$(GUARD_BIN="$GD/uncapped" guard_dispatch 2>&1); RC=$?
+  check "lane-guard $ledger: no-marker assertion detects removed cap" '! cap_blocked && [ -s "$GO/invoked" ]'
+  rm -f "$GO/invoked" "$GO/refusals.tsv" "$GS/refused-cards"
   printf 'retry-reset: cody\n' >> "$BRIEF"; : > "$GS/lane-guard.log"
   OUT=$(guard_dispatch 2>&1); RC=$?
   check "lane-guard $ledger: Cody reset invokes run-lane without cap skip" '[ $RC = 0 ] && grep -qF "laneA $GO/queue/starting/0010-retry-cap.task" "$GO/invoked" && ! grep -qF "at retry cap (failed twice)" "$GS/lane-guard.log"'
