@@ -4,17 +4,24 @@
 # uses, so a snapshot can only exist if the real views build.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# MA2 is the first argument, the output directory the second; the mode must not be read as the output.
+mode="${1:-}"
+if [ "$mode" = MA2 ]; then shift; fi
 out="${1:?Supply a snapshot output directory}"
 # Absolute, resolved path: the iOS harness runs inside the simulator and gets this path verbatim
 # (it used to get "$PWD/$out", which for an absolute $out became <repo>/Users/... and the iOS shots were lost).
 mkdir -p "$out"; out=$(cd "$out" && pwd -P)
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$PWD/.build/clang-cache}"
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$PWD/.build/swift-cache}"
-swift build --disable-sandbox
-products=$(swift build --disable-sandbox --show-bin-path)
+# SNAPSHOT_PRODUCTS reuses an existing PolymuxKit build (the snapshot test) instead of building again.
+products="${SNAPSHOT_PRODUCTS:-}"
+if [ -z "$products" ]; then
+  swift build --disable-sandbox
+  products=$(swift build --disable-sandbox --show-bin-path)
+fi
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-if [ "${1:-}" = MA2 ]; then
+if [ "$mode" = MA2 ]; then
   cat > "$scratch/MA2.swift" <<'SWIFT'
 import SwiftUI
 import PolymuxKit
@@ -81,6 +88,8 @@ SWIFT
     -I "$products" -I packages/CSQLite -L "$products" -lPolymuxKit \
     "${views[@]}" "$scratch/MA2.swift" -o "$scratch/ma2"
   "$scratch/ma2" "$out"
+  # MA2_MAC_ONLY=1 stops after the macOS renders: the snapshot test runs without a simulator.
+  if [ "${MA2_MAC_ONLY:-}" = 1 ]; then exit 0; fi
   [ -f .build/env ] && . .build/env
   : "${SIM_UDID:?MA2 requires an iOS simulator from wt-setup}"
   xcrun simctl bootstatus "$SIM_UDID" -b >/dev/null
