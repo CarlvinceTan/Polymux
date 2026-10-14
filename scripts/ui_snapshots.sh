@@ -31,6 +31,81 @@ import AppKit
 import UIKit
 #endif
 
+/// Renders the real view at the container's size in a real window. ImageRenderer dropped everything
+/// behind a ScrollView, so every menu and picker snapshot was a blank panel.
+@MainActor private func snapshot(_ view: AnyView, container: CGSize, dark: Bool) -> CGImage {
+    #if os(macOS)
+    let hosting = NSHostingView(rootView: view)
+    hosting.frame = CGRect(origin: .zero, size: container)
+    let window = NSWindow(contentRect: hosting.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+    NSApp.appearance = window.appearance
+    hosting.appearance = window.appearance
+    window.contentView = hosting
+    hosting.layoutSubtreeIfNeeded()
+    guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { fatalError("No bitmap") }
+    hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+    guard let image = bitmap.cgImage else { fatalError("No image") }
+    return image
+    #else
+    let controller = UIHostingController(rootView: view)
+    let window = UIWindow(frame: CGRect(origin: .zero, size: container))
+    window.overrideUserInterfaceStyle = dark ? .dark : .light
+    window.rootViewController = controller
+    window.makeKeyAndVisible()
+    controller.view.frame = window.bounds
+    controller.beginAppearanceTransition(true, animated: false)
+    controller.endAppearanceTransition()
+    controller.view.setNeedsLayout()
+    controller.view.layoutIfNeeded()
+    let renderer = UIGraphicsImageRenderer(bounds: controller.view.bounds)
+    let image = renderer.image { context in controller.view.layer.render(in: context.cgContext) }
+    guard let cg = image.cgImage else { fatalError("No image") }
+    return cg
+    #endif
+}
+
+/// Fails a snapshot that escapes the container or draws a surface with no content on it.
+/// Returns the ink it found, so the run reports the weakest snapshot.
+@MainActor private func inspect(_ cg: CGImage, container: CGSize, label: String) -> Int {
+    var pixels = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+    guard let context = CGContext(data: &pixels, width: cg.width, height: cg.height,
+        bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { fatalError("No pixel context") }
+    context.draw(cg, in: CGRect(origin: .zero, size: container))
+    var minX = cg.width, minY = cg.height, maxX = -1, maxY = -1, opaque = 0
+    for y in 0..<cg.height {
+        for x in 0..<cg.width where pixels[(y * cg.width + x) * 4 + 3] > 0 {
+            precondition(x >= 8 && y >= 8 && x < cg.width - 8 && y < cg.height - 8,
+                         "Rendered view escaped the 8 pt inset: \(label) at \(x),\(y)")
+            opaque += 1
+            minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+        }
+    }
+    precondition(opaque > 0, "The view rendered nothing: \(label)")
+    // Ink counts pixels that differ from the panel's own fill: the border alone draws no ink,
+    // so a panel that renders empty fails instead of passing on its surface.
+    var histogram: [UInt32: Int] = [:]
+    for y in (minY + 4)..<(maxY - 4) {
+        for x in (minX + 4)..<(maxX - 4) {
+            let offset = (y * cg.width + x) * 4
+            guard pixels[offset + 3] > 0 else { continue }
+            let key = UInt32(pixels[offset]) << 16 | UInt32(pixels[offset + 1]) << 8 | UInt32(pixels[offset + 2])
+            histogram[key, default: 0] += 1
+        }
+    }
+    guard let fill = histogram.max(by: { $0.value < $1.value })?.key else { fatalError("No panel pixels: \(label)") }
+    let surface = (UInt8(fill >> 16), UInt8((fill >> 8) & 0xFF), UInt8(fill & 0xFF))
+    let ink = histogram.reduce(0) { total, entry in
+        let rgb = (UInt8(entry.key >> 16), UInt8((entry.key >> 8) & 0xFF), UInt8(entry.key & 0xFF))
+        let distance = abs(Int(rgb.0) - Int(surface.0)) + abs(Int(rgb.1) - Int(surface.1)) + abs(Int(rgb.2) - Int(surface.2))
+        return distance > 24 ? total + entry.value : total
+    }
+    precondition(ink > 1_000, "The panel is blank, no content: \(label), \(ink) ink pixels")
+    return ink
+}
+
 @main struct MA2Check {
     @MainActor static func main() throws {
         #if os(macOS)
@@ -41,33 +116,17 @@ import UIKit
         let anchors = [CGPoint(x: 0, y: 240), CGPoint(x: 400, y: 240),
                        CGPoint(x: 200, y: 0), CGPoint(x: 200, y: 480),
                        .zero, CGPoint(x: 400, y: 0), CGPoint(x: 0, y: 480), CGPoint(x: 400, y: 480)]
+        var leastInk = Int.max
         for dark in [false, true] {
-            #if os(macOS)
-            NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            #endif
             for (edge, point) in anchors.enumerated() {
                 for picker in [false, true] {
                     let anchor = CGRect(origin: point, size: .zero)
                     let view = picker
                         ? AnyView(EmojiPicker(anchor: anchor, container: container, choose: { _ in }))
                         : AnyView(MessageMenu(anchor: anchor, container: container, share: {}, react: { _ in }, expand: {}, reply: {}, copy: {}))
-                    let renderer = ImageRenderer(content: view.environment(\.colorScheme, dark ? .dark : .light))
-                    renderer.scale = 1
-                    guard let cg = renderer.cgImage else { fatalError("ImageRenderer produced no image") }
-                    var pixels = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
-                    guard let context = CGContext(data: &pixels, width: cg.width, height: cg.height,
-                        bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { fatalError("No pixel context") }
-                    context.draw(cg, in: CGRect(origin: .zero, size: container))
-                    var count = 0
-                    for y in 0..<cg.height {
-                        for x in 0..<cg.width where pixels[(y * cg.width + x) * 4 + 3] > 0 {
-                            precondition(x >= 8 && y >= 8 && x < cg.width - 8 && y < cg.height - 8,
-                                         "Rendered view escaped inset: edge \(edge), picker \(picker), pixel \(x),\(y)")
-                            count += 1
-                        }
-                    }
-                    precondition(count > 20_000, "Snapshot is empty or truncated")
+                    let label = "\(dark ? "dark" : "light")-\(picker ? "picker" : "menu")-\(edge)"
+                    let cg = snapshot(AnyView(view.environment(\.colorScheme, dark ? .dark : .light)), container: container, dark: dark)
+                    leastInk = min(leastInk, inspect(cg, container: container, label: label))
                     #if os(macOS)
                     let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])!
                     let platform = "mac"
@@ -75,11 +134,11 @@ import UIKit
                     let png = UIImage(cgImage: cg).pngData()!
                     let platform = "ios"
                     #endif
-                    try png.write(to: output.appending(path: "\(platform)-\(dark ? "dark" : "light")-\(picker ? "picker" : "menu")-\(edge).png"))
+                    try png.write(to: output.appending(path: "\(platform)-\(label).png"))
                 }
             }
         }
-        print("MA2: 32 real-view snapshots; all eight positions satisfy the 8 pt inset")
+        print("MA2: 32 real-view snapshots; all eight positions satisfy the 8 pt inset and draw content (least ink \(leastInk))")
     }
 }
 SWIFT
