@@ -136,8 +136,12 @@ case $1 in
   [ -n "$LN" ] || { log "dispatch: all lanes busy"; exit 0; }
   for f in "$Q"/*.task; do [ -f "$f" ] || continue; id=$(basename "$f" .task); t=$(grep -vE '^(unit|needs|scope|expected_min|branch|after):' "$f" | head -1)
     b=$(echo "$t" | sed -E 's/ \(attempt [0-9]+\)$//'); C=$(for x in "$b" "$t"; do echo "$(slug "$x") $(slugo "$x")"; done; echo "$(strip "${id#*-}")"); C=$(echo $C | tr ' ' '\n' | sort -u | tr '\n' ' '); m=$(date -r "$f" '+%Y%m%d%H%M%S')
+    # Cleanup events belong to the finished attempt, even when the retry has the same timestamp.
     why=$(evm "$O/events.tsv" 2>/dev/null | awk -F'\t' -v m="$m" '{
-        if($3=="pr"||$3=="dry"){print "already passed ("$2" "$3")";exit} if($3=="requeued"||$3=="superseded"||$3=="board")next; ts=$1;gsub(/[-: ]/,"",ts); if(ts>=m){print "attempt already started ("$2" "$3")";exit}}')
+        if($3=="pr"||$3=="dry"){print "already passed ("$2" "$3")";exit}
+        if($3=="failed"||$3=="requeued"||$3=="superseded"||$3=="infra"||$3=="needs_cody"||$3=="deferred"){delete live[$2];next}
+        ts=$1;gsub(/[-: ]/,"",ts); if($3=="running"&&ts>=m)live[$2]=1
+      } END{for(id in live){print "attempt already started ("id" running)";exit}}')
     [ -z "$why" ] && awk -F'\t' -v b="$b" '$7==b&&$4==0{f=1}END{exit !f}' "$ST/tasks.tsv" && why="passed (lane-guard ledger)"
     if [ -n "$why" ]; then mkdir -p "$Q/dropped"; qmv "$f" "$Q/dropped/"; log "dispatch: dropped $id: $why"; continue; fi
     # Skip (leave in queue, try the next card in this pass) anything run-lane would refuse or must not start.
