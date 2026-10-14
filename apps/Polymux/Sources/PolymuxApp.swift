@@ -27,6 +27,7 @@ struct PolymuxApp: App {
 
     init() {
         _ = Notifications.shared
+        FrameLog.install()
         #if os(macOS)
         #if DEBUG
         if !VerifyFixture.enabled && !CommandLine.arguments.contains("--verify-approval") {

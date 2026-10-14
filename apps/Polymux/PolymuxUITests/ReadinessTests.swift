@@ -7,6 +7,7 @@
 //  - no activity indicators / "Loading" labels for 2 polls, app running in the foreground.
 // Each wait's elapsed ms goes to ready.json (attachment) for ~/verify-evidence/<worktree>/<run-id>/.
 import XCTest
+import QuartzCore
 
 final class ReadinessTests: XCTestCase {
     static let seededIDs = ["t-chief", "t-aria", "t-milo", "t-nova", "t-long", "t-stream", "t-approval",
@@ -59,6 +60,105 @@ final class ReadinessTests: XCTestCase {
             app.terminate()
         }
     }
+
+    #if os(macOS)
+    // Release scroll frame timing for PR #39: opens the staged long thread (100 messages and
+    // 600 activity events served by .proof/df2-release-scroll/proxy.py) in the Release build,
+    // scrolls it, and reports the CADisplayLink log FrameLog writes as median/p95/max frame
+    // times plus the share of intervals over 1.5x the measured display period (a missed
+    // refresh). Armed only by .proof/df2-release-scroll/measure-release-scroll.sh: verify.sh
+    // never sets POLYMUX_RELEASE_SCROLL_PORT, so its runs skip this measurement.
+    func testReleaseScroll() throws {
+        guard let port = ProcessInfo.processInfo.environment["POLYMUX_RELEASE_SCROLL_PORT"] else {
+            throw XCTSkip("Release scroll measurement is armed only by .proof/df2-release-scroll/measure-release-scroll.sh")
+        }
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let proof = root.appendingPathComponent(".proof/df2-release-scroll")
+        let release = root.appendingPathComponent(".build/DD/Build/Products/Release/Polymux.app")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: release.path), "no Release app at \(release.path)")
+        let frames = proof.appendingPathComponent("frames.log")
+        let data = root.appendingPathComponent(".build/release-scroll-data")
+        try? FileManager.default.removeItem(at: frames)
+        try? FileManager.default.removeItem(at: data)
+
+        let app = XCUIApplication(url: release)
+        app.launchEnvironment["POLYMUX_DATA_DIR"] = data.path
+        app.launchArguments = ["-serverAddress", "http://127.0.0.1:\(port)",
+                               "--verify-frame-log", frames.path]
+        app.launch()
+        let any = app.descendants(matching: .any)
+        timed("release.list") { any["chats.list"].exists }
+        let row = any["sidebar.row.t-long"]
+        timed("release.row") {
+            if row.exists && row.isHittable { return true }
+            any["chats.list"].scroll(byDeltaX: 0, deltaY: -300)
+            return false
+        }
+        row.click()
+        let transcript = app.scrollViews.firstMatch
+        XCTAssertTrue(transcript.waitForExistence(timeout: 30), "chat transcript is a scroll view")
+        let newest = any.matching(NSPredicate(format: "label CONTAINS 'Review release 100 and'")).firstMatch
+        timed("release.newest", timeout: 60) {   // normalize to the thread's newest message
+            if newest.exists { return true }
+            transcript.scroll(byDeltaX: 0, deltaY: -1500)
+            return false
+        }
+        capture(app, theme: "release", state: "before-scroll")
+        let before = visibleReleases(any)
+        let from = Date()
+        for _ in 0..<30 { transcript.scroll(byDeltaX: 0, deltaY: 700) }
+        let after = visibleReleases(any)
+        XCTAssertFalse(after.isEmpty, "long thread shows release messages while scrolling")
+        XCTAssertLessThan(after.min() ?? 101, before.min() ?? 101,
+                          "scrolling up reached older releases (\(before.min() ?? -1) -> \(after.min() ?? -1))")
+        capture(app, theme: "release", state: "mid-scroll")
+        for _ in 0..<30 { transcript.scroll(byDeltaX: 0, deltaY: -700) }
+        let until = Date()
+        capture(app, theme: "release", state: "after-scroll")
+        RunLoop.current.run(until: Date().addingTimeInterval(1))   // let FrameLog flush the tail
+        app.terminate()
+
+        let text = (try? String(contentsOf: frames, encoding: .utf8)) ?? ""
+        var samples: [(at: Double, ms: Double)] = []
+        for line in text.split(separator: "\n") where !line.hasPrefix("#") {
+            let parts = line.split(separator: " ")
+            if parts.count == 2, let at = Double(parts[0]), let ms = Double(parts[1]) { samples.append((at, ms)) }
+        }
+        let window = samples.filter { $0.at >= from.timeIntervalSince1970 && $0.at <= until.timeIntervalSince1970 }
+            .map(\.ms).sorted()
+        XCTAssertGreaterThan(window.count, 120,
+                             "frame log holds \(window.count) samples in the scroll window (\(samples.count) in the run)")
+        guard window.count > 120 else { return }
+        func percentile(_ p: Double) -> Double { window[Int(Double(window.count - 1) * p)] }
+        let refresh = percentile(0.10)
+        let hitches = window.filter { $0 > refresh * 1.5 }.count
+        let stats: [String: Any] = [
+            "configuration": "Release",
+            "os": ProcessInfo.processInfo.operatingSystemVersionString,
+            "messages": 100, "activityEvents": 600, "scrollSteps": 60,
+            "samples": window.count, "releaseMin": after.min() ?? -1,
+            "refreshMs": refresh, "hitchThresholdMs": refresh * 1.5,
+            "medianMs": percentile(0.50), "p95Ms": percentile(0.95), "maxMs": window.last ?? 0,
+            "hitches": hitches, "hitchRate": Double(hitches) / Double(window.count)]
+        if let json = try? JSONSerialization.data(withJSONObject: stats, options: [.sortedKeys, .prettyPrinted]) {
+            try? json.write(to: proof.appendingPathComponent("scroll-stats.json"))
+            let report = XCTAttachment(data: json, uniformTypeIdentifier: "public.json")
+            report.name = "scroll-stats.json"; report.lifetime = .keepAlways; add(report)
+        }
+        let log = XCTAttachment(data: Data(text.utf8), uniformTypeIdentifier: "public.plain-text")
+        log.name = "frames.log"; log.lifetime = .keepAlways; add(log)
+        print("release scroll: \(window.count) frames, median \(percentile(0.50)) ms, p95 \(percentile(0.95)) ms, " +
+              "max \(window.last ?? 0) ms, hitch rate \(hitches)/\(window.count) (threshold \(refresh * 1.5) ms)")
+    }
+
+    private func visibleReleases(_ any: XCUIElementQuery) -> [Int] {
+        any.matching(NSPredicate(format: "label CONTAINS 'Review release '")).allElementsBoundByIndex.compactMap {
+            guard let range = $0.label.range(of: "Review release ") else { return nil }
+            return Int($0.label[range.upperBound...].prefix { $0.isNumber })
+        }
+    }
+    #endif
 
     override func setUp() {
         super.setUp()
