@@ -16,7 +16,7 @@ struct ToolRowView: View {
                     Text(row.title).font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
