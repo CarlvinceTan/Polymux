@@ -601,10 +601,10 @@ echo laneB > "$LANES_HOME/units/oc-other.lock/lane"
 mkdir "$LANES_HOME/units/oc-gated.lock.reclaim"
 LANE_OC_CMD="$OCB/opencode" OC_DELETE_FAIL=ses_failed oc_sweep "$LANES_HOME" "$T/repo/scripts"
 check "orphan sweep exports and deletes only recorded dead OpenCode sessions" '[ ! -f "$LANES_HOME/units/oc-dead.lock/oc_session" ] && [ -s "$LANES_HOME/logs/orphan-ses_dead.json" ] && grep -qx "session delete ses_dead" "$T/oc.log" && ! grep -qE "session delete ses_(live|gated|other)" "$T/oc.log"'
-check "orphan sweep retains failed deletions for retry and respects live owners and reclaim gates" '[ -f "$LANES_HOME/units/oc-failed.lock/oc_session" ] && [ -f "$LANES_HOME/units/oc-live.lock/oc_session" ] && [ -f "$LANES_HOME/units/oc-gated.lock/oc_session" ] && [ -d "$LANES_HOME/units/oc-gated.lock.reclaim" ]'
+check "orphan sweep retains failed deletions outside reclaimable locks and respects live owners and reclaim gates" '[ -f "$LANES_HOME/orphan-sessions/ses_failed.lock/oc_session" ] && [ ! -f "$LANES_HOME/units/oc-failed.lock/oc_session" ] && [ -f "$LANES_HOME/units/oc-live.lock/oc_session" ] && [ -f "$LANES_HOME/units/oc-gated.lock/oc_session" ] && [ -d "$LANES_HOME/units/oc-gated.lock.reclaim" ]'
 : > "$T/oc.log"
 LANE_OC_CMD="$OCB/opencode" oc_sweep "$LANES_HOME" "$T/repo/scripts"
-check "orphan sweep retries failed deletion without repeating successful deletion" '[ ! -f "$LANES_HOME/units/oc-failed.lock/oc_session" ] && [ "$(grep -c "session delete" "$T/oc.log")" = 1 ] && grep -qx "session delete ses_failed" "$T/oc.log"'
+check "orphan sweep retries failed deletion without repeating successful deletion" '[ ! -d "$LANES_HOME/orphan-sessions/ses_failed.lock" ] && [ "$(grep -c "session delete" "$T/oc.log")" = 1 ] && grep -qx "session delete ses_failed" "$T/oc.log"'
 rm -rf "$LANES_HOME"/units/oc-*.lock "$LANES_HOME/units/oc-gated.lock.reclaim"
 : > "$T/oc.log"
 OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_IDLE_S=2 LANE_DRY=1 LANE_STUB_CMD='sleep 300' $RL laneA "$(task 'Oc fastfail' oc1)" 2>&1); RC=$?
@@ -617,6 +617,13 @@ check "opencode unit killed (TERM): session ended exactly once" 'grep -q "^sessi
 : > "$T/oc.log"
 OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Oc happy' oc3)" 2>&1); RC=$?
 check "opencode success ends its session exactly once" '[ $RC = 0 ] && [ "$(grep -c "session delete" "$T/oc.log")" = 1 ]'
+: > "$T/oc.log"
+FAILED_SESSION="ses_$(basename "$LANES_WT/laneA-oc-delete-fail" | tr -c 'a-z0-9\n' _)"
+OUT=$(OC_DELETE_FAIL="$FAILED_SESSION" LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Oc delete fail' oc-delete)" 2>&1); RC=$?
+check "failed exit deletion survives unit lock release for orphan sweeping" '[ $RC = 0 ] && [ ! -d "$LANES_HOME/units/oc-delete-fail.lock" ] && [ -s "$LANES_HOME/orphan-sessions/$FAILED_SESSION.lock/oc_session" ]'
+: > "$T/oc.log"
+OUT=$(LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Oc sweep retry' oc-retry)" 2>&1); RC=$?
+check "next lane startup sweeps a failed exit deletion before its own session" '[ $RC = 0 ] && [ ! -d "$LANES_HOME/orphan-sessions/$FAILED_SESSION.lock" ] && grep -qx "session delete $FAILED_SESSION" "$T/oc.log" && [ "$(grep -c "session delete" "$T/oc.log")" = 2 ]'
 : > "$T/oc.log"
 task 'Oc interrupt' oc-int >/dev/null
 LANE_OC_CMD="$OCB/opencode" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='sleep 300' python3 - "$T/oc-int.task" "$T/oc.log" <<'PYINT'

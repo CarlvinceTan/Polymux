@@ -78,9 +78,14 @@ repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|ht
 LANE_GUARD=${LANE_GUARD:-$HOME/.local/bin/lane-guard}
 guard() { [ -x "$LANE_GUARD" ] || return 0; "$LANE_GUARD" "$@"; }
 # Recorded sessions survive a killed runner; the reclaim gate excludes new writers.
+oc_orphan() {
+  local d="$1/orphan-sessions/$2.lock"
+  mkdir -p "$d" || return 1
+  printf '%s\n' "$3" > "$d/lane" && printf '%s\n' "$4" > "$d/pid" && printf '%s\n' "$2" > "$d/oc_session"
+}
 oc_sweep() {
   local ops=$1 sd=$2 d p lane cmd session gate
-  for d in "$ops"/units/*.lock; do
+  for d in "$ops"/units/*.lock "$ops"/orphan-sessions/*.lock; do
     [ -s "$d/oc_session" ] || continue
     p=$(lock_holder "$d"); [ -n "$p" ] || continue
     kill -0 "$p" 2>/dev/null && continue
@@ -95,11 +100,16 @@ oc_sweep() {
           perl -e 'alarm shift; exec @ARGV' "${LANE_OC_TIMEOUT:-20}" "$cmd" session export "$session" > "$ops/logs/orphan-$session.json" 2>/dev/null
           if perl -e 'alarm shift; exec @ARGV' "${LANE_OC_TIMEOUT:-20}" "$cmd" session delete "$session" >> "$ops/logs/orphan-sessions.log" 2>&1; then
             rm -f "$d/oc_session"
+          elif [[ $d = "$ops"/units/* ]]; then
+            oc_orphan "$ops" "$session" "$lane" "$p" && rm -f "$d/oc_session"
           fi
         fi
       fi
     fi
     rmdir "$gate" 2>/dev/null
+    if [[ $d = "$ops"/orphan-sessions/* ]] && [ ! -f "$d/oc_session" ]; then
+      rm -f "$d/pid" "$d/lane"; rmdir "$d" 2>/dev/null
+    fi
   done
 }
 # --- GitHub labels and Notion-free GitHub writes ---------------------------------------------------

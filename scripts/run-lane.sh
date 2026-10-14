@@ -314,7 +314,9 @@ print(ss[0]["id"] if ss else "")' "$WT" "${T0:-0}")
 oc_end() { [ -z "${OC_DONE-1}" ] || return 0; oc_capture; [ -n "$OCS" ] || return 0
   ocli session export "$OCS" > "$LOG.oc-$OCS.json" 2>/dev/null
   if ocli session delete "$OCS" >> "$LOG" 2>&1; then echo "opencode session $OCS ended on the shared serve (transcript: $LOG.oc-$OCS.json)" >> "$LOG"
-  else echo "warn: could not end opencode session $OCS on the shared serve" >> "$LOG"; fi
+  else echo "warn: could not end opencode session $OCS on the shared serve" >> "$LOG"
+    oc_orphan "$OPS" "$OCS" "$L" "$$"
+  fi
   rm -f "$UL/oc_session"; OCS=""; OC_DONE=1; }
 stop_agent() { local k; oc_end; kill -TERM -- -"$AP" 2>/dev/null
   for k in $(seq 1 $(( ${LANE_KILL_WAIT:-10} * 10 ))); do pgrep -g "$AP" >/dev/null 2>&1 || return 0; sleep 0.1; done
