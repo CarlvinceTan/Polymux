@@ -88,7 +88,7 @@ deps_ok(){ # $1 task file: every 'after:' ref must be met; gh results cached per
     branch-on-main:*) n=${r#branch-on-main:}; h=${n#origin/}; st=$(awk -v n="b:$h" '$1==n{print $2}' "$DC")   # squash-merged + deleted: a merged PR with head <b> counts
       if [ -z "$st" ]; then st=$(gh pr list -R CarlvinceTan/polymux --state merged --head "$h" --json number --limit 1 -q '.[0].number // "none"' 2>/dev/null) || st=ERROR; echo "b:$h ${st:-ERROR}" >> "$DC"; fi
       [ "$st" = ERROR ] && log "dispatch: $(basename "$1"): gh merged-PR lookup for $h failed; trying ancestry" >&2
-      case $st in ''|none|ERROR) ;; *) continue;; esac
+      case $st in ''|*[!0-9]*|0) ;; *) continue;; esac
       [ -f "$DC.f" ] || { git -C "$LANES_REPO" fetch -q origin 2>/dev/null || log "dispatch: git fetch failed" >&2; : > "$DC.f"; }
       git -C "$LANES_REPO" merge-base --is-ancestor "$n" origin/main 2>/dev/null; st=$?
       [ $st -gt 1 ] && log "dispatch: $(basename "$1"): merge-base check for $n failed (rc $st); treating as unmet" >&2
