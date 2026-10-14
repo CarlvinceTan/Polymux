@@ -569,11 +569,31 @@ rm -f "$T/ghargs"; GH_CMD="$T/ghrec" gh_write pr comment 7 --body "$(cat "$T/ids
 check "gh_write: plain UUIDs/UDIDs/MD5s reach gh unchanged" '[ $RC = 0 ] && grep -q "$UU" "$T/ghargs" && grep -q "$UD" "$T/ghargs" && grep -q "$SIMU" "$T/ghargs" && grep -q "$MD" "$T/ghargs"'
 rm -f "$T/ghargs"; OUT=$(GH_CMD="$T/ghrec" gh_write pr edit 7 --add-label "x https://notion.so/$NID" 2>&1); RC=$?
 check "gh_write never refuses: any argument is scrubbed and gh runs" '[ $RC = 0 ] && grep -qx "x \[Notion link removed\]" "$T/ghargs" && ! notion_ref < "$T/ghargs"'
+printf '# MC1: Derive plain titles (attempt 3)\nissue: #297\n' > "$T/meta.task"
+check "brief metadata: strip heading, unit code and attempt; read hash issue" '[ "$(brief_title "$T/meta.task")" = "Derive plain titles" ] && [ "$(brief_link "$T/meta.task")" = "Closes #297" ]'
+printf '# Git: Keep area prefix att2\nissue: 297\npartial: true\n' > "$T/meta.task"
+check "brief metadata: preserve area, strip attN, partial header uses Refs" '[ "$(brief_title "$T/meta.task")" = "Git: Keep area prefix" ] && [ "$(brief_link "$T/meta.task")" = "Refs #297" ]'
+printf '# Plain title\nissue: 297\nThis is a partial slice.\n' > "$T/meta.task"
+check "brief metadata: partial slice in prose uses Refs" '[ "$(brief_link "$T/meta.task")" = "Refs #297" ]'
+printf 'Plain title\nMention #297 without an issue header.\n' > "$T/meta.task"
+check "brief metadata: unadorned title, absent issue is never inferred" '[ "$(brief_title "$T/meta.task")" = "Plain title" ] && [ -z "$(brief_link "$T/meta.task")" ]'
+check "plain text removes ANSI colors and OSC links" '[ "$(printf "\033[31mRed\033[0m \033]8;;https://example.com\aLink\033]8;;\a" | plain_text)" = "Red Link" ]'
 G4="$T/ghbin4"; mkdir -p "$G4"
 printf '#!/bin/bash\ncase "$1 $2" in\n"pr create") printf "%%s\\n" "$@" > "%s/prargs"; echo https://github.com/o/r/pull/103;;\nesac\nexit 0\n' "$T" > "$G4/gh"; chmod +x "$G4/gh"
-printf '# Chat lane labels\nneeds: none\nexpected_min: 5\ntype: test\narea: chat\ncard: https://www.notion.so/%s\nNotes from https://app.notion.com/p/%s\n' "$NID" "$NID" > "$T/lb.task"
-OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/lb.task" --branch test/labels 2>&1); RC=$?
+printf '# Chat lane labels\nissue: #297\nneeds: none\nexpected_min: 5\ntype: test\narea: chat\ncard: https://www.notion.so/%s\nNotes from https://app.notion.com/p/%s\n' "$NID" "$NID" > "$T/lb.task"
+VC_META='mkdir -p .build/proof && printf "\033[32m## ok\033[0m\n" > .build/proof/summary.md && echo unit-test-verified > .build/proof/level'
+OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC_META" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/lb.task" --branch test/labels 2>&1); RC=$?
 check "run-lane PR: labels from type:/area: headers, no Notion text in title or body" '[ $RC = 0 ] && grep -qx "Test,Chat" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
+pr_metadata() { python3 - "$T/prargs" <<'PYMETA'
+import sys
+body = open(sys.argv[1]).read()
+assert "--title\nChat lane labels\n" in body
+assert "Closes #297\n\nRelease Notes:" in body
+assert "\x1b" not in body
+PYMETA
+}
+check "run-lane PR uses plain title and closing line above release notes without ANSI" 'pr_metadata'
+check "missing issue is flagged in the run result" 'grep -q "missing issue: in brief" "$LANES_HOME/results.tsv" && grep -q "Warning: missing issue: in brief" "$T/body-pr-create"'
 grep -v pull/103 "$LANES_HOME/results.tsv" > "$T/r.tsv"; cat "$T/r.tsv" > "$LANES_HOME/results.tsv"; rm -f "$LANES_HOME"/cards/chat-lane-labels*   # keep later cleanup cases exact
 git worktree remove --force "$LANES_WT/laneA-chat-lane-labels" 2>/dev/null
 printf '# Good\nneeds: none\nexpected_min: 5\ntype: bug\narea: ui, area:server\n' > "$T/qh1.task"; printf '# Bad\nneeds: none\nexpected_min: 5\ntype: chore\narea: web\n' > "$T/qh2.task"
