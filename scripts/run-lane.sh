@@ -403,8 +403,10 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
     [ -n "$DRAFT" ] && { (cd "$WT" && gh pr ready --undo "$URL" -R "$SLUG_REPO") >> "$LOG" 2>&1 ||
       echo "warn: could not mark existing PR $URL as draft (build-only)" | tee -a "$LOG"; }
   else
+    PT=$(plain_title "$(echo "$TASK" | head -1)") ||   # no code prefix may reach a GitHub title (brief first line)
+      { ev failed "$L" "PR title empty or still code-prefixed after stripping: '$TITLE' (no PR created; branch $B is pushed)"; continue; }
     URL=""; for ptry in 1 2 3; do   # pushed already: retry the API call only, never the agent
-      URL=$(cd "$WT" && gh_write pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --label "$LABELS" --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
+      URL=$(cd "$WT" && gh_write pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --label "$LABELS" --title "$PT" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
       sleep $((ptry * 10 * RS)); URL=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG"); [ -n "$URL" ] && break
       echo "gh pr create failed (try $ptry); retrying" >> "$LOG"; done
     [ -n "$URL" ] || { ev failed "$L" "gh pr create failed (3 tries; $B is pushed)"; continue; }

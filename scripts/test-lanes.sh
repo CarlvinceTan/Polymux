@@ -576,6 +576,20 @@ OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$ST
 check "run-lane PR: labels from type:/area: headers, no Notion text in title or body" '[ $RC = 0 ] && grep -qx "Test,Chat" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
 grep -v pull/103 "$LANES_HOME/results.tsv" > "$T/r.tsv"; cat "$T/r.tsv" > "$LANES_HOME/results.tsv"; rm -f "$LANES_HOME"/cards/chat-lane-labels*   # keep later cleanup cases exact
 git worktree remove --force "$LANES_WT/laneA-chat-lane-labels" 2>/dev/null
+# 34 plain titles: no code prefix reaches a GitHub title (plain_title + the run-lane PR create gh stub)
+PT() { ( . scripts/lanelib.sh; plain_title "$1" ); }
+check "plain_title: '# MN:', '# P0-208:', 'SB2 -', '[UI]' and 'word:' prefixes are stripped" '[ "$(PT "# MN: Stable tool names")" = "Stable tool names" ] && [ "$(PT "# P0-208: Require creds")" = "Require creds" ] && [ "$(PT "SB2 - User folders")" = "User folders" ] && [ "$(PT "[UI] Fix menu")" = "Fix menu" ] && [ "$(PT "Lanes: keep x")" = "keep x" ]'
+check "plain_title: a plain title is unchanged; over 70 chars is cut on a word boundary" '[ "$(PT "Stable tool names")" = "Stable tool names" ] && [ "$(PT "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff gggggggggg")" = "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff" ]'
+check "plain_title: a title that is only a code prefix is rejected" '! PT "# MN:" >/dev/null && ! PT "SB2 -" >/dev/null'
+printf '# MN: Stable tool names\nneeds: none\nexpected_min: 5\n' > "$T/pt.task"; rm -f "$T/prargs"
+OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/pt.task" --branch test/plain-title 2>&1); RC=$?
+check "run-lane PR create: gh gets --title 'Stable tool names', not the brief line" '[ $RC = 0 ] && [ "$(grep -A1 -x -- --title "$T/prargs" | tail -1)" = "Stable tool names" ]'
+grep -v pull/103 "$LANES_HOME/results.tsv" > "$T/r.tsv"; cat "$T/r.tsv" > "$LANES_HOME/results.tsv"; rm -f "$LANES_HOME"/cards/stable-tool-names*
+git worktree remove --force "$LANES_WT/laneA-stable-tool-names" 2>/dev/null
+printf '# MN:\nneeds: none\nexpected_min: 5\n' > "$T/ptbad.task"; rm -f "$T/prargs"
+OUT=$(PATH="$G4:$PATH" LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC2" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/ptbad.task" --branch test/plain-bad 2>&1); RC=$?
+check "run-lane: a code-only title creates no PR, ev failed names it, branch stays pushed" '[ $RC = 1 ] && [ ! -s "$T/prargs" ] && grep -q "code-prefixed after stripping" "$LANES_HOME/events.tsv" && [ -n "$(git ls-remote origin refs/heads/test/plain-bad)" ]'
+rm -f "$LANES_HOME"/queue/*-mn-retry.task; git worktree remove --force "$LANES_WT/laneA-mn" 2>/dev/null
 printf '# Good\nneeds: none\nexpected_min: 5\ntype: bug\narea: ui, area:server\n' > "$T/qh1.task"; printf '# Bad\nneeds: none\nexpected_min: 5\ntype: chore\narea: web\n' > "$T/qh2.task"
 OK1=$(bash scripts/queue-write.sh --check "$T/qh1.task" 2>&1; echo rc=$?); OUT=$(bash scripts/queue-write.sh --check "$T/qh2.task" 2>&1); RC=$?
 check "queue-write --check accepts valid type:/area: headers and rejects unknown values" 'grep -q "^rc=0$" <<< "$OK1" && [ $RC = 2 ] && grep -q "type: \"chore\" is not one of" <<< "$OUT" && grep -q "area: \"web\" is not one of" <<< "$OUT"'
