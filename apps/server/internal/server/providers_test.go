@@ -72,6 +72,7 @@ func TestProvidersAPI(t *testing.T) {
 	}{
 		{"POST", "/providers", body, "unique IDs", 400},
 		{"POST", "/providers", `{"id":"q","type":"custom","name":"Test","baseURL":"https://u:p@host/v1"}`, "without credentials", 400},
+		{"POST", "/providers", `{"id":"q","type":"custom","name":"Test","baseURL":"https://u@host/v1"}`, "without credentials", 400},
 		{"PATCH", "/providers/p", `{"baseURL":"https://u:p@host/v1"}`, "without credentials", 400},
 		{"PATCH", "/providers/p", `{"baseURL":"https://u@host/v1"}`, "without credentials", 400},
 		{"PATCH", "/providers/p", `{"baseURL":"file:///tmp/models"}`, "HTTP or HTTPS", 400},
