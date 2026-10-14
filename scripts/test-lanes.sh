@@ -224,10 +224,16 @@ git worktree add -q --detach "$HOME/code/wt-trash/oldclean" main && mkdir -p "$H
 git worktree add -q --detach "$HOME/code/wt-trash/olddirty" main && mkdir -p "$HOME/code/wt-trash/olddirty/.build" && echo dirty >> "$HOME/code/wt-trash/olddirty/README"
 git worktree add -q --detach "$HOME/code/wt-trash/fresh" main && mkdir -p "$HOME/code/wt-trash/fresh/.build"
 mkdir -p "$HOME/code/wt-trash/plain"; echo lost > "$HOME/code/wt-trash/plain/file"
+echo "gitdir: /missing/trash-git" > "$HOME/code/wt-trash/plain/.git"
+mkdir -p "$HOME/code/wt-trash/oldcopy" "$HOME/code/wt-trash/freshcopy"
+echo saved > "$HOME/code/wt-trash/oldcopy/file"
+echo fresh > "$HOME/code/wt-trash/freshcopy/file"
+touch -t 202001010000 "$HOME/code/wt-trash/oldcopy"
 touch -t 202001010000 "$HOME/code/wt-trash/oldclean" "$HOME/code/wt-trash/olddirty" "$HOME/code/wt-trash/plain"
 OUT=$(PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply 2>&1)
 check "trash purge deletes the old pushed clean tree, keeps the dirty tree" 'echo "$OUT" | grep -q "purge: $HOME/code/wt-trash/oldclean" && [ ! -d "$HOME/code/wt-trash/oldclean" ] && echo "$OUT" | grep -q "keep: $HOME/code/wt-trash/olddirty (uncommitted changes)" && [ "$(tail -1 "$HOME/code/wt-trash/olddirty/README")" = dirty ]'
 check "trash purge strips build output everywhere, keeps fresh and unreadable entries" '[ ! -e "$HOME/code/wt-trash/olddirty/.build" ] && [ ! -e "$HOME/code/wt-trash/fresh/.build" ] && [ -d "$HOME/code/wt-trash/fresh" ] && [ -f "$HOME/code/wt-trash/plain/file" ] && echo "$OUT" | grep -q "keep: $HOME/code/wt-trash/fresh (trashed 0h ago)" && echo "$OUT" | grep -q "keep: $HOME/code/wt-trash/plain (git state unreadable)"'
+check "trash purge removes old copies without .git and keeps fresh copies" '[ ! -d "$HOME/code/wt-trash/oldcopy" ] && [ "$(cat "$HOME/code/wt-trash/freshcopy/file")" = fresh ]'
 # 18 continuous dispatch: once, after the unit lock is released, background, non-fatal
 export GLOG="$T/g18"; rm -rf "$LANES_HOME/chain-fails"
 OUT=$(LANE_GUARD="$FG" LANE_DRY=1 LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'Chain next' t16)" 2>&1); waitfor "$GLOG" dispatch
