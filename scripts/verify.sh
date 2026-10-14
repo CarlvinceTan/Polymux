@@ -78,6 +78,7 @@ skip() { ROWS+=("| $1 | SKIP | not affected | 0s |"); echo "verify: $1 SKIP (not
 VT=full GO_PKGS=./... SWIFT=all APP=1 WHY="verify-targets.sh missing"; [ -f "$SD/verify-targets.sh" ] && eval "$(bash "$SD/verify-targets.sh" "${TI_BASE:-origin/main}" "$L/affected.log")"
 [ "$VT" = affected ] && echo "verify: affected ($WHY): go=[${GO_PKGS:-none}] swift=[${SWIFT:-none}] app=$APP" || echo "verify: targets full ($WHY)"
 . "$SD/verify-step.sh"
+unset LANE_TEST_SHIM   # steps record their own failures (verify-step.sh); a lane's tool shims must not count them twice
 step readiness-tests bash "$ROOT/scripts/test-readiness.sh"
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 [ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"

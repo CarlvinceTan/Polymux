@@ -75,6 +75,10 @@ Rules: work only in this worktree. Never search or list outside it (no ls, find 
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
 needs a test change (or a 'No-test-reason: ...' line in the commit). Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $START..HEAD' (this run's start commit $START; plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for $((IDLE_S / 60)) minutes is stopped. Never open a browser, a browser profile or any Grok Bot session. If you cannot make verify.sh pass, say why and stop."; }
+lane_test_shims() {  # PATH-first go/swift/xcodebuild wrappers: the watchdog counts the tests the agent runs itself
+  local d=$1 t; rm -rf "$d"; mkdir -p "$d" 2>/dev/null || return 0
+  for t in go swift xcodebuild; do ln -s "$SD/lane-test-shim.sh" "$d/$t" 2>/dev/null || return 0; done
+  export PATH="$d:$PATH" LANE_TEST_SHIM=1; }
 run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer name.
   cfg usable "$1" || { echo "refusing: lane $1 not usable" >>"$3"; return 95; }   # belt and braces
   unset CURSOR_API_KEY   # never inherit the main account key into any agent child
@@ -82,6 +86,7 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
   H=$(cfg lane "$1" home); if [ -n "$H" ]; then [ "$H" = "$HOME" ] && { echo "refusing: lane home is the real HOME" >>"$3"; return 96; }; mkdir -p "$H"; fi
   export GIT_COMMITTER_NAME="$(git -C "$2" config user.name || echo agent) ($1/$a)"
   case " ${LANE_FORCE_FAIL:-} " in *" $1 "*) echo "forced failure (LANE_FORCE_FAIL test)" >> "$3"; return 97;; esac
+  lane_test_shims "$2/.build/lane-test-bin"
   [ -n "${LANE_STUB_CMD:-}" ] && { (cd "$2" && HOME="${H:-$HOME}" LANE="$1" AGENT="$a" PROMPT="$P" bash -c "$LANE_STUB_CMD") >> "$3" 2>&1; return; }  # test hook
   case $a in
     cursor) local K KT; KT=$(cfg lane "$1" key)
@@ -286,7 +291,10 @@ IDLE_S=${LANE_IDLE_S:-$(( ${LANE_IDLE_MIN:-12} * 60 ))}; RS=${LANE_RETRY_SLEEP:-
 #    it reads in a step log of a test process THIS attempt started (go "--- FAIL: Name", swift "✘ Test Name()
 #    failed", XCTest "Test Case '-[C X]' failed", test-lanes/merge-queue "FAIL x", pytest "FAILED x").
 #    The agent's stdout is never scanned, so a failure line the agent merely echoes (a PR body, an issue,
-#    an old log) cannot trip the stop; only output from this run's own test processes counts.
+#    an old log) cannot trip the stop; only output from this run's own test processes counts: the verifier's
+#    steps, and the go/swift/xcodebuild runs the agent starts itself, which reach the ledger through the
+#    PATH-first shims lane_test_shims installs (scripts/lane-test-shim.sh). verify.sh unsets LANE_TEST_SHIM,
+#    so a verifier step still counts a failure once.
 # Then: stop_agent (opencode-aware teardown) and a retry brief with "agent: <other>" (codex <-> opencode;
 # LANE_WD_ALT overrides) and a "## Watchdog" note. 0 disables a limit. Only attempt 1 is re-queued (stop rule).
 WDOG=""; wd_failname() { [ -f "${WDL:-}" ] || return 1; sort "$WDL" | uniq -c | sort -rn | awk -v n="$1" '$1>=n{ $1=""; sub(/^ /,""); print; exit}'; }
