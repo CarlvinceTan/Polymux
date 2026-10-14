@@ -37,12 +37,29 @@ private final class SoundProbe: LiveSound {
     var stopped = 0
     var muted = false
     var interruptions = 0
+    var trackEvents = false
+    let processed = AsyncStream<MicEvent>.makeStream()
+    private var iterator: AsyncThrowingStream<MicEvent, Error>.Iterator?
+    private var previous: MicEvent?
 
     func start(rate: Int) async throws -> AsyncThrowingStream<MicEvent, Error> {
         self.rate = rate
         let stream = AsyncThrowingStream<MicEvent, Error>.makeStream()
         events = stream.continuation
+        if trackEvents {
+            iterator = stream.stream.makeAsyncIterator()
+            return AsyncThrowingStream(unfolding: { try await self.nextEvent() })
+        }
         return stream.stream
+    }
+    private func nextEvent() async throws -> MicEvent? {
+        // Requesting the next event acknowledges that the send loop handled the previous one.
+        if let previous { processed.continuation.yield(previous) }
+        guard var iterator else { return nil }
+        let event = try await iterator.next(isolation: MainActor.shared)
+        self.iterator = iterator
+        previous = event
+        return event
     }
     func setMuted(_ muted: Bool) { self.muted = muted; if muted { events?.yield(.end) } }
     func play(_ chunk: LivePCM) throws { chunks.append(chunk); playing = true }
@@ -114,16 +131,24 @@ private func call(_ id: String = "one", name: String = "ask_agent") -> LiveCall 
 
 @Test @MainActor func liveMuteStopsSendingAndEndsProviderAudio() async {
     let rig = LiveRig()
+    rig.sound.trackEvents = true
+    var processed = rig.sound.processed.stream.makeAsyncIterator()
     await rig.store.start()
     rig.store.toggleMute()
     rig.sound.events?.yield(.frame(.init(data: Data([1, 0]), rate: 16000), level: 1))
-    await settle { rig.provider.endings == 1 }
+    while let event = await processed.next() {
+        if case .frame = event { break }
+    }
+    #expect(rig.provider.endings == 1)
     #expect(rig.provider.audio.isEmpty)
     #expect(rig.store.muted)
     #expect(rig.store.level == 0)
     rig.store.toggleMute()
     rig.sound.events?.yield(.frame(.init(data: Data([1, 0]), rate: 16000), level: 0.5))
-    await settle { rig.provider.audio.count == 1 }
+    while let event = await processed.next() {
+        if case .frame = event { break }
+    }
+    #expect(rig.provider.audio.count == 1)
     await rig.store.stop()
 }
 
