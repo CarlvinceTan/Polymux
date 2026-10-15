@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ type Provider struct {
 	BaseURL       string            `json:"baseURL"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	SessionHeader string            `json:"sessionHeader,omitempty"`
+	Status        string            `json:"status"`
 	Enabled       bool              `json:"enabled"`
 	Order         int               `json:"order"`
 	Models        []Model           `json:"models"`
@@ -59,10 +61,76 @@ func (s *Store) SetProviders(providers []Provider) error {
 	return nil
 }
 
+type Capability struct {
+	Choice   json.RawMessage `json:"choice"`
+	Fallback bool            `json:"fallback"`
+}
+
+func cloneCapabilities(values map[string]Capability) map[string]Capability {
+	cloned := make(map[string]Capability, 8)
+	for _, cap := range []string{"text", "vision", "image-gen", "video-gen", "stt", "tts", "live", "embed"} {
+		cloned[cap] = Capability{Choice: json.RawMessage(`"auto"`)}
+	}
+	for cap, value := range values {
+		value.Choice = bytes.Clone(value.Choice)
+		cloned[cap] = value
+	}
+	return cloned
+}
+
+func validCapabilities(values map[string]Capability) bool {
+	for cap, value := range values {
+		switch cap {
+		case "text", "vision", "image-gen", "video-gen", "stt", "tts", "live", "embed":
+		default:
+			return false
+		}
+		var auto string
+		if json.Unmarshal(value.Choice, &auto) == nil && auto == "auto" {
+			continue
+		}
+		var model struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(value.Choice))
+		decoder.DisallowUnknownFields()
+		if !json.Valid(value.Choice) || decoder.Decode(&model) != nil {
+			return false
+		}
+		if strings.TrimSpace(model.Provider) == "" || strings.TrimSpace(model.Model) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) Capabilities() map[string]Capability {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneCapabilities(s.data.Capabilities)
+}
+
+func (s *Store) SetCapabilities(values map[string]Capability) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !validCapabilities(values) {
+		return ErrInvalid
+	}
+	d := s.data
+	d.Capabilities = cloneCapabilities(values)
+	if err := s.save(d); err != nil {
+		return err
+	}
+	s.data = d
+	return nil
+}
+
 type document struct {
-	Providers []Provider        `json:"providers,omitempty"`
-	Settings  contract.Settings `json:"settings"`
-	GeminiKey string            `json:"geminiKey,omitempty"`
+	Capabilities map[string]Capability `json:"capabilities"`
+	Providers    []Provider            `json:"providers,omitempty"`
+	Settings     contract.Settings     `json:"settings"`
+	GeminiKey    string                `json:"geminiKey,omitempty"`
 }
 
 type Store struct {
@@ -76,6 +144,7 @@ func Open(path string) (*Store, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		s.data.Settings = defaults()
+		s.data.Capabilities = cloneCapabilities(nil)
 		return s, s.save(s.data)
 	}
 	if err != nil {
@@ -84,7 +153,7 @@ func Open(path string) (*Store, error) {
 	if err := json.Unmarshal(data, &s.data); err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
-	if !valid(s.data.Settings) || s.data.Settings.Revision < 1 {
+	if !valid(s.data.Settings) || s.data.Settings.Revision < 1 || !validCapabilities(s.data.Capabilities) {
 		return nil, ErrInvalid
 	}
 	if err := os.Chmod(path, 0600); err != nil {
