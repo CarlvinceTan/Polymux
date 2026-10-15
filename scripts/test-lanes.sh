@@ -644,7 +644,9 @@ for tool in go swift xcodebuild; do
   printf '#!/bin/bash\nprintf -- "--- FAIL: TestDirect (0.01s)\\n"\nexit 1\n' > "$T/test-bin/$tool"
   chmod +x "$T/test-bin/$tool"
   rm -f "$QD"/*.task
-  OUT=$(PATH="$T/test-bin:$PATH" LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD="for i in 1 2 3; do $tool test; done; sleep 2; $STUB_OK" $RL laneA "$(task "Wd direct $tool" "wd-$tool")" 2>&1); RC=$?
+  # LANE_CHAIN_MIN_S=0, as in the other watchdog cases: this stub fails in under a second, so the fast-fail
+  # runaway guard would otherwise move the retry out of queue/ into queue-hold/.
+  OUT=$(PATH="$T/test-bin:$PATH" LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_DRY=1 LANE_WD_TESTFAIL_N=3 LANE_STUB_CMD="for i in 1 2 3; do $tool test; done; sleep 2; $STUB_OK" $RL laneA "$(task "Wd direct $tool" "wd-$tool")" 2>&1); RC=$?
   WQ=$(ls "$QD"/*wd-direct-*-retry.task 2>/dev/null | head -1)
   check "watchdog counts agent-launched $tool test failures" '[ $RC = 1 ] && [ -n "$WQ" ] && grep -q "test .TestDirect. failed 3+ times" "$WQ"'
 done
