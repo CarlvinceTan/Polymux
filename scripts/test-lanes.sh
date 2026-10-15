@@ -8,7 +8,7 @@ PASS=0; FAILS=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAILS=$((FAILS+1)); echo "FAIL $1"; fi; }
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/repo"; cd "$T/repo"
 git config user.name "Lane Test"; git config user.email lane@test.invalid
-mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,verify-step,verify-result,lane-test-shim,lanelib,dispatch-guard,cleanup,wt-setup,board-update,queue-write}.sh "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
+mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,verify-step,verify-result,lane-test-shim,lanelib,dispatch-guard,cleanup,wt-setup,board-update,queue-write}.sh "$SRC"/scripts/hold-release.py "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
 cat > agents/lanes.toml <<'TOML'
 max_builds = 1
 lock_dir = "~/ops/lanes/locks"
@@ -714,12 +714,21 @@ OLD_INDEX=$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)
 # Simulate a killed attempt still holding the branch; the retry must free it.
 git -C "$LANES_WT/laneA-retry-dirty" checkout -q test/retrydirty
 RETRY_STUB='test "$(git symbolic-ref --short HEAD)" = test/retrydirty && test "$(cat README)" = base && test ! -e wip.txt && '"$STUB_OK"
-OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$RETRY_STUB" $RL laneB "$RQ" 2>&1); RC=$?
-[ "$RC" = 0 ] || { printf "%s\n" "$OUT"; cat "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log; }
+cp "$SRC/scripts/lane-guard.sh" scripts/
+# Match the old running event too: failure, requeue and cleanup can share a second.
+touch -t "$(awk -F'\t' '$2~/retry-dirty$/&&$3=="running"{t=$1;gsub(/[-: ]/,"",t);print substr(t,1,12)"."substr(t,13,2);exit}' "$LANES_HOME/events.tsv")" "$RQ"
+OUT=$(LANES_REPO="$T/repo" LANE_GUARD_STATE="$T/dispatch-state" LANE_GATE=true LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$RETRY_STUB" bash scripts/lane-guard.sh --dispatch laneB 2>&1); RC=$?
+check "dispatcher starts the failed dirty unit's queued retry" '[ $RC = 0 ] && [ -f "$LANES_HOME/queue/started/$(basename "$RQ")" ] && echo "$OUT" | grep -q "dispatch: started .*retry-dirty-retry on laneB"'
+for k in $(seq 1 50); do grep -q 'retry-dirty-attempt-2.*dry' "$LANES_HOME/events.tsv" && break; sleep 0.1; done
+OUT=$(cat "$LANES_HOME/logs/dispatch-$(basename "$RQ" .task).log")
 WTL=$(git worktree list --porcelain | sed -n 's/^worktree //p' | grep "/laneB-retry-dirty" | head -1)
 check "retry on laneB detaches laneA's dirty tree, checks the branch out and commits there" '[ $RC = 0 ] && echo "$OUT" | grep -q "DRY-OK laneB" && grep -q "detached stale dirty worktree $LANES_WT/laneA-retry-dirty (held test/retrydirty; changes kept)" "$LANES_HOME"/logs/*retry-dirty-attempt-2-laneB.log && [ -n "$WTL" ] && [ "$(git -C "$WTL" rev-parse HEAD)" = "$(git rev-parse test/retrydirty)" ]'
 check "laneA keeps its HEAD, staged, unstaged and untracked changes, detached" '[ "$(cat "$LANES_WT/laneA-retry-dirty/wip.txt")" = wip ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" rev-parse HEAD)" = "$OLD_HEAD" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff HEAD)" = "$OLD_DIFF" ] && [ "$(git -C "$LANES_WT/laneA-retry-dirty" diff --cached)" = "$OLD_INDEX" ] && ! git -C "$LANES_WT/laneA-retry-dirty" symbolic-ref -q HEAD'
 rm -f "$LANES_HOME"/queue/*.task
+cp "$(task 'Live duplicate' live)" "$LANES_HOME/queue/live.task"
+printf '%s\t123-live-duplicate\trunning\tlaneA\tlive\n' "$(date '+%F %T')" >> "$LANES_HOME/events.tsv"
+OUT=$(LANES_REPO="$T/repo" LANE_GUARD_STATE="$T/dispatch-state" LANE_GATE=true bash scripts/lane-guard.sh --dispatch laneB 2>&1); RC=$?
+check "dispatcher still drops a duplicate of a live attempt" '[ $RC = 0 ] && [ -f "$LANES_HOME/queue/dropped/live.task" ] && echo "$OUT" | grep -q "attempt already started (123-live-duplicate running)"'
 # 34 Only real run failures count, even with non-run stops in the window.
 rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY" "$LANES_HOME/fast-fails.tsv"
 for kind in dep spec scope; do

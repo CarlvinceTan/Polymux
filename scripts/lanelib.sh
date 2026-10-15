@@ -76,7 +76,7 @@ wd_fail_names() { perl -ne '
     if (/--- FAIL: (\S+)/) { print "$1\n" } elsif (/✘ Test (\S+?)\(?\)? .*failed/) { print "$1\n" }
     elsif (/Test Case .-\[\S+ (\S+?)\]. failed/) { print "$1\n" } elsif (/^FAIL +(\S.*?)\s*$/) { print "$1\n" }
     elsif (/^FAILED (\S+)/) { print "$1\n" }'; }
-lane_files_changed() { git diff --name-only "$1"...HEAD | out_has '^(scripts/(run-lane|verify|verify-step|lane-test-shim|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write)\.sh|scripts/(lanes|media-check|verdict)\.py|agents/lanes\.toml)$'; }
+lane_files_changed() { git diff --name-only "$1"...HEAD | out_has '^(scripts/(run-lane|verify|verify-step|lane-test-shim|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write|lane-guard|test-lane-guard)\.sh|scripts/(lanes|media-check|verdict|hold-release|test-hold-release)\.py|agents/lanes\.toml)$'; }
 # test-lanes.sh to run: the checkout under test (a PR's own worktree in --verify-only), else ours.
 lane_tests_path() { if [ -f "$1/scripts/test-lanes.sh" ]; then echo "$1/scripts/test-lanes.sh"; else echo "$2/test-lanes.sh"; fi; }
 branch_lock_dir() { echo "${LANES_HOME:-$HOME/ops/lanes}/branches/$(echo "$1" | tr '/' '%').lock"; }
