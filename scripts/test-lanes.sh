@@ -550,6 +550,9 @@ OUT=$(bash "$SRC/scripts/test-board.sh" 2>&1); RC=$?
 check "test-board: standalone run exits 2 with sourcing instructions" '[ $RC = 2 ] && [ "$OUT" = "test-board.sh is sourced by test-lanes.sh; run bash scripts/test-lanes.sh" ]'
 bl() { printf "$1" > "$T/bl.task"; brief_labels "$T/bl.task" "${2:-bl.task}"; }
 check "labels: type:/area: headers win over inference" '[ "$(bl "# FIX thing\nneeds: xcode\ntype: infra\narea: chat, area:routines\n")" = "Infra,Chat,Routines" ]'
+check "labels: explicit labels share mapping, retain spaces, deduplicate and win over inference" '[ "$(bl "# Deflake UI\nneeds: xcode\nLabels: type:bug, area:lanes, Flaky test, flake, Self-host\n")" = "Bug,Lanes,Flaky test,Self-host" ]'
+check "labels: legacy values map through the same type and area allowlists" '[ "$(bl "# Legacy\ntype: type:bug\narea: area:lanes, area:ui\n")" = "Bug,Lanes,UI" ] && ! bl "# Invalid\nLabels: type:unknown,area:lanes\n" >/dev/null && ! bl "# Invalid\ntype: bug\narea: mystery\n" >/dev/null'
+check "labels: allowlists reject combined values and trim legacy prefixes" '[ "$(gh_label type "type: bug")" = Bug ] && ! gh_label type "feature bug" >/dev/null && ! gh_label area "chat routines" >/dev/null && ! label_list "type:feature bug" >/dev/null && ! label_list "area:chat routines" >/dev/null'
 check "labels: needs xcode -> UI, FIX title -> Bug" '[ "$(bl "# FIX chat switch\nneeds: xcode\n")" = "Bug,UI" ]'
 check "labels: server/go path -> Server, bug title -> Bug" '[ "$(bl "# Pairing bug\nneeds: go\nscope: apps/server/**\n")" = "Bug,Server" ]'
 check "labels: scripts/ path -> Lanes, otherwise Feature" '[ "$(bl "# Queue tweak\nneeds: none\nscope: scripts/*\n")" = "Feature,Lanes" ]'
@@ -581,10 +584,10 @@ check "brief metadata: unadorned title, absent issue is never inferred" '[ "$(br
 check "plain text removes ANSI colors and OSC links" '[ "$(printf "\033[31mRed\033[0m \033]8;;https://example.com\aLink\033]8;;\a" | plain_text)" = "Red Link" ]'
 G4="$T/ghbin4"; mkdir -p "$G4"
 printf '#!/bin/bash\ncase "$1 $2" in\n"pr create") printf "%%s\\n" "$@" > "%s/prargs"; echo https://github.com/o/r/pull/103;;\nesac\nexit 0\n' "$T" > "$G4/gh"; chmod +x "$G4/gh"
-printf '# Chat lane labels\nissue: #297\nneeds: none\nexpected_min: 5\ntype: test\narea: chat\ncard: https://www.notion.so/%s\nNotes from https://app.notion.com/p/%s\n' "$NID" "$NID" > "$T/lb.task"
+printf '# Chat lane labels\nissue: #297\nneeds: none\nexpected_min: 5\nLabels: type:test, area:chat, Flaky test\ncard: https://www.notion.so/%s\nNotes from https://app.notion.com/p/%s\n' "$NID" "$NID" > "$T/lb.task"
 VC_META='mkdir -p .build/proof && printf "\033[32m## ok\033[0m\n" > .build/proof/summary.md && echo unit-test-verified > .build/proof/level'
 OUT=$(PATH="$G4:$PATH" LANE_NO_CHAIN=1 LANE_VERIFY_CMD="$VC_META" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/lb.task" --branch test/labels 2>&1); RC=$?
-check "run-lane PR: labels from type:/area: headers, no Notion text in title or body" '[ $RC = 0 ] && grep -qx "Test,Chat" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
+check "run-lane PR: explicit labels normalize legacy prefixes and retain multiword names" '[ $RC = 0 ] && grep -qx "Test,Chat,Flaky test" "$T/prargs" && grep -qx -- "--label" "$T/prargs" && grep -q "Chat lane labels" "$T/prargs" && ! notion_ref < "$T/prargs" && grep -q "^- N/A" "$T/prargs"'
 pr_metadata() { python3 - "$T/prargs" <<'PYMETA'
 import sys
 body = open(sys.argv[1]).read()

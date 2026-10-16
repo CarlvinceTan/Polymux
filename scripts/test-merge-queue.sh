@@ -109,10 +109,10 @@ SECOND=""; for f in "$LANES_HOME"/queue/*-fix-pr20.task; do [ "$f" != "$FIRST" ]
 unit_slug() { head -1 "$1" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32; }
 check "a later failure of the same PR keeps both briefs and has a distinct unit slug" '[ -n "$SECOND" ] && [ -f "$FIRST" ] && [ "$(unit_slug "$FIRST")" != "$(unit_slug "$SECOND")" ] && bash scripts/queue-write.sh --check "$FIRST" "$SECOND"'
 # fix briefs keep every routing/scope header of the original brief
-S=$(mkpr p21); printf '# P21: Scoped\nneeds: go\nscope: scripts/**\nissue: 174\ncard: c-21\nunit: p21-scoped\nafter: pr:7\nlabels: type:bug,Lanes\narea: lanes\npriority: P1\n\nBody 21.\n' > "$T/p21.task"
+S=$(mkpr p21); printf '# P21: Scoped\nneeds: go\nscope: scripts/**\nissue: 174\ncard: c-21\nunit: p21-scoped\nafter: pr:7\nLabels: type:bug, area:lanes, Flaky test\ntype: type:bug\narea: area:lanes, area:ui\npriority: P1\n\nBody 21.\n' > "$T/p21.task"
 printf 'pr: 21\nbranch: p21\nlane: lane3\nunit: \ntask: %s\n' "$T/p21.task" > "$MQ/2026-pr21"; cm 1 "$(verdict 21 "$S" PASS)" > "$T/comments.jsonl"
 MERGE_VERIFY_CMD='exit 1' run; F=$(ls "$LANES_HOME"/queue/*-fix-pr21.task 2>/dev/null | head -1)
-check "fix brief keeps scope/issue/card/unit/after/labels/area/priority lines as-is" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && for l in "scope: scripts/**" "issue: 174" "card: c-21" "unit: p21-scoped" "after: pr:7" "labels: type:bug,Lanes" "area: lanes" "priority: P1" "needs: go" "Body 21."; do grep -qxF "$l" "$F" || exit 1; done && head -1 "$F" | grep -qE "^# Fix PR #21 [0-9a-f]{7}-[0-9a-f]{7}: P21: Scoped$"'
+check "fix brief retains routing metadata and normalizes legacy label/type/area headers" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && for l in "scope: scripts/**" "issue: 174" "card: c-21" "unit: p21-scoped" "after: pr:7" "labels: Bug,Lanes,Flaky test" "type: bug" "area: lanes,ui" "priority: P1" "needs: go" "Body 21."; do grep -qxF "$l" "$F" || exit 1; done && head -1 "$F" | grep -qE "^# Fix PR #21 [0-9a-f]{7}-[0-9a-f]{7}: P21: Scoped$" && [ "$(. scripts/lanelib.sh; brief_labels "$F")" = "Bug,Lanes,Flaky test" ]'
 # a brief whose title is a plain first line (no "# ") keeps its title and body
 S=$(mkpr p22); printf 'needs: none\nPlain title unit\nBody line kept?\nsecond body line\n' > "$T/p22.task"
 printf 'pr: 22\nbranch: p22\nlane: lane3\nunit: \ntask: %s\n' "$T/p22.task" > "$MQ/2026-pr22"; cm 1 "$(verdict 22 "$S" PASS)" > "$T/comments.jsonl"

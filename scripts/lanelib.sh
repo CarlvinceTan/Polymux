@@ -88,11 +88,37 @@ LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines serv
 # dogfood: NAME starts 00NN-- or the brief says dogfood. flake: the brief is a deflake task.
 # gh_label type|area VALUE -> GitHub label name. Labels are plain title case with no prefix
 # (Feature, Bug, Infra, UI, Lanes, ...).
-gh_label() { case "$1:$2" in
+gh_label() { local value allowed item found=""; value=$(printf '%s' "$2" | tr 'A-Z' 'a-z' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'); value=${value#"$1:"}
+  value=$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+  case "$1" in type) allowed=$LANE_TYPES;; area) allowed=$LANE_AREAS;; esac
+  if [ "$1" = type ] || [ "$1" = area ]; then
+    for item in $allowed; do [ "$value" != "$item" ] || found=1; done
+    [ -n "$found" ] || return 2
+  fi
+  case "$1:$value" in
   type:bug) echo Bug;; type:feature) echo Feature;; type:infra) echo Infra;; type:test) echo Test;; type:docs) echo Docs;;
-  area:ui) echo UI;; area:*) echo "$2" | awk '{print toupper(substr($0,1,1)) substr($0,2)}';; *) echo "$2";; esac; }
+  area:ui) echo UI;; area:*) echo "$value" | awk '{print toupper(substr($0,1,1)) substr($0,2)}';; *) echo "$2";; esac; }
+label_list() {
+  local item lower label out=""
+  while IFS= read -r item; do
+    item=$(printf '%s' "$item" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'); [ -n "$item" ] || continue
+    lower=$(printf '%s' "$item" | tr 'A-Z' 'a-z')
+    case "$lower" in
+      type:*) label=$(gh_label type "${lower#type:}") || return 2;;
+      area:*) label=$(gh_label area "${lower#area:}") || return 2;;
+      feature|bug|infra|test|docs) label=$(gh_label type "$lower");;
+      pairing|chat|routines|server|ui|lanes) label=$(gh_label area "$lower");;
+      flake|flakytest|"flaky test") label="Flaky test";; dogfood) label=dogfood;;
+      *) label=$item;;
+    esac
+    case ",$out," in *",$label,"*) ;; *) out="${out:+$out,}$label";; esac
+  done < <(printf '%s\n' "$1" | tr ',' '\n')
+  printf '%s\n' "$out"
+}
 brief_labels() {
-  local f=$1 n=${2:-$(basename "$1")} t a title needs body x out
+  local f=$1 n=${2:-$(basename "$1")} t a title needs body x out labels
+  labels=$(sed -n 's/^[Ll]abels: *//p' "$f" | head -1)
+  if [ -n "$labels" ]; then label_list "$labels"; return; fi
   title=$(grep -m1 '^# ' "$f" | sed 's/^# *//'); [ -n "$title" ] || title=$(head -1 "$f")
   t=$(sed -n 's/^type: *//p' "$f" | head -1 | sed 's/^type://; s/[ ,]*$//')
   a=$(sed -n 's/^area: *//p' "$f" | head -1 | tr ',' ' ' | sed 's/area://g')
@@ -105,7 +131,7 @@ brief_labels() {
     echo "$body" | grep -qE '(^|[^A-Za-z0-9_])(apps/)?server/|[A-Za-z0-9_]\.go([^A-Za-z]|$)' && a="$a server"
     echo "$body" | grep -qE '(^|[^A-Za-z0-9_])scripts/|(^|[^A-Za-z0-9_])lanes?([^A-Za-z0-9_]|$)' && a="$a lanes"
     [ -n "$a" ] || a=lanes; fi
-  out=$(gh_label type "$t"); for x in $a; do x=$(gh_label area "$x"); case ",$out," in *",$x,"*) ;; *) out="$out,$x";; esac; done
+  out=$(gh_label type "$t") || return 2; for x in $a; do x=$(gh_label area "$x") || return 2; case ",$out," in *",$x,"*) ;; *) out="$out,$x";; esac; done
   { echo "$n" | grep -qE '^00[0-9][0-9]--' || grep -qi 'dogfood' "$f"; } && out="$out,dogfood"
   grep -qiE 'de-?flake' "$f" && out="$out,Flaky test"
   echo "$out"; }
