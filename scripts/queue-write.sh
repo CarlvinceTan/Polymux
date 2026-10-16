@@ -75,6 +75,7 @@ put() {  # $1 content file, $2 dir, $3 name ('' = derive), $4 force
     base="$(date +%m%d%H%M%S)-${slug:-brief}"; n="$base.task"
     while [ -e "$d/$n" ]; do i=$((i+1)); n="$base-$i.task"; done; fi
   [ -e "$d/$n" ] && [ -z "$4" ] && die "$d/$n already exists (use --force to replace)" 4
+  case $(basename "$d") in queue-hold) python3 "$SD/hold-release.py" --creation "$1" "$d/$n" || return 2;; esac
   tmp=$(mktemp "$d/.queue-write.XXXXXX") || return 1   # dot name: never matched by *.task readers
   cat "$1" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$d/$n" || { rm -f "$tmp"; die "write to $d/$n failed"; }
   echo "$d/$n"
@@ -118,5 +119,4 @@ LABEL=${NAME:-${SRC/#-/stdin}}
 if [ -n "$NOCHECK" ]; then
   [ -d "$DIR" ] && [ "$(cd "$DIR" && pwd -P)" = "$(cd "$Q" 2>/dev/null && pwd -P)" ] && die "--no-check is not allowed for $Q"
 elif ! validate "$IN" "$LABEL" >&2; then echo "queue-write: rejected $LABEL (nothing written)" >&2; exit 2; fi
-case $(basename "$DIR") in queue-hold) python3 "$SD/hold-release.py" --creation "$IN" "$LABEL" || exit 2;; esac
 locked put "$IN" "$DIR" "$NAME" "$FORCE"

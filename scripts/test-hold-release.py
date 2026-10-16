@@ -13,10 +13,19 @@ spec.loader.exec_module(holds)
 
 
 class ReleaseTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        environment = patch.dict(os.environ, HOME=str(root), LANES_HOME=str(root / "ops"),
+                                 LANE_GUARD_STATE=str(root / "state"), LANE_GUARD_EVENTS=str(root / "events"))
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_conditions(self):
-        for value in ("after:pr:255 merged", "after:issue:262 closed alert-only"):
+        for value in ("after:pr:255 merged", "after:issue:262 closed alert-only", "manual", "manual:liam"):
             self.assertIsNotNone(holds.condition("release: " + value))
-        for value in ("after:pr:255 closed", "after:issue:0 closed", "after: none", "merge soon"):
+        for value in ("after:pr:255 closed", "after:issue:0 closed", "after: none", "merge soon", "manual:", "manual:two people"):
             self.assertIsNone(holds.condition("release: " + value))
         self.assertIsNone(holds.condition("release: after:pr:1 merged\nrelease: after:pr:2 merged"))
 
@@ -45,7 +54,8 @@ class ReleaseTests(unittest.TestCase):
                 if args[0] == "project":
                     return project
                 return "CLOSED" if args[0] == "issue" else "MERGED" if args[2] == "255" else "ERROR"
-            with patch.dict(os.environ, LANES_HOME=str(root), LANE_GUARD_NOW="1800"), patch.object(holds, "gh", side_effect=github):
+            with patch.dict(os.environ, LANES_HOME=str(root), LANE_GUARD_NOW="1800",
+                            LANE_GUARD_STATE=str(state), LANE_GUARD_EVENTS=str(root)), patch.object(holds, "gh", side_effect=github):
                 holds.scan(root, state, events)
                 self.assertFalse(legacy.exists())
                 self.assertEqual((held / "RELEASE-WHEN.txt").read_text(), "legacy.task: after:pr:255 merged")
@@ -67,12 +77,94 @@ class ReleaseTests(unittest.TestCase):
                 brief = root / "new.task"
                 brief.write_text("# New hold\nneeds: none\nexpected_min: 5\n")
                 writer = Path(__file__).with_name("queue-write.sh")
-                with patch.dict(os.environ, LANE_GUARD_EVENTS=str(root)):
+                with patch.dict(os.environ, LANE_GUARD_EVENTS=str(root), LANE_GUARD_STATE=str(state)):
                     subprocess.run(["bash", str(writer), "--dir", str(held), str(brief)], check=True,
                                    stdout=subprocess.DEVNULL)
                 creation = json.loads((root / "lane-guard.jsonl").read_text().splitlines()[-1])
                 self.assertIn("invalid or missing release condition", creation["msg"])
                 self.assertEqual(creation["notify"], ["Chief"])
+
+    def test_legacy_manual(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            state.mkdir()
+            held = root / "queue-hold"
+            held.mkdir()
+            task = held / "legacy.task"
+            task.write_text("# Legacy hold\nafter: branch-on-main:agent/upstream\n")
+            note = "legacy.task: wait for upstream and Liam's review"
+            (held / "RELEASE-WHEN.txt").write_text(note + "\nother.task: unrelated reason\n")
+            events = root / "events.jsonl"
+            with patch.object(holds, "gh") as github, patch.object(holds, "live", return_value=True):
+                holds.scan(root, state, events)
+                holds.scan(root, state, events)
+            github.assert_not_called()
+            records = [json.loads(line) for line in events.read_text().splitlines()]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["severity"], "warning")
+            self.assertIn("met=manual", records[0]["msg"])
+            self.assertIn(note, records[0]["msg"])
+            self.assertNotIn("unrelated reason", records[0]["msg"])
+            self.assertNotIn("invalid", records[0]["msg"])
+            self.assertTrue(task.exists())
+            self.assertFalse((root / "queue").exists())
+
+    def test_note_collision(self):
+        for note in ("build-ui.task: PR #255 merged", "build-ui: wait for review"):
+            with self.subTest(note=note), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                state = root / "state"
+                state.mkdir()
+                held = root / "queue-hold"
+                held.mkdir()
+                task = held / "ui.task"
+                task.write_text("# UI hold\nafter: branch-on-main:agent/upstream\n")
+                (held / "RELEASE-WHEN.txt").write_text(note)
+                events = root / "events.jsonl"
+                with patch.object(holds, "gh", return_value="ERROR") as github, patch.object(holds, "live", return_value=True):
+                    holds.scan(root, state, events)
+                github.assert_not_called()
+                self.assertNotIn("release:", task.read_text())
+                self.assertNotIn("build-ui", events.read_text())
+                self.assertIn("met=manual", events.read_text())
+
+    def test_explicit_manual(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            state.mkdir()
+            held = root / "queue-hold"
+            held.mkdir()
+            for name, release in (("manual", "manual"), ("owner", "manual:liam")):
+                (held / (name + ".task")).write_text("release: " + release + "\n")
+            events = root / "events.jsonl"
+            with patch.object(holds, "gh") as github, patch.object(holds, "live", return_value=True):
+                holds.scan(root, state, events)
+            github.assert_not_called()
+            self.assertFalse(events.exists())
+            self.assertEqual(len(list(held.glob("*.task"))), 2)
+            self.assertFalse((root / "queue").exists())
+
+    def test_new_hold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            held = root / "queue-hold"
+            held.mkdir()
+            writer = Path(__file__).with_name("queue-write.sh")
+            brief = "# New hold\nneeds: none\nexpected_min: 5\n"
+            with patch.dict(os.environ, LANES_HOME=str(root), LANE_GUARD_STATE=str(state), LANE_GUARD_EVENTS=str(root)):
+                result = subprocess.run(["bash", str(writer), "--dir", str(held)], input=brief,
+                                        text=True, capture_output=True, check=True)
+            task = Path(result.stdout.strip())
+            self.assertTrue((state / ("hold-created-" + task.name)).exists())
+            events = root / "scan.jsonl"
+            with patch.object(holds, "gh"), patch.object(holds, "live", return_value=True):
+                holds.scan(root, state, events)
+            self.assertIn("invalid or missing release condition", events.read_text())
+            self.assertNotIn("met=manual", events.read_text())
+            self.assertTrue(task.exists())
 
 
 if __name__ == "__main__":

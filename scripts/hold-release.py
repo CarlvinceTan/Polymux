@@ -14,18 +14,24 @@ PATTERN = r"after:(pr|issue):([1-9][0-9]*) (merged|closed)( alert-only)?"
 
 def condition(text):
     lines = re.findall(r"^release: (.*)$", text, re.M)
+    if len(lines) == 1:
+        manual = re.fullmatch(r"manual(?::[A-Za-z0-9][A-Za-z0-9_.-]*)?", lines[0])
+        if manual:
+            return manual
     match = re.fullmatch(PATTERN, lines[0]) if len(lines) == 1 else None
     if match and (match[1], match[3]) in (("pr", "merged"), ("issue", "closed")):
         return match
     return None
 
 
-def alert(message, events):
+def alert(message, events, severity=None):
     events.parent.mkdir(parents=True, exist_ok=True)
+    record = dict(ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                  type="lane_hold", msg=message, notify=["Chief"], delivered=False)
+    if severity:
+        record["severity"] = severity
     with events.open("a") as stream:
-        stream.write(json.dumps(dict(ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                                    type="lane_hold", msg=message,
-                                    notify=["Chief"], delivered=False)) + "\n")
+        stream.write(json.dumps(record) + "\n")
 
 
 def gh(*args):
@@ -64,11 +70,14 @@ def scan(root, state, events):
     for task in holds:
         text = task.read_text()
         match = condition(text)
-        if not match and "release:" not in text:
+        created = (state / ("hold-created-" + task.name)).exists()
+        token = rf"(?<![\w.-])(?:{re.escape(task.name)}|{re.escape(task.stem)})(?![\w.-])"
+        lines = [line for line in notes.splitlines() if re.search(token, line)]
+        named = re.search(r"[\w.-]+\.task\b|^\s*(?:[-*]\s*)?(?!(?:pr|issue):)[\w.-]+:\s", notes, re.M | re.I)
+        note = "\n".join(lines) if lines else notes if len(holds) == 1 and not named else ""
+        note = note.strip()
+        if not match and "release:" not in text and not created:
             # Only migrate an unambiguous per-task line, or a single-task note.
-            lines = [line for line in notes.splitlines() if task.name in line or task.stem in line]
-            note = "\n".join(lines) if lines else notes if len(holds) == 1 else ""
-            note = note.strip()
             expression = re.sub(r"^(?:" + re.escape(task.name) + "|" + re.escape(task.stem) + r"):?\s*", "", note)
             expression = re.sub(r"^(?:hold until|release when|until|after)\s+", "", expression, flags=re.I)
             ref = re.fullmatch(r"(?:after:)?(pr|issue)[: #]+([1-9][0-9]*)\s+(merged|closed)", expression, re.I)
@@ -89,6 +98,15 @@ def scan(root, state, events):
                         note_tmp.write_text(notes)
                         note_tmp.replace(legacy)
                         print(f"hold: migrated {task.name}: {release}")
+        if not match and "release:" not in text and not created:
+            reason = note or "; ".join(re.findall(r"^(?:after|queue-note):.*$", text, re.M))
+            message = f"{task.name}: legacy hold; met=manual" + (f"; {reason}" if reason else "")
+            key = state / ("hold-manual-" + task.name)
+            if not key.exists():
+                alert(message, events, severity="warning")
+                key.touch()
+            report.append(message)
+            continue
         if not match:
             message = f"{task.name}: invalid or missing release condition; met=unknown"
             key = state / ("hold-invalid-" + task.name)
@@ -96,6 +114,9 @@ def scan(root, state, events):
                 alert(message, events)
                 key.touch()
             report.append(message)
+            continue
+        if match[0].startswith("manual"):
+            report.append(f"{task.name}: {match[0]}; met=manual")
             continue
         kind, number, status, only = match.groups()
         ref = (kind, number)
@@ -143,7 +164,7 @@ def scan(root, state, events):
                                      "--mv", str(task), str(target)], stdout=subprocess.DEVNULL)
             if result.returncode == 0:
                 print(f"hold: released {task.name} -> {target.name}")
-                for prefix in ("hold-invalid-", "hold-met-"):
+                for prefix in ("hold-invalid-", "hold-met-", "hold-created-", "hold-manual-"):
                     (state / (prefix + task.name)).unlink(missing_ok=True)
             else:
                 print(f"hold: release failed for {task.name}; left held")
@@ -152,6 +173,9 @@ def scan(root, state, events):
 if __name__ == "__main__":
     events = Path(os.environ.get("LANE_GUARD_EVENTS", str(Path.home() / "ops/events"))) / "lane-guard.jsonl"
     if sys.argv[1] == "--creation":
+        state = Path(os.environ.get("LANE_GUARD_STATE", str(Path.home() / ".local/state/lane-guard")))
+        state.mkdir(parents=True, exist_ok=True)
+        (state / ("hold-created-" + Path(sys.argv[3]).name)).touch()
         if not condition(Path(sys.argv[2]).read_text()):
             alert(f"Hold created with invalid or missing release condition: {sys.argv[3]}", events)
     else:
