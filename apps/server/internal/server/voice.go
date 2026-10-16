@@ -154,6 +154,7 @@ func (v *voiceWork) run(ctx context.Context, task voiceTask) (agentruntime.Resul
 	if v.server.config.Devices != nil && v.thread.ID == v.thread.AgentID && task.trigger == "voice" {
 		d.ExtraTools = append(d.ExtraTools, &controlTool{broker: v.server.config.Devices, agent: task.target})
 	}
+	d.ExtraTools = append(d.ExtraTools, v.server.sidebarTools()...)
 	d.Prompt = d.SystemPrompt() + "\n\nYou are consulting privately with the user's spokesperson agent. Return your findings to the spokesperson, who will speak to the user. These exchanges do not appear in the user's typed chat. Use send_to_user or show_html only to deliberately send a user-facing message or artifact to that chat. Do not reproduce the private exchange there. Retain your existing identity, tool permissions, and approval requirements."
 	// Persist a private run row for the approval ledger without emitting chat events.
 	jobID := "voice-job:" + v.id + ":" + task.target

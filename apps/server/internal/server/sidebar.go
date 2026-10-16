@@ -10,6 +10,13 @@ import (
 )
 
 func (s *Server) sidebarRoutes() {
+	s.mux.HandleFunc("GET /sidebar", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		state, err := s.Store.Sidebar(r.Context())
+		s.respond(w, state, err)
+	})
+	s.mux.HandleFunc("GET /sidebar/events", s.sidebarEvents)
+	s.mux.HandleFunc("GET /sidebar/stream", s.sidebarStream)
 	s.mux.HandleFunc("GET /sections", func(w http.ResponseWriter, r *http.Request) {
 		sections, err := s.Store.Sections(r.Context())
 		s.respond(w, sections, err)
@@ -39,6 +46,12 @@ func (s *Server) sidebarError(w http.ResponseWriter, err error) bool {
 		code, message, status = "name_taken", "A section already uses this name.", 409
 	case errors.Is(err, store.ErrSectionLimit):
 		code, message, status = "section_limit", "You can create up to thirty sections.", 409
+	case errors.Is(err, store.ErrSectionMissing):
+		code, message, status = "section_not_found", "The section could not be found.", 404
+	case errors.Is(err, store.ErrChatPinned):
+		code, message = "chat_pinned", "Unpin the chat before moving it to a section."
+	case errors.Is(err, store.ErrSidebarRate):
+		code, message, status = "rate_limit", "Try again in a minute.", 429
 	case errors.Is(err, store.ErrPlacement):
 		code, message = "invalid_placement", "Choose an existing section and unpin the chat before moving it."
 	case errors.Is(err, store.ErrAnchor):

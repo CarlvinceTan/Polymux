@@ -54,6 +54,17 @@ func (s *Store) CreateThread(ctx context.Context, id string, request contract.Cr
 		return thread, err
 	}
 	defer tx.Rollback()
+	before, err := sidebarSnapshot(ctx, tx)
+	if err != nil {
+		return thread, err
+	}
+	if request.SectionID != nil {
+		if _, err := sectionScan(tx.QueryRowContext(ctx, sectionSelect+` WHERE s.id=?`, *request.SectionID)); errors.Is(err, sql.ErrNoRows) {
+			return thread, ErrSectionMissing
+		} else if err != nil {
+			return thread, err
+		}
+	}
 	names, err := memberNames(ctx, tx, request.AgentIDs, 2)
 	if err != nil {
 		return thread, err
@@ -79,7 +90,15 @@ func (s *Store) CreateThread(ctx context.Context, id string, request contract.Cr
 			return thread, err
 		}
 	}
-	return thread, tx.Commit()
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET section_id=?,section_order=(SELECT COALESCE(max(section_order)+1,0) FROM threads WHERE section_id IS ?) WHERE id=?`, request.SectionID, request.SectionID, id); err != nil {
+		return thread, err
+	}
+	thread.SectionID = request.SectionID
+	if err := tx.QueryRowContext(ctx, `SELECT section_order FROM threads WHERE id=?`, id).Scan(&thread.SectionOrder); err != nil {
+		return thread, err
+	}
+	thread.Pinned = new(false)
+	return thread, sidebarCommit(ctx, tx, before, "Created "+thread.Title, nil, nil)
 }
 
 func (s *Store) UpdateThread(ctx context.Context, id string, request contract.UpdateThreadRequest) error {
@@ -88,6 +107,10 @@ func (s *Store) UpdateThread(ctx context.Context, id string, request contract.Up
 		return err
 	}
 	defer tx.Rollback()
+	before, err := sidebarSnapshot(ctx, tx)
+	if err != nil {
+		return err
+	}
 	var primary, lead, title string
 	if err := tx.QueryRowContext(ctx, `SELECT agent_id,lead_agent_id,title FROM threads WHERE id=?`, id).Scan(&primary, &lead, &title); err != nil {
 		return err
@@ -134,7 +157,7 @@ func (s *Store) UpdateThread(ctx context.Context, id string, request contract.Up
 	if _, err := tx.ExecContext(ctx, `UPDATE threads SET title=?,agent_id=?,lead_agent_id=? WHERE id=?`, title, primary, lead, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return sidebarCommit(ctx, tx, before, "Updated chat placement", nil, nil)
 }
 
 func memberNames(ctx context.Context, tx *sql.Tx, ids []string, minimum int) ([]string, error) {

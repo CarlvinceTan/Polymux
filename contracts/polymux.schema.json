@@ -1182,6 +1182,9 @@
         },
         "avatar": {
           "$ref": "#/$defs/AvatarDesign"
+        },
+        "sectionID": {
+          "type": "string"
         }
       },
       "required": [
@@ -1384,6 +1387,9 @@
         "title": {
           "type": "string",
           "maxLength": 128
+        },
+        "sectionID": {
+          "type": "string"
         }
       },
       "required": [
@@ -1488,6 +1494,98 @@
         "createdAt",
         "updatedAt",
         "chatCount"
+      ]
+    },
+    "SidebarPlacement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadID": {
+          "type": "string"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "pinOrder": {
+          "type": "number"
+        },
+        "sectionID": {
+          "type": "string"
+        },
+        "sectionOrder": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "threadID",
+        "pinned"
+      ]
+    },
+    "SidebarSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Section"
+          }
+        },
+        "placements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SidebarPlacement"
+          }
+        }
+      },
+      "required": [
+        "cursor",
+        "sections",
+        "placements"
+      ]
+    },
+    "SidebarEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "type": "integer"
+        },
+        "type": {
+          "type": "string"
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Section"
+          }
+        },
+        "changedThreadIDs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "placements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SidebarPlacement"
+          }
+        },
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "type",
+        "sections",
+        "changedThreadIDs",
+        "placements",
+        "createdAt"
       ]
     }
   },

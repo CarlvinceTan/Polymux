@@ -81,6 +81,10 @@ func (s *Store) ImportSidebar(ctx context.Context, source SidebarImport, apply b
 		return report, err
 	}
 	defer tx.Rollback()
+	before, err := sidebarSnapshot(ctx, tx)
+	if err != nil {
+		return report, err
+	}
 	known, err := sidebarIDs(ctx, tx, `SELECT id FROM threads`)
 	if err != nil {
 		return report, err
@@ -238,7 +242,7 @@ func (s *Store) ImportSidebar(ctx context.Context, source SidebarImport, apply b
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sidebar_sources(source,data,updated_at) VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at`, source.Source, string(data), Now()); err != nil {
 		return report, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := sidebarCommit(ctx, tx, before, "Imported sidebar layout", nil, nil); err != nil {
 		return report, err
 	}
 	report.Applied = true

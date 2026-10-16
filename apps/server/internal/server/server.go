@@ -361,9 +361,11 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "closing", "The server is restarting. Try again shortly.")
 		return
 	}
-	if err := s.Store.CreateDefinition(r.Context(), d.Agent, data, request.InitialTask); err != nil {
+	if err := s.Store.CreateDefinition(r.Context(), d.Agent, data, request.InitialTask, request.SectionID); err != nil {
 		s.actorsMu.Unlock()
-		s.respond(w, nil, err)
+		if !s.sidebarError(w, err) {
+			s.respond(w, nil, err)
+		}
 		return
 	}
 	actorCtx, stop := context.WithCancel(s.ctx)
@@ -1093,6 +1095,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				d.ExtraTools = nil
 			} else {
 				d.ExtraTools = slices.Clone(d.ExtraTools)
+				if work.Trigger != "review" {
+					d.ExtraTools = append(d.ExtraTools, s.sidebarTools()...)
+				}
 				if s.config.Devices != nil && a.threadID == "" && !delegated {
 					d.ExtraTools = append(d.ExtraTools, &controlTool{broker: s.config.Devices, agent: a.id})
 				}

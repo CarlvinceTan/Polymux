@@ -82,6 +82,9 @@ func (s *Server) createThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	thread, err := s.Store.CreateThread(r.Context(), ID(), request)
+	if s.sidebarError(w, err) {
+		return
+	}
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, store.ErrMembers) {
 		fail(w, 400, "invalid_members", "Choose between two and sixteen different agents.")
 		return

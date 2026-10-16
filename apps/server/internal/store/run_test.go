@@ -73,7 +73,7 @@ func TestCreationQueue(t *testing.T) {
 	a := contract.Agent{ID: "new", Name: "New"}
 	data := json.RawMessage(`{"agent":{"id":"new"},"prompt":"Help"}`)
 	task := "Do this only after introducing yourself"
-	if err := s.CreateDefinition(t.Context(), a, data, &task); err != nil {
+	if err := s.CreateDefinition(t.Context(), a, data, &task, nil); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.Job(t.Context(), a.ID)

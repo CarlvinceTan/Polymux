@@ -294,6 +294,7 @@ type CreateAgentRequest struct {
 	Prompt      string        `json:"prompt"`
 	Model       *string       `json:"model,omitempty"`
 	Avatar      *AvatarDesign `json:"avatar,omitempty"`
+	SectionID   *string       `json:"sectionID,omitempty"`
 }
 
 type AgentProfile struct {
@@ -331,6 +332,7 @@ type CreateThreadRequest struct {
 	LeadAgentID *string  `json:"leadAgentID,omitempty"`
 	AgentIDs    []string `json:"agentIDs"`
 	Title       *string  `json:"title,omitempty"`
+	SectionID   *string  `json:"sectionID,omitempty"`
 }
 
 type VoiceRequest struct {
@@ -358,4 +360,27 @@ type Section struct {
 	CreatedAt string  `json:"createdAt"`
 	UpdatedAt string  `json:"updatedAt"`
 	ChatCount int64   `json:"chatCount"`
+}
+
+type SidebarPlacement struct {
+	ThreadID     string   `json:"threadID"`
+	Pinned       bool     `json:"pinned"`
+	PinOrder     *float64 `json:"pinOrder,omitempty"`
+	SectionID    *string  `json:"sectionID,omitempty"`
+	SectionOrder *float64 `json:"sectionOrder,omitempty"`
+}
+
+type SidebarSnapshot struct {
+	Cursor     int64              `json:"cursor"`
+	Sections   []Section          `json:"sections"`
+	Placements []SidebarPlacement `json:"placements"`
+}
+
+type SidebarEvent struct {
+	Seq              int64              `json:"seq"`
+	Type             string             `json:"type"`
+	Sections         []Section          `json:"sections"`
+	ChangedThreadIDs []string           `json:"changedThreadIDs"`
+	Placements       []SidebarPlacement `json:"placements"`
+	CreatedAt        string             `json:"createdAt"`
 }

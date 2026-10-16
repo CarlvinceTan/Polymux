@@ -96,20 +96,23 @@ PRAGMA user_version=2;`)
 	if err := s.migratePins(ctx); err != nil {
 		return err
 	}
-	return s.migrateSections(ctx)
+	if err := s.migrateSections(ctx); err != nil {
+		return err
+	}
+	return s.migrateSidebar(ctx)
 }
 
 func Now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 func (s *Store) SaveDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage) error {
-	return s.saveDefinition(ctx, a, definition, false, nil)
+	return s.saveDefinition(ctx, a, definition, false, nil, nil)
 }
 
-func (s *Store) CreateDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage, task *string) error {
-	return s.saveDefinition(ctx, a, definition, true, task)
+func (s *Store) CreateDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage, task, section *string) error {
+	return s.saveDefinition(ctx, a, definition, true, task, section)
 }
 
-func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage, intro bool, task *string) error {
+func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage, intro bool, task, section *string) error {
 	if !json.Valid(definition) {
 		return fmt.Errorf("invalid agent definition")
 	}
@@ -128,6 +131,20 @@ func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition
 		return err
 	}
 	defer tx.Rollback()
+	var before contract.SidebarSnapshot
+	if intro {
+		before, err = sidebarSnapshot(ctx, tx)
+		if err != nil {
+			return err
+		}
+	}
+	if section != nil {
+		if _, err := sectionScan(tx.QueryRowContext(ctx, sectionSelect+` WHERE s.id=?`, *section)); errors.Is(err, sql.ErrNoRows) {
+			return ErrSectionMissing
+		} else if err != nil {
+			return err
+		}
+	}
 	var deleted int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM deleted_agents WHERE id=?`, a.ID).Scan(&deleted); err != nil {
 		return err
@@ -148,6 +165,9 @@ func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition
 		return err
 	}
 	if intro {
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET section_id=?,section_order=(SELECT COALESCE(max(section_order)+1,0) FROM threads WHERE section_id IS ?) WHERE id=?`, section, section, a.ID); err != nil {
+			return err
+		}
 		text := "You were just created. In one reply, say what you understood your role to be from your role and instructions, and ask for anything you need to get started. Do not perform work or use tools."
 		work := Work{Trigger: "created", Message: contract.Message{ID: "created:" + a.ID, ThreadID: a.ID, Role: "user", Parts: []contract.Part{{Kind: "text", Text: &text}}, CreatedAt: Now()}}
 		if err := queueTx(ctx, tx, work, a.ID); err != nil {
@@ -166,6 +186,9 @@ func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition
 			}
 		}
 	}
+	if intro {
+		return sidebarCommit(ctx, tx, before, "Created "+a.Name, nil, nil)
+	}
 	return tx.Commit()
 }
 
@@ -181,6 +204,10 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) ([]string, bool, err
 		return nil, false, err
 	}
 	defer tx.Rollback()
+	before, err := sidebarSnapshot(ctx, tx)
+	if err != nil {
+		return nil, false, err
+	}
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM agents WHERE id=?`, id).Scan(&exists); err != nil {
 		return nil, false, err
@@ -251,7 +278,7 @@ AND NOT EXISTS(SELECT 1 FROM messages m, json_each(m.data,'$.parts') p WHERE m.t
 			return nil, false, err
 		}
 	}
-	return files, exists != 0, tx.Commit()
+	return files, exists != 0, sidebarCommit(ctx, tx, before, "Deleted agent", nil, nil)
 }
 
 func (s *Store) Definitions(ctx context.Context) ([]json.RawMessage, error) {
