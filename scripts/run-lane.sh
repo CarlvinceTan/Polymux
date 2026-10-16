@@ -323,6 +323,8 @@ stop_agent() { local k; oc_end; kill -TERM -- -"$AP" 2>/dev/null
   kill -KILL -- -"$AP" 2>/dev/null; sleep 0.2
   if pgrep -g "$AP" >/dev/null 2>&1; then echo "warn: agent group $AP still has processes after KILL: $(pgrep -g "$AP" | tr '\n' ' ')" >> "$LOG"; return 1; fi
   echo "agent group $AP stopped (KILL after ${LANE_KILL_WAIT:-10}s)" >> "$LOG"; }
+task_end() { [ ! -x "$LANE_GUARD" ] || "$LANE_GUARD" --task-end "$L" "$ID" "$1" "$LOG" "$STOP_CLASS" >> "$LOG" 2>&1 || true; }
+publish_fail() { task_end 1; ev failed "$L" "$1"; }
 L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   B=$BRANCH; WT="$WTR/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
   TRIED="$TRIED $L"; BL=$(branch_lock_dir "$B")
@@ -372,13 +374,14 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   [ -n "$WDOG" ] && { ev failed "$L" "watchdog: $WDOG"; continue; }
   [ -n "$IDLE" ] && { ev failed "$L" "no commit (fast-fail: idle ${IDLE_S}s)"; continue; }
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
-  [ -n "$(git -C "$WT" log --oneline "$START"..HEAD)" ] || { echo "agent made no commit" >> "$LOG"; ev failed "$L" "no commit"; continue; }
+  [ -n "$(git -C "$WT" diff --name-only "$BASE"...HEAD)" ] || { echo "branch has no changes from $BASE" >> "$LOG"; ev failed "$L" "no changes from $BASE"; continue; }
   NT=$(git -C "$WT" log --format='%H%x09%(trailers:key=Lane,valueonly,separator=%x2C)' "$START"..HEAD | awk -F'\t' '$2==""' | wc -l | tr -d ' ')
   [ "$NT" = 0 ] || echo "warn: $NT lane commit(s) without a 'Lane:' trailer (committer name still says $L)" | tee -a "$LOG"
   CH=$(git -C "$WT" diff --shortstat "$START"..HEAD | awk '{print $4+$6}')
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
     git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { STOP_CLASS=scope; ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
+  VERIFIED=$(git -C "$WT" rev-parse HEAD)
   (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
     MISS=$(sed -n 's/^verify: INFRA missing toolchain: *//p' "$LOG" | tail -1)
@@ -387,13 +390,16 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
     [ -n "$TASKF" ] && QW --no-check --dir "$OPS/queue-hold" --name "$ID-infra.task" "$TASKF" >/dev/null
     ev infra "$L" "missing toolchain: ${MISS:-?}"; BU verify "$SLUG" blocked; echo "INFRA: missing toolchain: ${MISS:-?} -> $OPS/NEEDS_CODY"; exit 10; fi
   [ "$VRC" = 0 ] || { grep -q '^verify: allowed-files FAIL' "$LOG" && STOP_CLASS=scope; }
-  [ -x "$LANE_GUARD" ] && { "$LANE_GUARD" --task-end "$L" "$ID" "$VRC" "$LOG" "$STOP_CLASS" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
-  [ $VRC = 0 ] || { ev failed "$L" "verify failed"; continue; }
-  git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
+  [ $VRC = 0 ] || { task_end "$VRC"; ev failed "$L" "verify failed"; continue; }
+  if [ "$(git -C "$WT" rev-parse HEAD)" != "$VERIFIED" ] || [ -n "$(git -C "$WT" status --porcelain)" ]; then
+    publish_fail "source changed during verification or has uncommitted changes"; continue; fi
+  git -C "$WT" push -q origin "$VERIFIED:refs/heads/$B" >> "$LOG" 2>&1 || { publish_fail "push failed ($B at $VERIFIED)"; continue; }
+  if git -C "$WT" show-ref -q "refs/heads/$B"; then
+    git -C "$WT" branch -q --set-upstream-to="origin/$B" "$B" >> "$LOG" 2>&1 || echo "warn: could not set upstream for $B" >> "$LOG"; fi
   BODY="Task: $TITLE"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
   BODY+="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID" 2>>"$LOG")"
   LV=$(cat "$WT/.build/proof/level" 2>/dev/null || echo build-only); DRAFT=""
-  case $LV in UI-verified|unit-test-verified) ;; build-only) ;; *) ev failed "$L" "level $LV"; continue;; esac
+  case $LV in UI-verified|unit-test-verified) ;; build-only) ;; *) publish_fail "level $LV"; continue;; esac
   [ "$LV" = build-only ] && { DRAFT=--draft; BODY="**Verification level: build-only, so this is NOT ready for review (draft).**"$'\n\n'"$BODY"; }
   [ -n "$PR_WARNING" ] && { ev warning "$L" "$PR_WARNING"; BODY+=$'\n\n'"Warning: $PR_WARNING"; }
   [ -n "$PR_LINK" ] && BODY+=$'\n\n'"$PR_LINK"
@@ -402,22 +408,23 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   BODY=$(printf '%s' "$BODY" | plain_text)
   # Continuing an existing PR (--branch with an open PR): no new PR; comment the new head + summary on it.
   EX=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG") ||
-    { ev failed "$L" "gh pr list failed (pushed $B; no PR created or commented)"; continue; }
-  if [ -n "$EX" ]; then URL=$EX; NH=$(git -C "$WT" rev-parse HEAD)
+    { publish_fail "gh pr list failed (pushed $B; no PR created or commented)"; continue; }
+  if [ -n "$EX" ]; then URL=$EX; NH=$VERIFIED
     (cd "$WT" && gh_write pr comment "$URL" -R "$SLUG_REPO" --body "Lane update: new head $NH (from $START)"$'\n\n'"$BODY") >> "$LOG" 2>&1 ||
-      echo "warn: comment on existing PR $URL failed (push succeeded)" | tee -a "$LOG"
+      { publish_fail "comment on existing PR $URL failed (push succeeded)"; continue; }
     [ -n "$DRAFT" ] && { (cd "$WT" && gh pr ready --undo "$URL" -R "$SLUG_REPO") >> "$LOG" 2>&1 ||
-      echo "warn: could not mark existing PR $URL as draft (build-only)" | tee -a "$LOG"; }
+      { publish_fail "could not mark existing PR $URL as draft (build-only)"; continue; }; }
   else
     URL=""; for ptry in 1 2 3; do   # pushed already: retry the API call only, never the agent
       URL=$(cd "$WT" && gh_write pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --label "$LABELS" --title "$PR_TITLE" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
       sleep $((ptry * 10 * RS)); URL=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG"); [ -n "$URL" ] && break
       echo "gh pr create failed (try $ptry); retrying" >> "$LOG"; done
-    [ -n "$URL" ] || { ev failed "$L" "gh pr create failed (3 tries; $B is pushed)"; continue; }
+    [ -n "$URL" ] || { publish_fail "gh pr create failed (3 tries; $B is pushed)"; continue; }
   fi
   basename "$WT" > "$OPS/cards/$SLUG.wt"; BU pr "$SLUG" "$URL"   # .wt: exact worktree name for cleanup
   BU verify "$SLUG" "$LV" "$WT/.build/proof" "$(echo "$BODY" | grep -oE "https://github.com/$SLUG_REPO/raw/proof-media/[^/) ]+" | head -1)"
-  ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV${PR_WARNING:+; $PR_WARNING}" >> "$OPS/results.tsv"
+  task_end 0
+  ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$VERIFIED" "$LV${PR_WARNING:+; $PR_WARNING}" >> "$OPS/results.tsv"
   cleanup_unit
   echo "$URL ($LV)"; exit 0
 done

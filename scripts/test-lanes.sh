@@ -698,6 +698,7 @@ OUT=$(LANE_BREAKER_N=3 LANE_NO_CHAIN=1 LANE_FORCE_FAIL=laneA $RL laneA "$(task '
 check "third real run failure trips the breaker while dep/spec stops sit in the same window" '[ -f "$LANES_HOME/PAUSE" ] && [ "$(cut -f3 "$LANES_HOME/fast-fails.tsv" | grep -cx run)" = 3 ] && grep -q "BREAKER: 3 distinct tasks failed fast" "$LANES_HOME/NEEDS_CODY"'
 rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY" "$LANES_HOME"/queue/*.task
 if bash "$SRC/scripts/test-lane-guard.sh"; then PASS=$((PASS+1)); else FAILS=$((FAILS+1)); fi
+if bash "$SRC/scripts/test-publish.sh"; then PASS=$((PASS+1)); else FAILS=$((FAILS+1)); fi
 # 16 board-update.sh (GitHub Project 3 board) cases
 . "$SRC/scripts/test-board.sh"
 [ -n "${TL_DEBUG:-}" ] && echo "$OUT"
