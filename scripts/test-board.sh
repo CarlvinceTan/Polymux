@@ -1,5 +1,9 @@
 # test-board.sh: board-update.sh cases (GitHub Project 3 via gh GraphQL), sourced by test-lanes.sh
 # (uses its check/T/HOME/LANES_HOME/RL). Stub gh (+ tripwire vault/curl); no network.
+if ! declare -F check >/dev/null; then
+  echo "test-board.sh is sourced by test-lanes.sh; run bash scripts/test-lanes.sh" >&2
+  exit 2
+fi
 B="$T/bb"; mkdir -p "$B"; BLOG="$LANES_HOME/board.log"; BU="bash scripts/board-update.sh"; C=$LANES_HOME/cards
 export BOARD_T="$T" BOARD_MAP="$T/board-map.tsv"; BP="$B:$T/bin:$PATH"
 cp "$SRC"/scripts/{board-update.sh,lanelib.sh,media-check.py} scripts/
@@ -98,11 +102,11 @@ printf 'needs: none\nexpected_min: 5\nissue: 31\nBoard works\n' > "$T/bw.task"
 PATH=$BP LANE_DRY=1 LANE_STUB_CMD="sleep 2; grep -q \"board-works start\" \"$BLOG\" && echo early > \"$T/bw.seen\"; $STUB_OK" $RL laneA "$T/bw.task" >/dev/null 2>&1
 check "run-lane: start not written before the agent works, written after its first commit" '[ ! -f "$T/bw.seen" ] && grep -q "board-works start: DRY-RUN .*-> .In progress." "$BLOG"'
 VCN='mkdir -p .build/proof && printf "verified: see https://app.notion.com/p/'"$LID"'\n" > .build/proof/summary.md && echo unit-test-verified > .build/proof/level'
-printf '# Closes issue\nneeds: none\nexpected_min: 5\nIssue: 42\nLabels: type:infra,area:lanes\n' > "$T/ci.task"; : > "$T/ghb.log"
+printf '# Closes issue\nneeds: none\nexpected_min: 5\nIssue: 42\nLabels: Infra,Lanes\n' > "$T/ci.task"; : > "$T/ghb.log"
 OUT=$(PATH=$BP LANE_NO_CHAIN=1 LANE_RETRY_SLEEP=0 LANE_VERIFY_CMD="$VCN" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/ci.task" --branch test/closes 2>&1); RC=$?
 PRB=$(sed -n '/^pr create/,$p' "$T/ghb.log" | head -1)
-check "run-lane: PR body has Closes #42, ends with Release Notes, no Notion ref reaches gh" '[ $RC = 0 ] && echo "$PRB" | grep -q "Closes #42" && echo "$PRB" | grep -q "Release Notes:  - N/A" && echo "$PRB" | grep -q -- "--label type:infra,area:lanes" && ! notion_ref < "$T/ghb.log"'
-check "run-lane: issue: header is not part of the brief/title" '! echo "$PRB" | grep -qi "issue: 42" && ! echo "$PRB" | grep -q "Labels:" && grep -q -- "--title # Closes issue" "$T/ghb.log"'
+check "run-lane: PR body has Closes #42, ends with Release Notes, no Notion ref reaches gh" '[ $RC = 0 ] && echo "$PRB" | grep -q "Closes #42" && echo "$PRB" | grep -q "Release Notes:  - N/A" && echo "$PRB" | grep -q -- "--label Infra,Lanes" && ! notion_ref < "$T/ghb.log"'
+check "run-lane: issue: header is not part of the brief/title" '! echo "$PRB" | grep -qi "issue: 42" && ! echo "$PRB" | grep -q "Labels:" && grep -q -- "--title Closes issue" "$T/ghb.log"'
 # approve-proof.sh + cleanup.sh route through the same board writer
 AW="$HOME/code/wt/laneA-approve-me"; AP="$AW/.build/proof"; mkdir -p "$AP"; cp "$V/ok.mp4" "$AP/"; echo ok.mp4 > "$AP/uploaded"
 echo UI-verified > "$AP/level"; echo laneA-approve-me > "$C/approve-me.wt"; echo 43 > "$C/approve-me"

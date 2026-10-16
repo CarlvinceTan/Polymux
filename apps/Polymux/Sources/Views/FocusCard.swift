@@ -1,29 +1,31 @@
 import SwiftUI
 import PolymuxKit
 
-/// First-run question card. The server seeds it and owns the answer, so the card only
-/// renders what came back on the wire and never invents its own options.
+/// First-run question card. The answer paints immediately and rolls back if recording fails.
 struct FocusCard: View {
     let part: Part
     let client: APIClient
     let agentID: String
     let bubble: Color
-    @State private var answering = false
-    @State private var failed = false
+    @State private var choice = ApprovalChoice()
+    @State private var clock = ApprovalClock()
+
+    private var answerID: String? { part.answerID ?? choice.shown }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(part.question ?? "").fixedSize(horizontal: false, vertical: true)
-            if let answer = part.answerID {
+            if let answer = answerID {
                 HStack(spacing: 8) {
                     Image(systemName: answer == FocusAnswer.dismissed ? "arrow.turn.down.right" : "checkmark")
                         .font(.caption.weight(.semibold))
                     Text(label(answer))
                 }
                 .foregroundStyle(.secondary)
+                .onAppear { clock.answerAppeared() }
             } else {
                 ForEach(Array((part.options ?? []).enumerated()), id: \.element.id) { index, option in
-                    Button { Task { await choose(option.id) } } label: {
+                    Button { select(option.id) } label: {
                         HStack(spacing: 10) {
                             Text(letter(index)).font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary).frame(width: 14, alignment: .leading)
@@ -32,15 +34,16 @@ struct FocusCard: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(answering)
+                    .disabled(choice.isSending)
                     .accessibilityLabel("\(letter(index)). \(option.label)")
                 }
-                Button("Skip") { Task { await choose(FocusAnswer.dismissed) } }
+                Button("Skip") { select(FocusAnswer.dismissed) }
                     .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
-                    .disabled(answering)
+                    .disabled(choice.isSending)
             }
-            if failed {
+            if choice.failed, part.answerID == nil {
                 Text("Couldn’t record that choice.").font(.caption).foregroundStyle(.secondary)
+                    .onAppear { clock.rollbackAppeared() }
             }
         }
         .padding(12)
@@ -56,15 +59,15 @@ struct FocusCard: View {
         return (part.options ?? []).first { $0.id == answer }?.label ?? answer
     }
 
-    private func choose(_ option: String) async {
-        guard !answering else { return }
-        answering = true
-        defer { answering = false }
-        do {
+    private func select(_ option: String) {
+        let tap = ContinuousClock().now
+        Task { await choose(option, tap: tap) }
+    }
+
+    private func choose(_ option: String, tap: ContinuousClock.Instant) async {
+        guard part.answerID == nil else { return }
+        choice = await ApprovalChoice.apply(current: choice, optionID: option, tap: tap, clock: clock, send: {
             _ = try await client.answerFocus(agentID: agentID, optionID: option)
-            failed = false
-        } catch {
-            failed = true
-        }
+        }, publish: { choice = $0 })
     }
 }

@@ -1,0 +1,7 @@
+Attempt 4b command: bash /Users/carlvincetan/code/proj/Polymux/scripts/verify.sh
+One Release verification invocation; exit 0. Exact stdout: release-xcuitest-verify.log.
+The verifier runs ReadinessTests in ios-test and ios-ready; both passed in Release.
+CSV attachments exported by verify.sh and copied using its attachment manifests.
+Overlay reversed with: git apply -R .proof/pr41-af-20261014/release-xcuitest-harness.patch
+No production source changes remain. Final verification: final-xcuitest-verify.log.
+PR fetch: HTTP 401; exact command output: gh-attempt.txt.

@@ -111,15 +111,20 @@ func TestDurableConnectsMCP(t *testing.T) {
 	defer connector.Close()
 	var hits atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
+		var body struct {
+			Tools    []struct{ Function struct{ Name string } }
+			Messages json.RawMessage
+		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		raw, _ := json.Marshal(body["tools"])
-		if !strings.Contains(string(raw), "notes__echo") {
-			t.Error("MCP tool was not offered")
+		if len(body.Tools) != 1 || body.Tools[0].Function.Name != "codemode" {
+			t.Errorf("expected one codemode schema, got %+v", body.Tools)
 		}
 		if hits.Add(1) == 1 {
-			sse(w, "", []map[string]any{{"index": 0, "id": "mcp-call", "type": "function", "function": map[string]string{"name": "notes__echo", "arguments": "{}"}}})
+			sse(w, "", []map[string]any{{"index": 0, "id": "mcp-call", "type": "function", "function": map[string]string{"name": "codemode", "arguments": `{"code":"text(await tools.notes__echo({}))"}`}}})
 			return
+		}
+		if !strings.Contains(string(body.Messages), "fixture reply") {
+			t.Error("codemode result did not reach the model")
 		}
 		sse(w, "READY", nil)
 	}))
@@ -131,6 +136,9 @@ func TestDurableConnectsMCP(t *testing.T) {
 	}
 	if _, err := session.Send(t.Context(), turn("read fixture"), nil); err != nil {
 		t.Fatal(err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("provider requests = %d, want 2", hits.Load())
 	}
 	if !called.Load() {
 		t.Fatal("MCP call did not reach connector")

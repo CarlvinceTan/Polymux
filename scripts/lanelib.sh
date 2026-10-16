@@ -68,7 +68,7 @@ unit_free() {
 # out_has [grep -E opts] PATTERN: does stdin have a matching line? Reads ALL of stdin first, so the writer
 # never gets SIGPIPE. (`cmd | grep -q` under pipefail returns 141 when grep exits early on a long output.)
 out_has() { local s; s=$(cat); grep -qE "$@" <<< "$s"; }
-lane_files_changed() { git diff --name-only "$1"...HEAD | out_has '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write)\.sh|scripts/(lanes|media-check|verdict)\.py|agents/lanes\.toml)$'; }
+lane_files_changed() { git diff --name-only "$1"...HEAD | out_has '^(scripts/(run-lane|verify|lanelib|cleanup|dispatch-guard|wt-setup|test-lanes|bootstrap-mac|board-update|test-board|approve-proof|merge-queue|test-merge-queue|review-verdict|queue-write|lane-guard|test-lane-guard)\.sh|scripts/(lanes|media-check|verdict|hold-release|test-hold-release)\.py|agents/lanes\.toml)$'; }
 # test-lanes.sh to run: the checkout under test (a PR's own worktree in --verify-only), else ours.
 lane_tests_path() { if [ -f "$1/scripts/test-lanes.sh" ]; then echo "$1/scripts/test-lanes.sh"; else echo "$2/test-lanes.sh"; fi; }
 branch_lock_dir() { echo "${LANES_HOME:-$HOME/ops/lanes}/branches/$(echo "$1" | tr '/' '%').lock"; }
@@ -78,7 +78,7 @@ repo_slug() { git -C "${1:-.}" remote get-url origin | sed -E 's#^(git@[^:]+:|ht
 LANE_GUARD=${LANE_GUARD:-$HOME/.local/bin/lane-guard}
 guard() { [ -x "$LANE_GUARD" ] || return 0; "$LANE_GUARD" "$@"; }
 # --- GitHub labels and Notion-free GitHub writes ---------------------------------------------------
-# Shared label set: exactly one type:*, at least one area:*, plus dogfood / flake. Priority is a
+# Shared label set: exactly one type, at least one area, plus dogfood / Flaky test. Priority is a
 # Project field, never a label.
 LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines server ui lanes"
 # brief_labels FILE [NAME] -> comma-separated labels for a gh issue/PR made from this brief.
@@ -86,6 +86,11 @@ LANE_TYPES="feature bug infra test docs"; LANE_AREAS="pairing chat routines serv
 # inferred: title with FIX or "bug" -> bug, else feature; needs: xcode -> ui; a server/ or .go path
 # -> server; a scripts/ or lanes path -> lanes; nothing matched -> lanes (logged by the caller's gh).
 # dogfood: NAME starts 00NN-- or the brief says dogfood. flake: the brief is a deflake task.
+# gh_label type|area VALUE -> GitHub label name. Labels are plain title case with no prefix
+# (Feature, Bug, Infra, UI, Lanes, ...).
+gh_label() { case "$1:$2" in
+  type:bug) echo Bug;; type:feature) echo Feature;; type:infra) echo Infra;; type:test) echo Test;; type:docs) echo Docs;;
+  area:ui) echo UI;; area:*) echo "$2" | awk '{print toupper(substr($0,1,1)) substr($0,2)}';; *) echo "$2";; esac; }
 brief_labels() {
   local f=$1 n=${2:-$(basename "$1")} t a title needs body x out
   title=$(grep -m1 '^# ' "$f" | sed 's/^# *//'); [ -n "$title" ] || title=$(head -1 "$f")
@@ -100,9 +105,9 @@ brief_labels() {
     echo "$body" | grep -qE '(^|[^A-Za-z0-9_])(apps/)?server/|[A-Za-z0-9_]\.go([^A-Za-z]|$)' && a="$a server"
     echo "$body" | grep -qE '(^|[^A-Za-z0-9_])scripts/|(^|[^A-Za-z0-9_])lanes?([^A-Za-z0-9_]|$)' && a="$a lanes"
     [ -n "$a" ] || a=lanes; fi
-  out="type:$t"; for x in $a; do case ",$out," in *",area:$x,"*) ;; *) out="$out,area:$x";; esac; done
+  out=$(gh_label type "$t"); for x in $a; do x=$(gh_label area "$x"); case ",$out," in *",$x,"*) ;; *) out="$out,$x";; esac; done
   { echo "$n" | grep -qE '^00[0-9][0-9]--' || grep -qi 'dogfood' "$f"; } && out="$out,dogfood"
-  grep -qiE 'de-?flake' "$f" && out="$out,flake"
+  grep -qiE 'de-?flake' "$f" && out="$out,Flaky test"
   echo "$out"; }
 # Nothing written to GitHub may carry a Notion link or a Notion page id. Narrow on purpose:
 #  - links: notion.so / notion.site / app.notion.com URLs (a markdown link keeps its text, a bare URL
@@ -158,3 +163,16 @@ reap_wt() { local p k left; p=$(wt_pids "$1") || return 0; [ -n "$p" ] || return
   for k in $(seq 1 $(( ${LANE_KILL_WAIT:-10} * 10 ))); do left=""; for x in $p; do kill -0 "$x" 2>/dev/null && left="$left $x"; done
     [ -z "$left" ] && return 0; sleep 0.1; done
   kill -KILL $left 2>/dev/null; echo "reap: KILL after ${LANE_KILL_WAIT:-10}s:$left" >> "${2:-/dev/null}"; }
+
+plain_text() { perl -pe 's/\e\][^\a\e]*(?:\a|\e\\)//g; s/\e\[[0-?]*[ -\/]*[@-~]//g'; }
+brief_title() {
+  plain_text < "$1" | awk '/^# / { print; found=1; exit } NR==1 { first=$0 } END { if (!found) print first }' |
+    sed -E 's/^#+[[:space:]]*//; s/[[:space:]]*\(attempt [0-9]+\)[[:space:]]*$//; s/[[:space:]]+att[0-9]+[[:space:]]*$//; s/^[A-Z]+[0-9]+:[[:space:]]*//; s/[[:space:]]+$//'
+}
+brief_link() {
+  local issue verb=Closes
+  issue=$(sed -nE 's/^[Ii]ssue:[[:space:]]*#?([0-9]+)[[:space:]]*$/\1/p' "$1" | head -1)
+  [ -n "$issue" ] || return 0
+  grep -qiE '^partial:[[:space:]]*(true|yes|1|slice)[[:space:]]*$|^slice:[[:space:]]*partial[[:space:]]*$|\bpartial slice\b' "$1" && verb=Refs
+  printf '%s #%s\n' "$verb" "$issue"
+}

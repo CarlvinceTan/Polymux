@@ -253,12 +253,15 @@ func (s *Server) Close() error {
 	})
 	return s.closeErr
 }
+func (s *Server) Handler() http.Handler { return s.config.Devices.Require(s) }
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.mux.ServeHTTP(w, r)
 }
 
 func (s *Server) routes() {
+	s.mountProviders()
 	s.mux.HandleFunc("POST /triggers/{id}/events", s.ingestEvent)
 	s.mux.HandleFunc("GET /notifications", s.notices)
 	s.mux.HandleFunc("PUT /notifications/device", s.registerPush)

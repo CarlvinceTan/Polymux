@@ -23,7 +23,7 @@ public final class GeminiLive: LiveProvider {
     }
 
     public convenience init(client: APIClient) {
-        self.init(requiresKey: false) { _ in LiveWebSocket(url: try client.speechSocket()) }
+        self.init(requiresKey: false) { _ in LiveWebSocket(url: try client.speechSocket(), token: client.token) }
     }
 
     init(requiresKey: Bool = true, makeSocket: @escaping (String) throws -> any LiveSocket) {

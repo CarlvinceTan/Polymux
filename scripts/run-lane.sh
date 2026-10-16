@@ -56,6 +56,8 @@ TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "issue: N" (GitHub i
 fi
 # GitHub labels for the PR (type:/area: headers, else inferred; see brief_labels in lanelib.sh)
 LBF=${TASKF:-$(mktemp)}; [ -n "$TASKF" ] || printf '%s\n' "$TASK" > "$LBF"
+PR_TITLE=$(brief_title "$LBF"); PR_LINK=$(brief_link "$LBF"); PR_WARNING=""
+[ -n "$PR_LINK" ] || PR_WARNING="missing issue: in brief"
 LABELS=$(brief_labels "$LBF" "$(basename "${TASKF:-inline}")"); [ -n "$TASKF" ] || rm -f "$LBF"
 BL=$(sed -n 's/^[Ll]abels: *//p' "${TASKF:-/dev/null}" 2>/dev/null | head -1 | tr -d ' '); [ -n "$BL" ] && LABELS=$BL   # brief "Labels:" line wins
 # Lane gate FIRST: a disabled (lane1 = main Cursor account), expired or unknown lane never runs; no claim, worktree or vault read.
@@ -68,7 +70,7 @@ while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2
 TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32 | sed 's/-*$//')   # '# SA1: x' -> sa1-x (no leading '-')
 ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
 prompt() { echo "Task: $TASK
-Rules: work only in this worktree. Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
+Rules: work only in this worktree. Never search or list outside it (no ls, find or grep above it; no \$HOME scans). Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
@@ -88,11 +90,32 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
       K=$(vault get "$KT" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' 2>/dev/null) || { echo "vault read failed" >>"$3"; return 98; }
       # Key only in this child's environment: never argv (ps), never exported, keychain untouched.
       (cd "$2" && HOME="${H:-$HOME}" CURSOR_API_KEY="$K" "$cmd" -p --force --trust --workspace "$2" --output-format text "$P") >> "$3" 2>&1;;
-    # No workspace-write sandbox (tested 13 Oct, codex 0.162 seatbelt, network on, .git common dir +
-    # ~/ops/lanes as writable roots): .git stays read-only inside the sandbox, so the agent can't
-    # commit, and simctl/CoreSimulator XPC is refused, so verify.sh (iOS sim build) fails. Re-test
-    # before tightening. (--full-auto no longer exists in codex exec.)
-    codex) (cd "$2" && "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
+    # codex has no per-lane home (unlike cursor): the child gets a scratch HOME inside the worktree
+    # (.build/lanehome, git-ignored) so anything it or its shell reaches via $HOME stays in the
+    # worktree. On 14 Oct 00:56 a run with the real HOME prompted TCC for Downloads, Documents,
+    # Music and Photos; those dialogs block XCUITest alert handling. Auth stays in the real
+    # CODEX_HOME, gh/git config stay reachable through GH_CONFIG_DIR/GIT_CONFIG_GLOBAL, and the
+    # links keep the shared state $HOME-relative paths point at: .local (go toolchain for verify.sh)
+    # and ops/lanes (build slots, sim-warm markers; OPS).
+    # The Go caches stay shared too (GOMODCACHE/GOCACHE below): under a scratch HOME every lane would
+    # build its own ~1.8 GB module+build cache, and the read-only module cache survives a plain rm.
+    # workspace-write re-tested 14 Oct (codex 0.162.1, network on): the agent still cannot commit
+    # ("index.lock: Operation not permitted" under the worktree gitdir, with -c
+    # sandbox_workspace_write.writable_roots=[git common dir, ~/ops/lanes] or --add-dir), and
+    # simctl/CoreSimulator XPC is refused, so verify.sh cannot pass in the sandbox; keep
+    # danger-full-access. Re-test before tightening. (--full-auto no longer exists in codex exec.)
+    codex) local LH="$2/.build/lanehome" RH=$HOME
+      local GC="$RH/Library/Caches/polymux-lanes"
+      mkdir -p "$LH" "$LH/ops" "$GC/gomod" "$GC/gobuild"
+      [ -e "$LH/.local" ] || [ -L "$LH/.local" ] || ln -s "$RH/.local" "$LH/.local"
+      [ -e "$LH/ops/lanes" ] || [ -L "$LH/ops/lanes" ] || ln -s "$OPS" "$LH/ops/lanes"
+      # gh keeps its token in the login keychain (hosts.yml has none); with HOME=$LH the keychain is
+      # not found and every gh call 401s (14 Oct 02:14-02:48). Keychains is not TCC-protected.
+      mkdir -p "$LH/Library"; [ -e "$LH/Library/Keychains" ] || [ -L "$LH/Library/Keychains" ] || ln -s "$RH/Library/Keychains" "$LH/Library/Keychains"
+      (cd "$2" && HOME="$LH" CODEX_HOME="${CODEX_HOME:-$RH/.codex}" \
+        GH_CONFIG_DIR="${GH_CONFIG_DIR:-$RH/.config/gh}" GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$RH/.gitconfig}" \
+        GOMODCACHE="$GC/gomod" GOCACHE="$GC/gobuild" \
+        "$cmd" exec -s danger-full-access "$P") >> "$3" 2>&1;;
     opencode) (cd "$2" && "$cmd" run "$P") >> "$3" 2>&1;;
     *) echo "unknown agent $a" >> "$3"; return 99;;
   esac
@@ -119,7 +142,7 @@ run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer
 # (honoured by lane-guard --preflight/--dispatch), add a NEEDS_CODY line, and stop chaining. Cody clears PAUSE.
 # The call runs under the lanelib lock $OPS/dispatch-chain.lock (one chained dispatch at a time; we wait
 # up to ~10 s for it so a failover refill isn't lost). lane-guard takes its own $OPS/dispatch.lock.
-UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE; CF="$OPS/chain-fails"
+STOP_CLASS=run; UNIT_T0=$(date +%s); SIGNALED=""; FREED=$LANE; CF="$OPS/chain-fails"
 [ -f "$CF" ] && rm -f "$CF"; mkdir -p "$CF"   # old global streak file -> per-task dir
 base_title() { echo "$1" | sed -E 's/ \(attempt [0-9]+\)$//'; }
 deferred_hit() {  # $1 base title, $2 slug: print the $OPS/deferred/*.task (parked by policy, e.g. dogfood-first) that is this unit
@@ -136,6 +159,7 @@ hold_retries() {  # move queued retries of this task to queue-hold/
 fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-40 | sed 's/-$//')"
   for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
   if [ "$rc" = 0 ]; then rm -f "$f"; lock_drop "$OPS/chain-state.lock"; return 0; fi
+  [ "$STOP_CLASS" = run ] || { lock_drop "$OPS/chain-state.lock"; breaker "${f##*/}"; return 0; }
   n=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo $n > "$f"; lock_drop "$OPS/chain-state.lock"
   FAST=""; [ $(( $(date +%s) - UNIT_T0 )) -lt "${LANE_CHAIN_MIN_S:-120}" ] && FAST=1
   { [ -n "$FAST" ] || [ $n -ge 2 ]; } && hold_retries
@@ -143,12 +167,12 @@ fail_guard() { local rc=$1 n k f="$CF/$(echo "$(base_title "$TITLE")" | tr 'A-Z'
 breaker() {  # $1 task key of a fast failure; trips PAUSE on N distinct fast-failing tasks within the window
   local now d FF="$OPS/fast-fails.tsv"; now=$(date +%s)
   for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
-  printf '%s\t%s\n' "$now" "$1" >> "$FF"
+  printf '%s\t%s\t%s\n' "$now" "$1" "$STOP_CLASS" >> "$FF"
   awk -F'\t' -v c=$(( now - ${LANE_BREAKER_WIN_S:-900} )) '$1>=c' "$FF" > "$FF.tmp" && mv "$FF.tmp" "$FF"
-  d=$(cut -f2 "$FF" | sort -u | grep -c .); lock_drop "$OPS/chain-state.lock"
+  d=$(awk -F'\t' '$3=="run"{print $2}' "$FF" | sort -u | grep -c .); lock_drop "$OPS/chain-state.lock"
   [ "$d" -ge "${LANE_BREAKER_N:-3}" ] || return 0
   [ -f "$OPS/PAUSE" ] || { echo "run-lane $(date '+%F %T'): breaker: $d distinct tasks failed fast within ${LANE_BREAKER_WIN_S:-900}s ($(cut -f2 "$FF" | sort -u | tr '\n' ' '))" > "$OPS/PAUSE"
-    echo "$(date '+%F %T') $SLUG: BREAKER: $d distinct tasks failed fast within ${LANE_BREAKER_WIN_S:-900}s (systemic fault? login, fetch, disk); chaining paused via $OPS/PAUSE; last log $LOG" >> "$OPS/NEEDS_CODY"
+    echo "$(date '+%F %T') $SLUG: BREAKER: $d distinct tasks failed fast within ${LANE_BREAKER_WIN_S:-900}s (systemic fault? login, fetch, disk); chaining paused via $OPS/PAUSE; last log ${LOG:-}" >> "$OPS/NEEDS_CODY"
     echo "$(date '+%F %T') $SLUG: breaker tripped ($d distinct fast failures) -> PAUSE" >> "$OPS/logs/dispatch-chain.log"; }; }
 free_lane() {  # $1 lane now free; non-blocking
   { [ -n "${LANE_NO_CHAIN:-}" ] || [ ! -x "$LANE_GUARD" ]; } && return 0
@@ -217,7 +241,7 @@ cleanup_unit() {
 trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
-BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""; ISSUE=$(bash "$SD/board-update.sh" issue "$SLUG" 2>/dev/null)
+BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""
 # No in-process failover (it stacked units onto busy lanes): one lane per run. On a first failure the
@@ -353,7 +377,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   [ "$NT" = 0 ] || echo "warn: $NT lane commit(s) without a 'Lane:' trailer (committer name still says $L)" | tee -a "$LOG"
   CH=$(git -C "$WT" diff --shortstat "$START"..HEAD | awk '{print $4+$6}')
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
-    git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
+    git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { STOP_CLASS=scope; ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
@@ -362,7 +386,8 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
     echo "$(date '+%F %T') $ID: INFRA missing toolchain on $HOST: ${MISS:-?} (lane $L, task '$TITLE' not failed) log $LOG" >> "$OPS/NEEDS_CODY"
     [ -n "$TASKF" ] && QW --no-check --dir "$OPS/queue-hold" --name "$ID-infra.task" "$TASKF" >/dev/null
     ev infra "$L" "missing toolchain: ${MISS:-?}"; BU verify "$SLUG" blocked; echo "INFRA: missing toolchain: ${MISS:-?} -> $OPS/NEEDS_CODY"; exit 10; fi
-  [ -x "$LANE_GUARD" ] && { "$LANE_GUARD" --task-end "$L" "$ID" "$VRC" "$LOG" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
+  [ "$VRC" = 0 ] || { grep -q '^verify: allowed-files FAIL' "$LOG" && STOP_CLASS=scope; }
+  [ -x "$LANE_GUARD" ] && { "$LANE_GUARD" --task-end "$L" "$ID" "$VRC" "$LOG" "$STOP_CLASS" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
   [ $VRC = 0 ] || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
   BODY="Task: $TITLE"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
@@ -370,9 +395,11 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   LV=$(cat "$WT/.build/proof/level" 2>/dev/null || echo build-only); DRAFT=""
   case $LV in UI-verified|unit-test-verified) ;; build-only) ;; *) ev failed "$L" "level $LV"; continue;; esac
   [ "$LV" = build-only ] && { DRAFT=--draft; BODY="**Verification level: build-only, so this is NOT ready for review (draft).**"$'\n\n'"$BODY"; }
-  [ -n "$ISSUE" ] && BODY+=$'\n\n'"Closes #$ISSUE"
+  [ -n "$PR_WARNING" ] && { ev warning "$L" "$PR_WARNING"; BODY+=$'\n\n'"Warning: $PR_WARNING"; }
+  [ -n "$PR_LINK" ] && BODY+=$'\n\n'"$PR_LINK"
   # gh_write (lanelib.sh) scrubs Notion URLs/page ids from every GitHub write
   BODY+=$'\n\n'"Release Notes:"$'\n\n'"- N/A"   # PR validator: body (and lane comments) end with this
+  BODY=$(printf '%s' "$BODY" | plain_text)
   # Continuing an existing PR (--branch with an open PR): no new PR; comment the new head + summary on it.
   EX=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG") ||
     { ev failed "$L" "gh pr list failed (pushed $B; no PR created or commented)"; continue; }
@@ -383,14 +410,14 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
       echo "warn: could not mark existing PR $URL as draft (build-only)" | tee -a "$LOG"; }
   else
     URL=""; for ptry in 1 2 3; do   # pushed already: retry the API call only, never the agent
-      URL=$(cd "$WT" && gh_write pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --label "$LABELS" --title "$(echo "$TASK" | head -1 | cut -c1-70)" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
+      URL=$(cd "$WT" && gh_write pr create $DRAFT -R "$SLUG_REPO" --head "$B" --base main --label "$LABELS" --title "$PR_TITLE" --body "$BODY" 2>>"$LOG") && [ -n "$URL" ] && break
       sleep $((ptry * 10 * RS)); URL=$(cd "$WT" && gh pr list -R "$SLUG_REPO" --head "$B" --state open --json url -q '.[0].url' 2>>"$LOG"); [ -n "$URL" ] && break
       echo "gh pr create failed (try $ptry); retrying" >> "$LOG"; done
     [ -n "$URL" ] || { ev failed "$L" "gh pr create failed (3 tries; $B is pushed)"; continue; }
   fi
   basename "$WT" > "$OPS/cards/$SLUG.wt"; BU pr "$SLUG" "$URL"   # .wt: exact worktree name for cleanup
   BU verify "$SLUG" "$LV" "$WT/.build/proof" "$(echo "$BODY" | grep -oE "https://github.com/$SLUG_REPO/raw/proof-media/[^/) ]+" | head -1)"
-  ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV" >> "$OPS/results.tsv"
+  ev pr "$L" "$URL level=$LV"; printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$ID" "$URL" "$(git -C "$WT" rev-parse HEAD)" "$LV${PR_WARNING:+; $PR_WARNING}" >> "$OPS/results.tsv"
   cleanup_unit
   echo "$URL ($LV)"; exit 0
 done
