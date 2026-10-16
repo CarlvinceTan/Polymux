@@ -36,6 +36,22 @@ type Embedder interface {
 	Embed(context.Context, Input) ([]float32, string, error)
 }
 
+// EmbeddingGemma steers retrieval with a task prefix on text. Omitting it still
+// embeds, but the model card reports lower retrieval precision, so queries and
+// documents are kept apart. Media input is never prefixed.
+const (
+	queryPrefix    = "task: search result | query: "
+	documentPrefix = "title: none | text: "
+)
+
+// taskText is the text an EmbeddingGemma input is embedded as.
+func taskText(in Input) string {
+	if in.Query {
+		return queryPrefix + in.Text
+	}
+	return documentPrefix + in.Text
+}
+
 type HTTPEmbedder struct {
 	URL    string
 	Model  string
@@ -47,6 +63,7 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, input Input) ([]float32, strin
 	if e.URL == "" {
 		return nil, "", fmt.Errorf("semantic search provider is not configured")
 	}
+	input.Text = taskText(input)
 	var request any = input
 	if strings.HasSuffix(e.URL, "/embeddings") {
 		request = map[string]any{"input": input.Text, "model": e.Model, "dimensions": e.Dims}
@@ -83,9 +100,11 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, input Input) ([]float32, strin
 	for i := range v {
 		v[i] /= float32(norm)
 	}
-	model := e.Model
+	// The server names the model it actually ran, which is what stored vectors
+	// are keyed on, so a swapped GGUF cannot be scored against older vectors.
+	model := response.Model
 	if model == "" {
-		model = response.Model
+		model = e.Model
 	}
 	return v, model, nil
 }
