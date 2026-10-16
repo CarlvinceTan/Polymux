@@ -158,7 +158,7 @@ func TestSidebarImport(t *testing.T) {
 	if err := s.PlaceThread(t.Context(), "extra", Placement{SectionSet: true, SectionID: new("source-projects")}); err != nil {
 		t.Fatal(err)
 	}
-	source := SidebarImport{SchemaVersion: 1, Source: "grokbot", Sections: []SourceSection{{ID: "source-projects", Name: "Projects", Collapsed: true, ThreadIDs: []string{"group", "missing-group"}}, {ID: "source-team", Name: "Team", ThreadIDs: []string{"a", "orphan-source-id"}}, {ID: "__agents__", Name: "Unassigned", ThreadIDs: []string{}}}, PinnedThreadIDs: []string{"b", "missing-pin"}}
+	source := SidebarImport{SchemaVersion: 1, Source: "grokbot", Sections: []SourceSection{{ID: "source-projects", Name: "Projects", Collapsed: new(true), ThreadIDs: []string{"group", "missing-group"}}, {ID: "source-team", Name: "Team", Collapsed: new(false), ThreadIDs: []string{"a", "orphan-source-id"}}, {ID: "__agents__", Name: "Unassigned", Collapsed: new(false), ThreadIDs: []string{}}}, PinnedThreadIDs: []string{"b", "missing-pin"}}
 	before := dbFiles(t, path)
 	report, err := s.ImportSidebar(t.Context(), source, false)
 	if err != nil || report.Applied || report.Sections != 2 || report.Placements != 2 || report.Pins != 1 || !slices.Equal(report.UnresolvedIDs, []string{"missing-group", "orphan-source-id", "missing-pin"}) {
@@ -225,6 +225,7 @@ func TestSidebarImportRejectsAmbiguity(t *testing.T) {
 	s, _ := sectionFixture(t)
 	for _, source := range []SidebarImport{
 		{SchemaVersion: 1, Source: "grokbot"},
+		{SchemaVersion: 1, Source: "grokbot", Sections: []SourceSection{{ID: "s", Name: "Section", ThreadIDs: []string{"a"}}}, PinnedThreadIDs: []string{}},
 		{SchemaVersion: 1, Source: "grokbot", Sections: []SourceSection{{ID: "s", Name: "Section", ThreadIDs: []string{"a", "a"}}}, PinnedThreadIDs: []string{}},
 		{SchemaVersion: 1, Source: "grokbot", Sections: []SourceSection{{ID: "s", Name: "Section", ThreadIDs: []string{"a"}}}, PinnedThreadIDs: []string{"a"}},
 	} {
@@ -235,7 +236,7 @@ func TestSidebarImportRejectsAmbiguity(t *testing.T) {
 	if _, _, err := s.CreateSection(t.Context(), "local", "Projects", nil); err != nil {
 		t.Fatal(err)
 	}
-	source := SidebarImport{SchemaVersion: 1, Source: "grokbot", Sections: []SourceSection{{ID: "new", Name: "Projects", ThreadIDs: []string{"a"}}}, PinnedThreadIDs: []string{}}
+	source := SidebarImport{SchemaVersion: 1, Source: "grokbot", Sections: []SourceSection{{ID: "new", Name: "Projects", Collapsed: new(false), ThreadIDs: []string{"a"}}}, PinnedThreadIDs: []string{}}
 	if _, err := s.ImportSidebar(t.Context(), source, true); !errors.Is(err, ErrSectionTaken) {
 		t.Fatal(err)
 	}

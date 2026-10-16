@@ -13,7 +13,7 @@ var ErrSidebarImport = errors.New("invalid sidebar import")
 type SourceSection struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
-	Collapsed bool     `json:"collapsed"`
+	Collapsed *bool    `json:"collapsed"`
 	ThreadIDs []string `json:"threadIDs"`
 }
 
@@ -41,7 +41,7 @@ func validateSidebar(source SidebarImport) error {
 	threads := map[string]bool{}
 	for _, section := range source.Sections {
 		name, err := sectionName(section.Name)
-		if err != nil || name != section.Name || section.ID == "" || len(section.ID) > 128 || seen[section.ID] || section.ThreadIDs == nil {
+		if err != nil || name != section.Name || section.ID == "" || len(section.ID) > 128 || seen[section.ID] || section.ThreadIDs == nil || section.Collapsed == nil {
 			return ErrSidebarImport
 		}
 		seen[section.ID] = true
