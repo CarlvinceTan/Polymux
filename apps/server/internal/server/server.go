@@ -36,6 +36,7 @@ type Factory interface {
 	Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error)
 }
 type Config struct {
+	BuildSHA    string
 	MergeLane   string
 	DataDir     string
 	Model       string
@@ -272,7 +273,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /speech/text", s.speechText)
 	s.mux.HandleFunc("GET /speech/live", s.speechLive)
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		write(w, 200, map[string]any{"status": "ok", "runtime": "PiG", "semanticSearch": s.config.Index.Embedder != nil})
+		write(w, 200, map[string]any{"status": "ok", "runtime": "PiG", "buildSHA": s.config.BuildSHA, "semanticSearch": s.config.Index.Embedder != nil})
 	})
 	s.mux.HandleFunc("GET /agents", func(w http.ResponseWriter, r *http.Request) {
 		v, err := s.Store.Agents(r.Context())

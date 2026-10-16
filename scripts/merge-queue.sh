@@ -11,6 +11,7 @@
 #   3. Gate: the head contains current origin/main AND verify passed at exactly that sha. If main moved
 #      meanwhile, go back to 1. Then: gh pr merge --squash --match-head-commit <sha>.
 #   4. Fast-forward the cvmini main checkout (only when it's on main; --ff-only).
+#   5. Build and deploy that main snapshot; a failed check restores the prior server and data.
 # Approval gate (before step 1, again after each merge of main, and again just before the merge):
 #   Every account posts as CarlvinceTan, so a comment's author proves nothing. Only a SIGNED verdict counts:
 #   scripts/review-verdict.sh (Liam's tooling) posts "Liam: PASS — head <sha7>" plus
@@ -66,6 +67,13 @@ fix_brief() { local pr=$1 br=$2 ln=$3 tf=$4 why=$5 log=$6 t="" tl="" nd="" ty=""
   [ -n "$tf" ] && [ -f "$tf" ] && grep -E '^(unit|scope|card|issue|labels|after|area|priority):' "$tf"
   if [ -n "$tl" ]; then echo; grep -vE "$h" "$tf" | awk -v t="$tl" '!d && $0 == t { d = 1; next } { print }'; fi
   printf '\n## Post-approval re-verify failed (merge lane)\n%s. Merge origin/main into this branch (no rebase or force-push), fix, verify, and push to PR #%s.\n```\n%s\n```\n' "$why" "$pr" "$(tail -n 40 "$log")"; }
+deploy_main() {
+  [ "$(git -C "$MAIN" rev-parse --abbrev-ref HEAD 2>/dev/null)" = main ] || return 1
+  git -C "$MAIN" pull -q --ff-only origin main || return 1
+  [ -f "$MAIN/scripts/deploy.py" ] && [ -f "$MAIN/scripts/deploy_host.py" ] || return 1
+  git -C "$MAIN" diff --quiet HEAD -- scripts/deploy.py scripts/deploy_host.py || return 1
+  python3 "$MAIN/scripts/deploy.py" update --ref origin/main
+}
 case ${1:-} in
 enqueue)
   PR=${2:?pr number}; TF=${3:-}; E="$MQ/$(date +%Y%m%d%H%M%S)-pr$PR"
@@ -82,6 +90,12 @@ status) for e in "$MQ"/*-pr*; do [ -f "$e" ] && echo "$(basename "$e"): $(field 
 run)
   ML="$OPS/locks/merge-lane"; lock_take "$ML" || { echo "merge lane busy (pid $(lock_holder "$ML"))"; exit 0; }
   trap 'lock_drop "$ML"' EXIT
+  if [ -f "$OPS/deploy-pending" ]; then
+    LOG="$OPS/logs/deploy-retry.log"
+    if deploy_main >> "$LOG" 2>&1; then
+      rm -f "$OPS/deploy-pending"; ev deploy deployed "pending main deployment verified"
+    else ev deploy deploy_failed "retry pending; see $LOG"; fi
+  fi
   for E in $(ls "$MQ"/*-pr* 2>/dev/null | sort); do
     PR=$(field pr "$E"); BR=$(field branch "$E"); UNIT=$(field unit "$E"); TF=$(field task "$E"); LN=$(field lane "$E")
     LOG="$OPS/logs/merge-pr$PR.log"; WT="$WTR/merge-pr$PR"; OK=0; WHY=""
@@ -121,7 +135,14 @@ run)
     lock_drop "$BLK"; git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
     if [ $OK = 1 ]; then
       BU merged "$UNIT"; ev "pr$PR" merged "$SHA"; mv "$E" "$MQ/done/"
-      [ "$(git -C "$MAIN" rev-parse --abbrev-ref HEAD)" = main ] && git -C "$MAIN" pull -q --ff-only origin main >> "$LOG" 2>&1
+      if deploy_main >> "$LOG" 2>&1; then
+        rm -f "$OPS/deploy-pending"; ev "pr$PR" deployed "main verified on cvmini and cvmac"
+      else
+        echo "DEPLOY FAILED: check the installation error and recovery path; retry scripts/deploy.py update" >> "$LOG"
+        touch "$OPS/deploy-pending"
+        ev "pr$PR" deploy_failed "see $LOG"
+        echo "$(date '+%F %T') deployment after PR #$PR failed; check $LOG and retry scripts/deploy.py update" >> "$OPS/NEEDS_CODY"
+      fi
     else
       echo "FAILED: $WHY" >> "$LOG"; BU verify "$UNIT" failed; BU requeued "$UNIT"; ev "pr$PR" failed "$WHY"
       echo "post-approval re-verify FAILED ($WHY); fix brief sent back to ${LN:-its lane}" >> "$LOG"
