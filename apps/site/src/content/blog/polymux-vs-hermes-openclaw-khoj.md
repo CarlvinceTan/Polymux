@@ -10,6 +10,8 @@ tags:
 published: true
 ---
 
+> **Version note, October 2026:** This August comparison describes the earlier Electron app. Polymux's current source is a native SwiftUI app backed by a Go agent server, without the tabbed Hub, Drive, and Browser workspace described below. See the [current introduction](/docs/) and [installation guide](/docs/installation/). The comparison is retained as a dated article, not current setup guidance.
+
 “Personal AI assistant” now describes several very different products. Some begin with a terminal, some with a messaging gateway, and others with a library of your notes. Polymux begins with the desktop workspace itself.
 
 That difference matters more than a checklist. It determines what the assistant can see, how much setup it needs, and whether using it feels like opening another chatbot or working inside one connected environment.
