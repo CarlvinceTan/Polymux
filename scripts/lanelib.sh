@@ -165,6 +165,23 @@ reap_wt() { local p k left; p=$(wt_pids "$1") || return 0; [ -n "$p" ] || return
   kill -KILL $left 2>/dev/null; echo "reap: KILL after ${LANE_KILL_WAIT:-10}s:$left" >> "${2:-/dev/null}"; }
 
 plain_text() { perl -pe 's/\e\][^\a\e]*(?:\a|\e\\)//g; s/\e\[[0-?]*[ -\/]*[@-~]//g'; }
+# Preserve the brief and effective branch; a watchdog may replace the requested agent.
+retry_brief() {
+  local file=$1 title=$2 needs=$3 exp=$4 branch=$5 wt=$6 agent=${7:-} head
+  printf '%s (attempt 2)\nneeds: %s\nexpected_min: %s\n' "$title" "${needs:-none}" "${exp:-60}"
+  [ -n "$branch" ] && printf 'branch: %s\n' "$branch"
+  [ -n "$agent" ] && printf 'agent: %s\n' "$agent"
+  if [ -f "$file" ]; then
+    awk -v title="$title" -v agent="$agent" '
+      !removed && $0==title { removed=1; next }
+      /^(needs|expected_min|branch):/ { next }
+      agent!="" && /^agent:/ { next }
+      { print }' "$file"
+  fi
+  head=$(git -C "$wt" rev-list -1 HEAD --not --remotes=origin 2>/dev/null)
+  [ -n "$head" ] && printf '\n## Previous attempt work\nUnpushed head: %s\nBranch: %s\nWorktree: %s\n' "$head" "$branch" "$wt"
+  return 0
+}
 brief_title() {
   plain_text < "$1" | awk '/^# / { print; found=1; exit } NR==1 { first=$0 } END { if (!found) print first }' |
     sed -E 's/^#+[[:space:]]*//; s/[[:space:]]*\(attempt [0-9]+\)[[:space:]]*$//; s/[[:space:]]+att[0-9]+[[:space:]]*$//; s/^[A-Z]+[0-9]+:[[:space:]]*//; s/[[:space:]]+$//'
