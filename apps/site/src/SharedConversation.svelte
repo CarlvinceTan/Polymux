@@ -1,10 +1,14 @@
 <script lang="ts">
   import {onMount} from 'svelte';
-  import Message from '../../desktop/src/renderer/lib/features/chat/Message.svelte';
-  import AgentActivity from '../../desktop/src/renderer/lib/features/chat/AgentActivity.svelte';
-  import type {ChatMessage} from '../../desktop/src/renderer/lib/features/chat/ChatPane.svelte';
-  import Icon from '../../desktop/src/renderer/lib/shared/components/Icon.svelte';
-  import {scrollFade} from '../../desktop/src/renderer/lib/shared/scrollFade';
+  import Message, {type MessageData} from './lib/features/chat/Message.svelte';
+  import AgentActivity, {type AgentActivityItem} from './lib/features/chat/AgentActivity.svelte';
+  import Icon from './lib/shared/components/Icon.svelte';
+  import {scrollFade} from './lib/shared/scrollFade';
+  type ChatMessage = MessageData & {
+    activities?: AgentActivityItem[];
+    startedAt?: string;
+    completedAt?: string;
+  };
   let snapshot: {title: string; messages: ChatMessage[]; expiresAt: number} | null = null;
   let state = 'Loading conversation…';
   let column: HTMLDivElement;

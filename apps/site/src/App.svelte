@@ -5,7 +5,7 @@
   import hubScreenshot from '../../../docs/assets/polymux-hub-expanded.png';
   import browserScreenshot from '../../../docs/assets/polymux-browser-expanded.png';
   import {COMMS_EMAIL_PRESETS, COMMS_PLATFORMS} from '../../../packages/protocol/src/validation';
-  import logo from '../../desktop/src/renderer/public/polymux.svg';
+  import logo from './assets/polymux.svg';
   import {bridgeLogo, mailLogo} from './lib/platformBrands';
   import claudeLogo from '@lobehub/icons-static-svg/icons/claude-color.svg?url';
   import codexLogo from '@lobehub/icons-static-svg/icons/codex-color.svg?url';

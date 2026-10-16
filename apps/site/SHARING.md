@@ -22,10 +22,10 @@ an `EX 86400` TTL; the endpoint independently checks the stored deadline. There
 is no process-local storage fallback. A missing or unavailable database produces
 a retryable error in the modal, never a pretend link.
 
-Deploy the site with repository files outside `apps/site` available: the public
-transcript directly reuses the desktop Message, AgentActivity and stylesheet.
-The site build substitutes a rejecting bridge for the desktop API; public pages
-cannot invoke local actions. The `/share/:id` rewrite serves the dedicated entry.
+Deploy with the repository sources, including `packages/protocol` and
+`docs/assets`, available. The public transcript owns its display components and
+stylesheet under `apps/site/src`; its API boundary rejects local actions. The
+`/share/:id` rewrite serves the dedicated entry.
 
 Creation accepts at most 1 MB / 2,000 messages and 30 links per client IP per day.
 The Vercel-provided client IP is hashed before use as a rate-limit key. Tokens
@@ -39,8 +39,6 @@ sanitized rendering as the app; desktop file actions are unavailable publicly.
 
 ## Verification
 
-Run `node --test apps/site/test/shares.test.js` for expiry, storage TTL, cutoff,
-validation and failure cases. `apps/desktop/src/renderer/tests/share.spec.ts`
-covers menu/reply creation, the read-only field and actual clipboard feedback
-using a mocked creation endpoint. These checks do not prove a production Redis
-connection or deployment.
+Run `npm test --prefix apps/site` for expiry, storage TTL, cutoff, validation,
+failure cases and the rejecting API boundary. These checks do not prove a
+production Redis connection or deployment.

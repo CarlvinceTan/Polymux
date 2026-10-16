@@ -44,13 +44,7 @@ const productPages = existsSync(productRoot)
   : [];
 
 export default defineConfig({
-  plugins: [svelte(), {
-    name: 'public-transcript-bridge',
-    resolveId(source) {
-      // Shared display components must never ship the desktop/demo API.
-      if (source.endsWith('/api/polymux')) return resolve(import.meta.dirname, 'src/lib/publicBridge.ts');
-    },
-  }],
+  plugins: [svelte()],
   resolve: {alias: {'@polymux/protocol': resolve(import.meta.dirname, '../../packages/protocol/src/index.ts')}},
   build: {
     outDir: 'dist',
