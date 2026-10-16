@@ -30,8 +30,7 @@ func mergeFixture(t *testing.T, fields string) (*mergeTool, context.Context, *tu
 		}
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
-	state.mergeLane = t.TempDir()
-	writeMergeScripts(t, state.mergeLane, "print('False')\n")
+	state.mergeRoot = t.TempDir()
 	return &mergeTool{dir: dir}, context.WithValue(t.Context(), turnKey{}, state), state
 }
 func approveMerge(t *testing.T, ctx context.Context, state *turnState) {
@@ -58,7 +57,7 @@ func TestMergeNeedsApproval(t *testing.T) {
 			if gate := beforeTool(ctx, "call", "merge_pr", mergeInput); !gate.Block || state.approval == nil {
 				t.Fatal("merge auto-approved")
 			}
-			if _, err := os.Stat(filepath.Join(state.mergeLane, "argv")); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(state.mergeRoot, "argv")); !os.IsNotExist(err) {
 				t.Fatal("gh merge ran")
 			}
 		})
@@ -92,7 +91,7 @@ func mergeRefusal(t *testing.T, fields, reason string) {
 	if gate := beforeTool(ctx, "retry", "merge_pr", mergeInput); !gate.Block {
 		t.Fatal("consumed approval reused")
 	}
-	if _, err := os.Stat(filepath.Join(state.mergeLane, "argv")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(state.mergeRoot, "argv")); !os.IsNotExist(err) {
 		t.Fatal("gh merge ran")
 	}
 }
@@ -105,7 +104,7 @@ func TestMergeArgvNoAdmin(t *testing.T) {
 	if _, err := tool.Execute(ctx, "call", mergeInput, nil); err != nil {
 		t.Fatal(err)
 	}
-	argv, err := os.ReadFile(filepath.Join(state.mergeLane, "argv"))
+	argv, err := os.ReadFile(filepath.Join(state.mergeRoot, "argv"))
 	if err != nil || string(argv) != "pr\nmerge\n84\n--squash\n--match-head-commit\n"+reviewedSHA+"\n" {
 		t.Fatalf("unsafe argv: %s %v", argv, err)
 	}
@@ -118,25 +117,18 @@ func TestMergeArgvNoAdmin(t *testing.T) {
 }
 func TestMergeUsesQueueWhenConfigured(t *testing.T) {
 	tool, ctx, state := mergeFixture(t, `"isDraft":false`)
-	scripts := filepath.Join(state.mergeLane, "scripts")
-	if err := os.MkdirAll(scripts, 0700); err != nil {
-		t.Fatal(err)
-	}
-	for name, content := range map[string]string{"merge-queue.sh": "#!/bin/sh\nprintf '%s\\n' \"$@\" > queued\n", "lanes.py": "print('True')\n"} {
-		if err := os.WriteFile(filepath.Join(scripts, name), []byte(content), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
+	state.mergeQueue = true
+	writeQueueScript(t, state.mergeRoot, "#!/bin/sh\nprintf '%s\\n' \"$@\" > queued\n")
 	approveMerge(t, ctx, state)
 	result, err := tool.Execute(ctx, "call", mergeInput, nil)
 	if err != nil || result.Content[0].(ai.TextContent).Text != "Queued for merge" {
 		t.Fatalf("queue: %+v %v", result, err)
 	}
-	queued, err := os.ReadFile(filepath.Join(state.mergeLane, "queued"))
+	queued, err := os.ReadFile(filepath.Join(state.mergeRoot, "queued"))
 	if err != nil || string(queued) != "enqueue\n84\n" {
 		t.Fatalf("queue argv: %s %v", queued, err)
 	}
-	if _, err := os.Stat(filepath.Join(state.mergeLane, "argv")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(state.mergeRoot, "argv")); !os.IsNotExist(err) {
 		t.Fatal("queue bypassed")
 	}
 }
@@ -155,59 +147,45 @@ func TestMergeCardIntent(t *testing.T) {
 	}
 }
 
-func writeMergeScripts(t *testing.T, dir, probe string) {
+func writeQueueScript(t *testing.T, dir, content string) {
 	t.Helper()
-	scripts := filepath.Join(dir, "scripts")
+	scripts := filepath.Join(dir, "scripts", "merge")
 	if err := os.MkdirAll(scripts, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for name, content := range map[string]string{"merge-queue.sh": "exit 99\n", "lanes.py": probe} {
-		if err := os.WriteFile(filepath.Join(scripts, name), []byte(content), 0700); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(scripts, "merge-queue.sh"), []byte(content), 0700); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestMergeIgnoresWorktreeScripts(t *testing.T) {
 	tool, ctx, state := mergeFixture(t, `"isDraft":false`)
-	writeMergeScripts(t, tool.dir, "from pathlib import Path\nPath('trapped').touch()\nraise Exception('worktree probe executed')\n")
-	if err := os.WriteFile(filepath.Join(tool.dir, "scripts", "merge-queue.sh"), []byte("touch trapped\nexit 99\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	writeMergeScripts(t, state.mergeLane, "from pathlib import Path\nPath('probed').touch()\nprint('True')\n")
-	if err := os.WriteFile(filepath.Join(state.mergeLane, "scripts", "merge-queue.sh"), []byte("printf '%s\\n' \"$@\" > queued\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
+	state.mergeQueue = true
+	writeQueueScript(t, tool.dir, "touch trapped\nexit 99\n")
+	writeQueueScript(t, state.mergeRoot, "printf '%s\\n' \"$@\" > queued\n")
 	approveMerge(t, ctx, state)
 	if _, err := tool.Execute(ctx, "call", mergeInput, nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"probed", "queued"} {
-		if _, err := os.Stat(filepath.Join(state.mergeLane, name)); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := os.Stat(filepath.Join(state.mergeRoot, "queued")); err != nil {
+		t.Fatal(err)
 	}
-	for _, dir := range []string{tool.dir, state.mergeLane} {
+	for _, dir := range []string{tool.dir, state.mergeRoot} {
 		if _, err := os.Stat(filepath.Join(dir, "trapped")); !os.IsNotExist(err) {
 			t.Fatal("worktree tooling executed")
 		}
 	}
 }
 
-func TestMergeRequiresLane(t *testing.T) {
-	for _, lane := range []string{"", "relative", "missing"} {
-		name := lane
+func TestMergeRequiresRoot(t *testing.T) {
+	for _, root := range []string{"", "relative"} {
+		name := root
 		if name == "" {
 			name = "empty" // an empty name becomes #00, and # cuts the sqlite file: URI short
 		}
 		t.Run(name, func(t *testing.T) {
 			tool, ctx, state := mergeFixture(t, `"isDraft":false`)
-			if lane == "missing" {
-				state.mergeLane = t.TempDir()
-			} else {
-				state.mergeLane = lane
-			}
-			writeMergeScripts(t, tool.dir, "raise Exception('worktree probe executed')\n")
+			state.mergeRoot = root
 			approveMerge(t, ctx, state)
 			if _, err := tool.Execute(ctx, "call", mergeInput, nil); err == nil || !strings.Contains(err.Error(), "merge") {
 				t.Fatalf("refusal: %v", err)
@@ -216,5 +194,14 @@ func TestMergeRequiresLane(t *testing.T) {
 				t.Fatal("merge fallback ran")
 			}
 		})
+	}
+}
+
+func TestMergeQueueRequiresTooling(t *testing.T) {
+	tool, ctx, state := mergeFixture(t, `"isDraft":false`)
+	state.mergeQueue = true
+	approveMerge(t, ctx, state)
+	if _, err := tool.Execute(ctx, "call", mergeInput, nil); err == nil || !strings.Contains(err.Error(), "tooling unavailable") {
+		t.Fatalf("refusal: %v", err)
 	}
 }

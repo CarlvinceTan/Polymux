@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
@@ -90,25 +89,19 @@ func (t *mergeTool) Execute(ctx context.Context, call string, raw json.RawMessag
 			return result, fmt.Errorf("PR #%d checks failing or pending", args.PR)
 		}
 	}
-	if !filepath.IsAbs(state.mergeLane) {
-		return result, fmt.Errorf("merge requires an absolute merge-lane path in server configuration")
+	if !filepath.IsAbs(state.mergeRoot) {
+		return result, fmt.Errorf("merge requires an absolute merge root in server configuration")
 	}
-	script := filepath.Join(state.mergeLane, "scripts", "merge-queue.sh")
 	name, argv := "gh", []string{"pr", "merge", strconv.Itoa(args.PR), "--squash", "--match-head-commit", args.HeadSHA}
-	for _, path := range []string{script, filepath.Join(state.mergeLane, "scripts", "lanes.py")} {
-		if _, statErr := os.Stat(path); statErr != nil {
-			return result, fmt.Errorf("merge lane tooling unavailable: %w", statErr)
+	if state.mergeQueue {
+		script := filepath.Join(state.mergeRoot, "scripts", "merge", "merge-queue.sh")
+		if _, statErr := os.Stat(script); statErr != nil {
+			return result, fmt.Errorf("merge queue tooling unavailable: %w", statErr)
 		}
-	}
-	enabled, probeErr := repoOutput(ctx, state.mergeLane, "python3", filepath.Join(state.mergeLane, "scripts", "lanes.py"), "lane", "merge", "enabled")
-	if probeErr != nil {
-		return result, fmt.Errorf("could not read merge lane configuration: %w", probeErr)
-	}
-	if strings.TrimSpace(string(enabled)) == "True" {
 		name, argv = "bash", []string{script, "enqueue", strconv.Itoa(args.PR)}
 		status = "Queued for merge"
 	}
-	_, err = repoOutput(ctx, state.mergeLane, name, argv...)
+	_, err = repoOutput(ctx, state.mergeRoot, name, argv...)
 	if err != nil {
 		return result, fmt.Errorf("merge refused: %w", err)
 	}

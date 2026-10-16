@@ -7,7 +7,7 @@ speech do not require pairing or control permissions.
 
 ## Build and enrollment
 
-Run `python3 scripts/fetch_cua.py` once before building macOS. It stages the pinned
+Run `python3 scripts/control/fetch_cua.py` once before building macOS. It stages the pinned
 Cua Driver `0.34.1` release in `.vendor/cua`, checks the archive SHA-256, and never
 installs or starts a service. Xcode copies its executable into
 `Polymux.app/Contents/Helpers`, embeds the license and LaunchAgent definition, and
@@ -108,13 +108,13 @@ credentials, never the real Keychain. Its runner builds the fixture and refuses
 to ignore a failing test:
 
 ```sh
-python3 scripts/check_control.py
+python3 scripts/control/check_control.py
 ```
 
 For the full Swift suite with the same fixture:
 
 ```sh
-python3 scripts/check_control.py --all
+python3 scripts/control/check_control.py --all
 ```
 
 Regression guards verified 2026-10-10:
@@ -125,7 +125,7 @@ Regression guards verified 2026-10-10:
 | Canceled work starts or outlives its owner | Generation/cancellation barriers, owned process groups and shutdown draining; `CommandRunnerTests` and reconnect fixture | Inherited descendants; deliberate process-group escapes remain outside the guarantee |
 | Dead or revoked GUI helper still appears ready | Both children must be live; permission status is checked on refresh; `EmbeddedDriverTests` | Fake helper revocation, with real TCC acceptance still pending |
 | Native ceilings drift between languages | One policy source and `contracts/generate.py --check` | Browser/desktop ceiling plus local argument bounds |
-| Temporary preview cannot be launched by bundle ID | Owned `~/Applications` fixture from `scripts/control_preview.py` | Launch path and unpaired/capability layouts visually checked through Cua; fixture removed afterward |
+| Temporary preview cannot be launched by bundle ID | Owned `~/Applications` fixture from `scripts/control/control_preview.py` | Launch path and unpaired/capability layouts visually checked through Cua; fixture removed afterward |
 
 Signed/notarized distribution is not yet verified. Release acceptance still
 requires a clean Mac with no SSH/Cua installation, first connection with missing,
@@ -135,7 +135,7 @@ installation present. Build/tests do not prove macOS TCC attribution or login-it
 approval on a real signed device. No normal app, server, login item, or installed
 Cua service was replaced to run the synthetic tests.
 
-For a safe settings layout check, `python3 scripts/control_preview.py` builds an
+For a safe settings layout check, `python3 scripts/control/control_preview.py` builds an
 owned fixture in `~/Applications`, where Cua can resolve its bundle identifier.
 It does not start control or read credentials. Launch
 `com.test.polymux-control-preview` through Cua MCP, verify its executable path,
