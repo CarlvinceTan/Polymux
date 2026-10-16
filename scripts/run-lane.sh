@@ -40,7 +40,7 @@ if [ "${1:-}" = "--verify-only" ]; then
   [ -d "$WT" ] || git -C "$REPO" worktree add -q --detach "$WT" "$SHA" || { ev failed verify "worktree add failed"; exit 1; }
   git -C "$WT" checkout -q --detach "$SHA" || { ev failed verify "checkout failed"; exit 1; }
   (cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
-    if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=full bash "$SD/verify.sh"; fi) > "$OPS/logs/$ID.log" 2>&1; rc=$?   # LANE_VERIFY_CMD: test hook
+    if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=full VERIFY_PR="$BR" bash "$SD/verify.sh"; fi) > "$OPS/logs/$ID.log" 2>&1; rc=$?   # LANE_VERIFY_CMD: test hook
   BODY="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID" 2>>"$OPS/logs/$ID.log")"
   gh_write pr comment "$BR" -R "$SLUG_REPO" --body "Mac proof ($HOST):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
@@ -73,8 +73,9 @@ prompt() { echo "Task: $TASK
 Rules: work only in this worktree. Never search or list outside it (no ls, find or grep above it; no \$HOME scans). Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
-Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
-needs a test change (or a 'No-test-reason: ...' line in the commit). Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $START..HEAD' (this run's start commit $START; plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for $((IDLE_S / 60)) minutes is stopped. Never open a browser, a browser profile or any Grok Bot session. If you cannot make verify.sh pass, say why and stop."; }
+Do not push and do not open a PR. Never skip, delete or weaken tests.
+For UI changes, capture the affected flow in light and dark themes. Save screenshots in .build/captures; performance or responsiveness work also needs a short .mp4 recording there.
+A behaviour change needs a test change (or a 'No-test-reason: ...' line in the commit). Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $START..HEAD' (this run's start commit $START; plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for $((IDLE_S / 60)) minutes is stopped. Never open a browser, a browser profile or any Grok Bot session. If you cannot make verify.sh pass, say why and stop."; }
 run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer name.
   cfg usable "$1" || { echo "refusing: lane $1 not usable" >>"$3"; return 95; }   # belt and braces
   unset CURSOR_API_KEY   # never inherit the main account key into any agent child
@@ -379,7 +380,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   if [ "${CH:-0}" -gt "${SIZE_CAP:-300}" ]; then echo "warn: $CH changed lines > ${SIZE_CAP:-300}" | tee -a "$LOG"
     git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { STOP_CLASS=scope; ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
-  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
+  (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" VERIFY_LABELS="$LABELS" VERIFY_ISSUE="${PR_LINK##*#}" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
     MISS=$(sed -n 's/^verify: INFRA missing toolchain: *//p' "$LOG" | tail -1)
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" infra "$L" "missing toolchain: ${MISS:-?} (task: $SLUG)" "$LOG" >> "$OPS/failures.tsv"

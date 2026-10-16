@@ -88,6 +88,7 @@ step() {  # step NAME cmd...
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
 step readiness-tests bash "$ROOT/scripts/test-readiness.sh"
+step evidence-tests python3 "$ROOT/scripts/test-evidence.py"
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 [ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"
 # Lane scripts changed -> run their hermetic tests too.
@@ -152,6 +153,14 @@ for t in json.load(open(os.path.join(A, "manifest.json"))):
         if n.startswith("ready.json"): shutil.copy(os.path.join(A, f), os.path.join(P, "ready.json"))
         elif f.endswith(".png"): shutil.copy(os.path.join(A, f), os.path.join(P, "ready-" + f))
 PY
+# Preserve agent captures outside proof/, which is reset at the start of verification.
+CAPTURES=${VERIFY_MEDIA_DIR:-$ROOT/.build/captures}
+if [ -d "$CAPTURES" ]; then
+  for capture in "$CAPTURES"/*.png "$CAPTURES"/*.mp4; do
+    [ -f "$capture" ] && cp "$capture" "$P/$(basename "$capture")"
+  done
+fi
+step visual-evidence python3 "$ROOT/scripts/check-evidence.py" "${TI_BASE:-origin/main}" "$P"
 grep -hE "error: .*(failed|XCTAssert)|Test Case .* failed" "$L"/*.log | sort -u | head -20 > "$P/failures.txt"
 MEDIA=$(cd "$P" && ls *.png *.mp4 *.mov 2>/dev/null | tr '\n' ' ')
 # Verification level (exact names): UI-verified | unit-test-verified | build-only | blocked | failed
