@@ -184,7 +184,7 @@ def recover(root, service, timeout=30):
             pending.unlink()
 
 
-def install_server(artifact, sha, root, service, timeout=30):
+def install_server(artifact, sha, root, service, timeout=30, rollback_check=False):
     revision(sha)
     artifact, root = Path(artifact), Path(root)
     if run([str(artifact), "--version"], timeout=10) != sha:
@@ -195,7 +195,7 @@ def install_server(artifact, sha, root, service, timeout=30):
             raise DeployError("server binary and data must be ordinary deployment paths")
         service.ready()
         previous = service.health()
-        if previous.get("buildSHA") == sha and digest(artifact) == digest(service.binary):
+        if not rollback_check and previous.get("buildSHA") == sha and digest(artifact) == digest(service.binary):
             return
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
         backup = root / (stamp + "-" + sha[:12] + "-" + uuid.uuid4().hex[:8])
@@ -212,6 +212,8 @@ def install_server(artifact, sha, root, service, timeout=30):
             atomic_copy(artifact, service.binary)
             service.start()
             wait_health(service, sha, timeout)
+            if rollback_check:
+                raise DeployError("forced candidate rejection for the rollback check")
             state["result"] = "installed"
             save(backup / "result.json", state)
             save(root / "pending.json", state)
@@ -332,6 +334,7 @@ def main():
     parser.add_argument("--health")
     parser.add_argument("--app", type=Path, default=Path("/Applications/Polymux.app"))
     parser.add_argument("--launch", action="store_true", help="restart the installed application")
+    parser.add_argument("--rollback-check", action="store_true", help="reject the healthy candidate to exercise server rollback")
     args = parser.parse_args()
     def interrupted(_signal, _frame):
         raise InterruptedError("deployment interrupted")
@@ -343,7 +346,8 @@ def main():
     elif not args.artifact or not args.sha:
         parser.error("--artifact and --sha are required for installation")
     elif args.kind == "server":
-        install_server(args.artifact, args.sha, args.root, Launchd(args.plist, args.token, args.health))
+        install_server(args.artifact, args.sha, args.root, Launchd(args.plist, args.token, args.health),
+                       rollback_check=args.rollback_check)
     else:
         install_app(args.artifact, args.sha, args.app, args.root, args.launch)
     print(f"deploy: {args.kind} verified" + (f" at {args.sha}" if args.sha else ""))

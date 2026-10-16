@@ -100,6 +100,11 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(failed), 1)
         self.assertTrue((failed[0] / "new-file").exists())
 
+    def test_explicit_rollback_check_rejects_a_healthy_candidate(self):
+        with self.assertRaisesRegex(deploy.DeployError, "previous binary and data restored"):
+            deploy.install_server(self.artifact, NEW, self.root, self.service, timeout=0, rollback_check=True)
+        self.restored()
+
     def test_interruption_after_replace_rolls_back(self):
         self.service.crash = True
         with self.assertRaises(deploy.DeployError):
