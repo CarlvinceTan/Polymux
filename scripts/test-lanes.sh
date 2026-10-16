@@ -8,7 +8,7 @@ PASS=0; FAILS=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAILS=$((FAILS+1)); echo "FAIL $1"; fi; }
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/repo"; cd "$T/repo"
 git config user.name "Lane Test"; git config user.email lane@test.invalid
-mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup,board-update,queue-write}.sh "$SRC"/scripts/hold-release.py "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py scripts/
+mkdir -p scripts agents; cp "$SRC"/scripts/{run-lane,verify,lanelib,dispatch-guard,cleanup,wt-setup,board-update,queue-write}.sh "$SRC"/scripts/hold-release.py "$SRC"/scripts/media-check.py "$SRC"/scripts/lanes.py "$SRC"/scripts/ui-guard.py scripts/
 cat > agents/lanes.toml <<'TOML'
 max_builds = 1
 lock_dir = "~/ops/lanes/locks"
@@ -155,6 +155,17 @@ export GLOG="$T/g17d"; mkdir -p "$T/emptybin"; printf 'needs: go\nexpected_min: 
 OUT=$(VERIFY_PATH="$T/emptybin" LANE_GUARD="$FGF" LANE_STUB_CMD="$STUB_OK" $RL laneA "$T/t8d.task" 2>&1); RC=$?; sleep 1
 check "missing toolchain: infra error (exit 10), failures.tsv infra row, NEEDS_CODY names the tool" '[ $RC = 10 ] && echo "$OUT" | grep -q "INFRA: missing toolchain: go" && grep -q "	infra	laneA	missing toolchain: go" "$LANES_HOME/failures.tsv" && grep -q "INFRA missing toolchain.*: go" "$LANES_HOME/NEEDS_CODY"'
 check "missing toolchain: no --task-end (PAUSE), no fail streak, no failover, task held not failed" '! grep -q "^--task-end" "$GLOG.all" && [ ! -e "$LANES_HOME/chain-fails/infra-tool" ] && ! grep -q "infra-tool	running	laneB" "$LANES_HOME/events.tsv" && ls "$LANES_HOME"/queue-hold/*-infra-tool-infra.task >/dev/null && ! grep -q "	Infra tool	" "$LANES_HOME/failures.tsv"'
+export GLOG="$T/g17e"
+OUT=$(LANE_VERIFY_CMD='echo "verify: ENV blocked by system dialog: fixture"; exit 11' LANE_GUARD="$FGF" LANE_STUB_CMD="$STUB_OK" $RL laneA "$(task 'UI environment' t8e)" 2>&1); RC=$?
+check "UI environment: exit 11 holds task and names the dialog without failure hooks or retry" '[ $RC = 11 ] && echo "$OUT" | grep -q "ENV: blocked by system dialog: fixture" && grep -q "blocked by system dialog" "$LANES_HOME/NEEDS_CODY" && ls "$LANES_HOME"/queue-hold/*-ui-environment-environment.task >/dev/null && ! grep -q "^--task-end\|^--dispatch" "$GLOG.all" && [ ! -e "$LANES_HOME/chain-fails/ui-environment" ]'
+export GLOG="$T/g17f"
+ENV_STUB='mkdir -p .build/proof; printf '\''{"class":"environment","reason":"Accessibility fixture denied","time":%s}'\'' "$(date +%s)" > .build/proof/environment.json; exit 1'
+OUT=$(LANE_GUARD="$FGF" LANE_STUB_CMD="$ENV_STUB" $RL laneA "$(task 'Agent environment' t8f)" 2>&1); RC=$?
+check "agent reports environment block: no commit or retry is required to hold it" '[ $RC = 11 ] && echo "$OUT" | grep -q "Accessibility fixture denied" && ls "$LANES_HOME"/queue-hold/*-agent-environment-environment.task >/dev/null && ! grep -q "^--task-end\|^--dispatch" "$GLOG.all"'
+export GLOG="$T/g17g"
+POLICY_STUB='printf '\''{"type":"tool_use","input":{"command":"osascript -e tell application System Events"}}\n'\''; exit 0'
+OUT=$(LANE_GUARD="$FGF" LANE_STUB_CMD="$POLICY_STUB" $RL laneA "$(task 'System scripting' t8g)" 2>&1); RC=$?
+check "System Events command is flagged in lane log and held without retry" '[ $RC = 11 ] && echo "$OUT" | grep -q "System Events scripting detected" && grep -q "lane policy: System Events scripting detected in a tool command" "$LANES_HOME"/logs/*system-scripting-laneA.log && ls "$LANES_HOME"/queue-hold/*-system-scripting-environment.task >/dev/null && ! grep -q "^--task-end\|^--dispatch" "$GLOG.all"'
 # 20 continuing an existing PR: size measured from the branch head at unit start; open PR -> comment, no new PR
 GB="$T/ghbin"; mkdir -p "$GB"; printf '#!/bin/sh\necho "$*" >> "%s/gh.log"\ncase "$1 $2" in\n"pr list") cat "%s/openpr" 2>/dev/null;;\n"pr create") echo https://github.com/o/r/pull/100;;\nesac\nexit 0\n' "$T" "$T" > "$GB/gh"; chmod +x "$GB/gh"
 git checkout -q -b test/big main; seq 1 400 > big.txt; git add big.txt; git commit -qm "big earlier work" -m "Lane: laneA/opencode"; git checkout -q main
@@ -463,6 +474,7 @@ OUT=$(LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD='printf "%s" "$PROMPT" > "$HOME/.
 PS0=$(git -C "$LANES_WT/laneA-prompt-start" rev-parse HEAD~1)
 check "prompt has size cap and the run's start commit (size base == START)" 'grep -q "Size cap: 300 changed lines" "$T/prompt.txt" && grep -q "git diff --stat $PS0..HEAD" "$T/prompt.txt"'
 check "prompt forbids searching or listing outside the worktree" 'grep -q "Never search or list outside it" "$T/prompt.txt"'
+check "prompt forbids System Events scripting, permission answers, and UI environment retries" 'grep -q "Never script System Events" "$T/prompt.txt" && grep -q "Never click, answer, dismiss, or request a system permission prompt" "$T/prompt.txt" && grep -q "blocked UI environment, stop without retrying" "$T/prompt.txt"'
 # 25 idle agent: whole process group stopped, no surviving grandchild
 OUT=$(LANE_NO_CHAIN=1 LANE_IDLE_S=2 LANE_KILL_WAIT=1 LANE_STUB_CMD='trap "" TERM; (trap "" TERM; sleep 300) & echo $! > "$HOME/../gc.pid"; sleep 300' $RL laneA "$(task 'Idle group' p2)" 2>&1)
 GC=$(cat "$T/gc.pid" 2>/dev/null); sleep 0.5

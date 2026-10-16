@@ -7,6 +7,7 @@ verify_result() {
   local timeout="Timed out while enabling (UI )?automation( mode)?|test runner.*(timed out|timeout)|timed out.*(test runner|UI testing)"
   local failed='Test Case .* failed|Test .* failed after|XCTAssert.*failed|Executed .* with [1-9][0-9]* failure'
   VERIFY_UNAVAILABLE_REASON=""
+  case "$name:$rc" in macos-test:11|ios-test:11|ios-ready:11) echo BLOCKED; return;; esac
   if [ "$rc" = 0 ]; then echo PASS; return; fi
   case "$name" in macos-test|ios-test|ios-ready)
     # A blocking macOS system alert: XCUITest's interruption monitor keeps re-matching the

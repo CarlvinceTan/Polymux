@@ -10,6 +10,8 @@
 # (CODE_SIGN_IDENTITY=-) so they never hit the Gatekeeper "damaged" dialog, and a blocking
 # com.apple.UserNotificationCenter dialog is reported as UNAVAILABLE, never as a hang or FAIL.
 # Builds wait for a slot in the shared lock dir (max_builds; 1 while ~/ops/pr-verify builds).
+# Never script System Events or answer permission prompts. A blocked UI environment exits 11;
+# its exact-window evidence stays in local logs and the lane holds the task without retrying.
 set -uo pipefail
 SD=$(cd "$(dirname "$0")" && pwd)   # scripts may live in another checkout (cloud PRs)
 ROOT=$(git rev-parse --show-toplevel); cd "$ROOT"
@@ -73,22 +75,55 @@ acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
   done
 }
 declare -a ROWS; FAIL=0; UI_UNAVAILABLE=0
-. "$ROOT/scripts/verify-result.sh"
+. "$SD/verify-result.sh"
 skip() { ROWS+=("| $1 | SKIP | not affected | 0s |"); echo "verify: $1 SKIP (not affected)"; }
 # Target selection (scripts/verify-targets.sh): unset/full -> everything; affected -> affected.py, falling back to full.
 VT=full GO_PKGS=./... SWIFT=all APP=1 WHY="verify-targets.sh missing"; [ -f "$SD/verify-targets.sh" ] && eval "$(bash "$SD/verify-targets.sh" "${TI_BASE:-origin/main}" "$L/affected.log")"
 [ "$VT" = affected ] && echo "verify: affected ($WHY): go=[${GO_PKGS:-none}] swift=[${SWIFT:-none}] app=$APP" || echo "verify: targets full ($WHY)"
 step() {  # step NAME cmd...
   local n=$1; shift; local t=$SECONDS; mark
+  local -a command=("$@")
+  case "$n" in macos-test|ios-test|ios-ready)
+    if [ "${UI_READY:-0}" != 1 ]; then
+      ROWS+=("| $n | SKIP | macOS UI preflight build failed | 0s |")
+      echo "verify: $n SKIP (macOS UI preflight build failed)"; return
+    fi
+    command=(python3 "$SD/ui-guard.py" --helper "$ROOT/.build/ui-environment"
+      --app "$DD/Build/Products/Debug/Polymux.app" --evidence "$ROOT/$L/ui-guard/$n" -- "${command[@]}");;
+  esac
   # macos-test has its own cap (MACOS_TEST_TIMEOUT, default 600s) so one stuck runner never spends
   # the 2400s per-step budget. The alarm kills gui-run.sh, which boots its LaunchAgent out, kills
   # the job and removes its temp dir (scripts/test-gui-run.sh); 142/143 tells the classifier which.
   local cap=2400; [ "$n" = macos-test ] && cap=${MACOS_TEST_TIMEOUT:-600}
-  perl -e 'alarm shift; exec @ARGV' "$cap" "$@" > "$L/$n.log" 2>&1; local rc=$?
+  perl -e 'alarm shift; exec @ARGV' "$cap" "${command[@]}" > "$L/$n.log" 2>&1; local rc=$?
   case $rc in 142|143) echo "verify: $n hit the ${cap}s cap (step alarm)" >> "$L/$n.log";; esac
   # verify_result sets VERIFY_UNAVAILABLE_REASON; a $( ) capture is a subshell and would drop it.
   local vf="$L/$n.verdict"; verify_result "$n" "$rc" "$L/$n.log" > "$vf"
   local res; res=$(<"$vf")
+  if [ "$res" = BLOCKED ]; then
+    local reason; reason=$(sed -n 's/^verify: ENV //p' "$L/$n.log" | tail -1)
+    reason=${reason:-UI environment could not be verified}
+    ROWS+=("| $n | BLOCKED | environment | $((SECONDS - t))s |")
+    echo "verify: ENV $reason"
+    echo blocked > "$P/level"
+    python3 - "$P/environment.json" "$reason" <<'PY'
+import json, sys, time
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({"class": "environment", "reason": sys.argv[2], "time": time.time()}))
+PY
+    { echo '## verify.sh: BLOCKED'; echo "environment: $reason"
+      echo 'level: **blocked**; UI verification stopped; no retry'
+      echo; echo '| step | result | tests | time |'; echo '|---|---|---|---|'; printf '%s\n' "${ROWS[@]}"
+      echo; echo "Local dialog evidence: $ROOT/$L/ui-guard/$n"
+    } > "$P/summary.md"
+    local archive="$HOME/verify-evidence/$WT_NAME/$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)"
+    mkdir -p "$archive"
+    echo "evidence: $archive" >> "$P/summary.md"
+    echo "$archive" > "$P/evidence"
+    cp -R "$P" "$archive/proof"; cp -R "$L" "$archive/logs"
+    cat "$P/summary.md"
+    exit 11
+  fi
   [ "$res" = FAIL ] && FAIL=1
   if [ "$res" = UNAVAILABLE ]; then
     UI_UNAVAILABLE=1
@@ -99,6 +134,7 @@ step() {  # step NAME cmd...
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
 step readiness-tests bash "$ROOT/scripts/test-readiness.sh"
+step ui-guard-tests python3 "$SD/test-ui-guard.py"
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 [ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"
 # Lane scripts changed -> run their hermetic tests too.
@@ -136,6 +172,11 @@ if [ "$APP" = 0 ]; then skip macos-build; skip ios-build; ACT=skip; READY=unavai
 else
 step macos-build xcodebuild build -project apps/Polymux/Polymux.xcodeproj -scheme Polymux \
   -destination platform=macOS "${XCT[@]}"
+step ui-observer-build swiftc "$SD/ui-environment.swift" -o "$ROOT/.build/ui-environment"
+UI_READY=1
+for prerequisite in macos-build ui-observer-build; do
+  printf '%s\n' "${ROWS[@]}" | grep -q "^| $prerequisite | PASS" || UI_READY=0
+done
 # App scheme gains a test action later (UI tests); until then build it and rely on package tests.
 ACT=build; grep -q "<TestableReference" apps/Polymux/Polymux.xcodeproj/xcshareddata/xcschemes/Polymux.xcscheme && ACT=test
 if [ $ACT = test ]; then

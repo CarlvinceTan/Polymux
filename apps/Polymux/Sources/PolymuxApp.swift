@@ -1,10 +1,22 @@
 import SwiftUI
 import PolymuxKit
+#if os(macOS)
+import PolymuxControl
+#endif
 
 @main
 enum PolymuxMain {
     @MainActor static func main() {
         #if os(macOS)
+        if let index = CommandLine.arguments.firstIndex(of: "--verify-accessibility") {
+            guard CommandLine.arguments.indices.contains(index + 1),
+                  let nonce = UUID(uuidString: CommandLine.arguments[index + 1]) else { return }
+            let result = FileManager.default.temporaryDirectory
+                .appending(path: "polymux-ui-accessibility-\(nonce.uuidString).json")
+            let value = ["accessibility": ControlPermissions.accessibility]
+            if let data = try? JSONEncoder().encode(value) { try? data.write(to: result, options: .atomic) }
+            return
+        }
         if CommandLine.arguments.contains("--companion") {
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory)

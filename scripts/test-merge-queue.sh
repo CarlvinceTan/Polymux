@@ -111,4 +111,7 @@ S=$(mkpr p22); printf 'needs: none\nPlain title unit\nBody line kept?\nsecond bo
 printf 'pr: 22\nbranch: p22\nlane: lane3\nunit: \ntask: %s\n' "$T/p22.task" > "$MQ/2026-pr22"; cm 1 "$(verdict 22 "$S" PASS)" > "$T/comments.jsonl"
 MERGE_VERIFY_CMD='exit 1' run; F=$(ls "$LANES_HOME"/queue/*-fix-pr22.task 2>/dev/null | head -1)
 check "fix brief from a plain-title brief: '# <first line>' title, body kept, title not repeated" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && [ "$(head -1 "$F")" = "# Plain title unit" ] && grep -qxF "Body line kept?" "$F" && grep -qxF "second body line" "$F" && [ "$(grep -cxF "Plain title unit" "$F")" = 0 ]'
+S=$(mkpr p30); enq 30 p30; cm 1 "$(verdict 30 "$S" PASS)" > "$T/comments.jsonl"
+MERGE_VERIFY_CMD='echo "verify: ENV blocked by system dialog: fixture"; exit 11' run
+check "UI environment block preserves approval and stops without a fix brief or retry" 'blocked 30 && [ ! -e "$MQ/failed/2026-pr30" ] && ! ls "$LANES_HOME"/queue/*fix-pr30.task >/dev/null 2>&1 && grep -q "BLOCKED: blocked by system dialog: fixture; no fix brief or retry" "$LANES_HOME/logs/merge-pr30.log" && grep -q "PR #30 ENV blocked by system dialog" "$LANES_HOME/NEEDS_CODY"'
 echo "test-merge-queue: $PASS passed, $FAILS failed"; [ $FAILS = 0 ]

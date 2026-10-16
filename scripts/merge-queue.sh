@@ -84,7 +84,7 @@ run)
   trap 'lock_drop "$ML"' EXIT
   for E in $(ls "$MQ"/*-pr* 2>/dev/null | sort); do
     PR=$(field pr "$E"); BR=$(field branch "$E"); UNIT=$(field unit "$E"); TF=$(field task "$E"); LN=$(field lane "$E")
-    LOG="$OPS/logs/merge-pr$PR.log"; WT="$WTR/merge-pr$PR"; OK=0; WHY=""
+    LOG="$OPS/logs/merge-pr$PR.log"; WT="$WTR/merge-pr$PR"; OK=0; WHY=""; ENV_BLOCKED=""
     echo "== $(date '+%F %T') merge lane: PR #$PR ($BR)" >> "$LOG"; ev "pr$PR" running "$BR"
     BLK=$(branch_lock_dir "$BR"); lock_take "$BLK" || { echo "branch busy; retry next tick" >> "$LOG"; continue; }
     git -C "$REPO" fetch -q origin main "$BR" >> "$LOG" 2>&1; H0=$(git -C "$REPO" rev-parse -q --verify "origin/$BR")
@@ -102,8 +102,12 @@ run)
       approved "$PR" "$SHA" || { WHY="approval no longer valid at ${SHA:0:7}"; break; }
       # Merge lane always verifies everything: an inherited VERIFY_TARGETS=affected must never narrow it.
       ( export VERIFY_TARGETS=full; cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
-        if [ -n "${MERGE_VERIFY_CMD:-}" ]; then bash -c "$MERGE_VERIFY_CMD"; else TI_BASE=origin/main bash "$SD/verify.sh"; fi ) >> "$LOG" 2>&1 \
-        || { WHY="re-verify failed at ${SHA:0:7}"; break; }
+        if [ -n "${MERGE_VERIFY_CMD:-}" ]; then bash -c "$MERGE_VERIFY_CMD"; else TI_BASE=origin/main bash "$SD/verify.sh"; fi ) >> "$LOG" 2>&1; VRC=$?
+      if [ "$VRC" != 0 ]; then
+        if [ "$VRC" = 11 ]; then ENV_BLOCKED=1; WHY=$(sed -n 's/^verify: ENV //p' "$LOG" | tail -1); WHY=${WHY:-UI environment blocked};
+        else WHY="re-verify failed at ${SHA:0:7}"; fi
+        break
+      fi
       CHK=$(field check "$TF"); [ -z "$CHK" ] || (cd "$WT" && bash -c "$CHK") >> "$LOG" 2>&1 || { WHY="key behaviour check failed: $CHK"; break; }
       LV=$(cat "$WT/.build/proof/level" 2>/dev/null)
       case $LV in UI-verified|unit-test-verified) ;; *) WHY="verification level missing or not mergeable (${LV:-none}) at ${SHA:0:7}"; break;; esac
@@ -122,6 +126,11 @@ run)
     if [ $OK = 1 ]; then
       BU merged "$UNIT"; ev "pr$PR" merged "$SHA"; mv "$E" "$MQ/done/"
       [ "$(git -C "$MAIN" rev-parse --abbrev-ref HEAD)" = main ] && git -C "$MAIN" pull -q --ff-only origin main >> "$LOG" 2>&1
+    elif [ -n "$ENV_BLOCKED" ]; then
+      echo "BLOCKED: $WHY; no fix brief or retry" >> "$LOG"; BU verify "$UNIT" blocked; ev "pr$PR" blocked "$WHY"
+      echo "$(date '+%F %T') merge-lane: PR #$PR ENV $WHY; re-enqueue after a person resolves it (log $LOG)" >> "$OPS/NEEDS_CODY"
+      mv "$E" "$MQ/blocked/"
+      break
     else
       echo "FAILED: $WHY" >> "$LOG"; BU verify "$UNIT" failed; BU requeued "$UNIT"; ev "pr$PR" failed "$WHY"
       echo "post-approval re-verify FAILED ($WHY); fix brief sent back to ${LN:-its lane}" >> "$LOG"

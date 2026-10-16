@@ -1,5 +1,6 @@
 // Template for apps/Polymux/PolymuxUITests/ReadinessTests.swift (app PR, not infra).
 // verify.sh grants UI-verified only when this passes; its screenshots are the proof media.
+// Never script System Events or answer permission prompts. A UI environment block ends the run without retry.
 // Identifiers and waits follow /workspace/polymux-merge/verify-polymux-features.md:
 //  - launch argument --verify-fixture (DEBUG seed: 6 agents, 12 sessions), POLYMUX_DATA_DIR per worktree,
 //  - list `chats.list`, rows `sidebar.row.<threadID>` (all 12 seeded ids),

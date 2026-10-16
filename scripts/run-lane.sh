@@ -41,6 +41,9 @@ if [ "${1:-}" = "--verify-only" ]; then
   git -C "$WT" checkout -q --detach "$SHA" || { ev failed verify "checkout failed"; exit 1; }
   (cd "$WT" && { [ -n "${LANE_SKIP_SETUP:-}" ] || bash "$SD/wt-setup.sh"; } && \
     if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=full bash "$SD/verify.sh"; fi) > "$OPS/logs/$ID.log" 2>&1; rc=$?   # LANE_VERIFY_CMD: test hook
+  if [ "$rc" = 11 ]; then
+    ev environment verify "$BR"; echo "ENV: UI verification blocked; local evidence retained; no proof published"; exit 11
+  fi
   BODY="$(cat "$WT/.build/proof/summary.md")"$'\n\n'"$(publish_proof "$WT" "$ID" 2>>"$OPS/logs/$ID.log")"
   gh_write pr comment "$BR" -R "$SLUG_REPO" --body "Mac proof ($HOST):"$'\n'"$BODY" && ev pr verify "$BR"
   [ $rc = 0 ] || ev failed verify "$BR"; exit $rc
@@ -74,7 +77,7 @@ Rules: work only in this worktree. Never search or list outside it (no ls, find 
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests; a behaviour change
-needs a test change (or a 'No-test-reason: ...' line in the commit). Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $START..HEAD' (this run's start commit $START; plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for $((IDLE_S / 60)) minutes is stopped. Never open a browser, a browser profile or any Grok Bot session. If you cannot make verify.sh pass, say why and stop."; }
+needs a test change (or a 'No-test-reason: ...' line in the commit). Never script System Events using osascript, AppleScript, or accessibility automation from a shell. Never click, answer, dismiss, or request a system permission prompt; leave it for a person. If verification reports a blocked UI environment, stop without retrying. Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $START..HEAD' (this run's start commit $START; plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for $((IDLE_S / 60)) minutes is stopped. Never open a browser, a browser profile or any Grok Bot session. If you cannot make verify.sh pass, say why and stop."; }
 run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer name.
   cfg usable "$1" || { echo "refusing: lane $1 not usable" >>"$3"; return 95; }   # belt and braces
   unset CURSOR_API_KEY   # never inherit the main account key into any agent child
@@ -182,6 +185,7 @@ free_lane() {  # $1 lane now free; non-blocking
     "$SD/lanelib.sh" "$OPS/dispatch-chain.lock" "$1" "$SLUG" "${LANE_CHAIN_DEBOUNCE_S:-3}" "$LANE_GUARD" --dispatch $fl >> "$OPS/logs/dispatch-chain.log" 2>&1 </dev/null &
   echo "$(date '+%F %T') $SLUG: lane $1 free -> dispatch${fl:+ $fl}" >> "$OPS/logs/dispatch-chain.log"; return 0; }
 next_dispatch() { [ -n "$SIGNALED" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (killed by signal: a stop never restarts work; the 600 s tick is the backstop)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
+  [ "$1" = 11 ] && { echo "$(date '+%F %T') $SLUG rc=11: not chaining (UI environment blocked; left for a person)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
   [ "$1" = 10 ] && { echo "$(date '+%F %T') $SLUG rc=10: not chaining (infra: missing toolchain; every card would hit it)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
   fail_guard "$1"
   [ -f "$OPS/PAUSE" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (PAUSE set)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
@@ -323,6 +327,27 @@ stop_agent() { local k; oc_end; kill -TERM -- -"$AP" 2>/dev/null
   kill -KILL -- -"$AP" 2>/dev/null; sleep 0.2
   if pgrep -g "$AP" >/dev/null 2>&1; then echo "warn: agent group $AP still has processes after KILL: $(pgrep -g "$AP" | tr '\n' ' ')" >> "$LOG"; return 1; fi
   echo "agent group $AP stopped (KILL after ${LANE_KILL_WAIT:-10}s)" >> "$LOG"; }
+environment_reason() {
+  python3 - "$WT/.build/proof/environment.json" "${T0:-0}" <<'PY'
+import json, sys
+from pathlib import Path
+try:
+    value = json.loads(Path(sys.argv[1]).read_text())
+    if value.get("class") == "environment" and value.get("time", 0) >= int(sys.argv[2]):
+        print(str(value.get("reason", "UI environment blocked")).replace("\n", " ")[:800])
+except (OSError, ValueError, TypeError):
+    pass
+PY
+}
+hold_environment() {
+  local reason=$1
+  printf '%s\tenvironment\t%s\t%s\t%s\n' "$(date '+%F %T')" "$L" "$reason (task: $SLUG)" "$LOG" >> "$OPS/failures.tsv"
+  echo "$(date '+%F %T') $ID: ENV $reason (lane $L; task held, no retry) log $LOG" >> "$OPS/NEEDS_CODY"
+  [ -n "$TASKF" ] && QW --no-check --dir "$OPS/queue-hold" --name "$ID-environment.task" "$TASKF" >/dev/null
+  ev environment "$L" "$reason"; BU verify "$SLUG" blocked
+  echo "ENV: $reason -> $OPS/NEEDS_CODY"
+  exit 11
+}
 L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   B=$BRANCH; WT="$WTR/$L-$SLUG"; LOG="$OPS/logs/$ID-$L.log"
   TRIED="$TRIED $L"; BL=$(branch_lock_dir "$B")
@@ -369,6 +394,12 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
   # Whatever the outcome, end the session: the agent's group, then anything still running in the worktree
   # (a shared "opencode serve" spawns MCP servers and tools outside our group). A dead attempt must not keep running.
   pgrep -g "$AP" >/dev/null 2>&1 && stop_agent; reap_wt "$WT" "$LOG"; AP=""
+  POLICY_RC=0
+  if [ -f "$SD/ui-guard.py" ]; then
+    python3 "$SD/ui-guard.py" --audit-log "$LOG" --offset "$((LOG0-1))" >> "$LOG" 2>&1; POLICY_RC=$?
+  fi
+  ENV_REASON=$(environment_reason); [ -z "$ENV_REASON" ] || hold_environment "$ENV_REASON"
+  [ "$POLICY_RC" != 11 ] || hold_environment "lane policy: System Events scripting detected in a tool command"
   [ -n "$WDOG" ] && { ev failed "$L" "watchdog: $WDOG"; continue; }
   [ -n "$IDLE" ] && { ev failed "$L" "no commit (fast-fail: idle ${IDLE_S}s)"; continue; }
   if [ $rc -ne 0 ]; then ev failed "$L" "agent rc=$rc"; continue; fi
@@ -380,6 +411,10 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
     git -C "$WT" log --format=%B "$START"..HEAD | out_has '^Size-reason: *[^ ]' || { STOP_CLASS=scope; ev failed "$L" "size $CH > cap, no Size-reason"; continue; }; fi
   [ -n "${LANE_DRY:-}" ] && { ev dry "$L" "checks passed; stopping before verify/push"; echo "DRY-OK $L"; exit 0; }
   (cd "$WT" && if [ -n "${LANE_VERIFY_CMD:-}" ]; then bash -c "$LANE_VERIFY_CMD"; else VERIFY_TARGETS=affected TI_BASE=$BASE VERIFY_SCOPE="$SCOPE" VERIFY_NEEDS="$NEEDS" bash "$SD/verify.sh"; fi) >> "$LOG" 2>&1; VRC=$?   # LANE_VERIFY_CMD: test hook
+  if [ "$VRC" = 11 ]; then
+    ENV_REASON=$(sed -n 's/^verify: ENV //p' "$LOG" | tail -1)
+    hold_environment "${ENV_REASON:-UI environment blocked}"
+  fi
   if [ $VRC = 10 ]; then   # infra error (verify.sh toolchain preflight): not a task failure, no PAUSE count, no failover
     MISS=$(sed -n 's/^verify: INFRA missing toolchain: *//p' "$LOG" | tail -1)
     printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" infra "$L" "missing toolchain: ${MISS:-?} (task: $SLUG)" "$LOG" >> "$OPS/failures.tsv"
