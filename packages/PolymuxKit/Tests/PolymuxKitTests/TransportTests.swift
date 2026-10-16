@@ -163,7 +163,12 @@ private actor GroupProbe {
                 guard online else { throw URLError(.notConnectedToInternet) }
                 try await Task.sleep(for: .milliseconds(80))
             }
-            thread.title = update.title
+            if let title = update.title { thread.title = title }
+            if let pinned = update.pinned {
+                thread.pinned = pinned
+                if !pinned { thread.pinOrder = nil }
+            }
+            if let order = update.pinOrder { thread.pinOrder = order }
             if let members = update.agentIDs {
                 thread.agentIDs = members
                 thread.agentID = members[0]
