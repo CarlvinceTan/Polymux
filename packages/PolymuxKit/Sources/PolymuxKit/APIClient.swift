@@ -232,11 +232,11 @@ public struct APIClient: Sendable {
         return try JSONDecoder().decode(Thread.self, from: data)
     }
 
-    public func updateThread(id: String, title: String, agentIDs: [String]? = nil, leadAgentID: String? = nil) async throws -> Thread {
+    public func updateThread(id: String, title: String? = nil, agentIDs: [String]? = nil, leadAgentID: String? = nil, pinned: Bool? = nil, pinOrder: Double? = nil) async throws -> Thread {
         var request = try request("threads/\(id)")
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(UpdateThreadRequest(leadAgentID: leadAgentID, agentIDs: agentIDs, title: title))
+        request.httpBody = try JSONEncoder().encode(UpdateThreadRequest(leadAgentID: leadAgentID, agentIDs: agentIDs, title: title, pinned: pinned, pinOrder: pinOrder))
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
         return try JSONDecoder().decode(Thread.self, from: data)

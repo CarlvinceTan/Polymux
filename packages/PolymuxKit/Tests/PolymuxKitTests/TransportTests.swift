@@ -305,6 +305,35 @@ private actor SettingsProbe {
     }
 }
 
+private actor PinProbe {
+    var thread = PolymuxKit.Thread(id: "a", agentID: "a", lastReadSeq: 2, lastSeq: 5,
+                                  unreadCount: 3, title: "Current name", agentIDs: ["a"])
+    var updates: [UpdateThreadRequest] = []
+    var applied = 0
+    private var online = false
+
+    func reconnect() { online = true }
+    func remotePin() { thread.pinned = true; thread.pinOrder = 77 }
+
+    func handle(_ request: URLRequest) throws -> (Int, Data) {
+        if request.httpMethod == "GET" {
+            if request.url?.path == "/threads" { return (200, try JSONEncoder().encode([thread])) }
+            return (200, try JSONEncoder().encode([Agent(id: "a", name: "Current name")]))
+        }
+        let update = try JSONDecoder().decode(UpdateThreadRequest.self, from: requestBody(request))
+        updates.append(update)
+        guard online else { throw URLError(.notConnectedToInternet) }
+        if let title = update.title { thread.title = title }
+        if let pinned = update.pinned {
+            thread.pinned = pinned
+            if !pinned { thread.pinOrder = nil }
+        }
+        if let order = update.pinOrder { thread.pinOrder = order }
+        applied += 1
+        return (200, try JSONEncoder().encode(thread))
+    }
+}
+
 @Suite @MainActor
 struct TransportTests {
     @Test func avatarsAreConnectionScopedAndNeverBackfillServerDefaults() async throws {
@@ -1036,6 +1065,99 @@ struct TransportTests {
         #expect(await probe.sends.map(\.id) == [unsent.id])
         #expect(await probe.deliveries == [["a", "c"]])
         #expect(try await cache.offMain { try $0.pending(threadID: initial.id) }.isEmpty)
+        #expect(try await cache.offMain { try $0.threadEdits() }.isEmpty)
+    }
+
+    @Test func pinSurvivesOfflineRelaunchWithoutRenamingTheChat() async throws {
+        let probe = PinProbe()
+        let host = ProbeProtocol.routes.add { try await probe.handle($0) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let api = client(host: host)
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cache = try await CacheWork.open(url)
+        let initial = await probe.thread
+        try await cache.offMain { try $0.save(agents: [Agent(id: "a", name: "Current name")], threads: [initial]) }
+        let sidebar = SidebarStore(client: api, cache: cache)
+        await sidebar.load()
+        await sidebar.setPin("a", pinned: true)
+        try? await sidebar.syncEdit("a")
+        #expect(sidebar.threads.first?.pinned == true)
+        #expect(sidebar.pinIssue != nil)
+        #expect(try await cache.offMain { try $0.pinEdits() } == ["a"])
+
+        let reopened = try await CacheWork.open(url)
+        let relaunched = SidebarStore(client: api, cache: reopened)
+        await relaunched.load()
+        #expect(relaunched.threads.first?.pinned == true)
+        #expect(relaunched.threads.first?.unreadCount == 3)
+        await probe.reconnect()
+        await relaunched.refresh()
+        try await relaunched.syncEdit("a")
+        #expect(await probe.applied == 1)
+        #expect(await probe.updates.allSatisfy { $0.title == nil && $0.agentIDs == nil && $0.leadAgentID == nil })
+        #expect(relaunched.threads.first?.title == initial.title)
+        #expect(relaunched.threads.first?.lastReadSeq == 2)
+        #expect(relaunched.threads.first?.lastSeq == 5)
+        #expect(relaunched.pinIssue == nil)
+        #expect(try await reopened.offMain { try $0.threadEdits() }.isEmpty)
+        #expect(try await reopened.offMain { try $0.pinEdits() }.isEmpty)
+
+        await relaunched.setPin("a", pinned: false)
+        try await relaunched.syncEdit("a")
+        #expect(await probe.applied == 2)
+        #expect(relaunched.threads.first?.pinned == false)
+        #expect(relaunched.threads.first?.pinOrder == nil)
+    }
+
+    @Test(arguments: [false, true]) func renameKeepsRemotePinsAndPersistsExplicitPinChanges(combined: Bool) async throws {
+        let probe = PinProbe()
+        let host = ProbeProtocol.routes.add { try await probe.handle($0) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let api = client(host: host)
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cache = try await CacheWork.open(url)
+        let initial = await probe.thread
+        try await cache.offMain { try $0.save(agents: [Agent(id: "a")], threads: [initial]) }
+        let sidebar = SidebarStore(client: api, cache: cache)
+        await sidebar.load()
+        var renamed = initial
+        renamed.title = "Local rename"
+        await sidebar.edit(renamed, delay: .seconds(10))
+        if combined { await sidebar.setPin("a", pinned: true) }
+        try? await sidebar.syncEdit("a")
+        if combined {
+            #expect(sidebar.pinIssue != nil)
+            #expect(try await cache.offMain { try $0.dirtyPins() } == ["a"])
+        } else { await probe.remotePin() }
+        let reopened = try await CacheWork.open(url)
+        let relaunched = SidebarStore(client: api, cache: reopened)
+        await relaunched.load()
+        await probe.reconnect()
+        try await relaunched.syncEdit("a")
+        let update = try #require(await probe.updates.last)
+        #expect(update.title == "Local rename")
+        #expect(update.pinned == (combined ? true : nil))
+        #expect(update.pinOrder == (combined ? 0 : nil))
+        #expect(relaunched.threads.first?.pinned == true)
+        #expect(relaunched.threads.first?.pinOrder == (combined ? 0 : 77))
+        #expect(relaunched.pinIssue == nil)
+        #expect(try await reopened.offMain { try $0.dirtyPins() }.isEmpty)
+    }
+
+    @Test func pinLimitKeepsTheNextChatUnchanged() async throws {
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cache = try await CacheWork.open(url)
+        let threads = (0..<13).map { PolymuxKit.Thread(id: "chat-\($0)", agentID: "chat-\($0)", pinned: $0 < 12) }
+        try await cache.offMain { try $0.save(agents: [], threads: threads) }
+        let sidebar = SidebarStore(client: client(host: "offline.test"), cache: cache)
+        await sidebar.load()
+        await sidebar.setPin("chat-12", pinned: true)
+        #expect(sidebar.threads.filter { $0.pinned == true }.count == 12)
+        #expect(sidebar.threads.first { $0.id == "chat-12" }?.pinned == false)
+        #expect(sidebar.editIssues["chat-12"] == "You can pin up to 12 chats.")
         #expect(try await cache.offMain { try $0.threadEdits() }.isEmpty)
     }
 

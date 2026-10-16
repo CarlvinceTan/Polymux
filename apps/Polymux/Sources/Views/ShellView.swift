@@ -9,6 +9,7 @@ struct ShellView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var windowID = UUID()
     @State private var visibility = NavigationSplitViewVisibility.all
+    @State private var compactColumn = NavigationSplitViewColumn.sidebar
     @State private var query = ""
     @State private var searching = false
     @State private var columnWidth: CGFloat = 360
@@ -42,14 +43,24 @@ struct ShellView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $visibility) {
+        NavigationSplitView(columnVisibility: $visibility, preferredCompactColumn: $compactColumn) {
             List(selection: $selection) {
-                ForEach(conversations) { thread in
+                if !pinnedChats.isEmpty {
+                    pinGrid
+                }
+                ForEach(listChats) { thread in
                     chatLink(thread)
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                if let notice = session.sidebar.notice {
+                if let issue = session.sidebar.pinIssue {
+                    HStack {
+                        Text(issue).frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Retry") { session.sidebar.retryPins() }
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                } else if let notice = session.sidebar.notice {
                     Text(notice)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -360,6 +371,50 @@ struct ShellView: View {
         }
     }
 
+    private var pinnedChats: [PolymuxKit.Thread] {
+        conversations.filter { $0.pinned == true }.sorted {
+            if $0.pinOrder != $1.pinOrder { return ($0.pinOrder ?? .greatestFiniteMagnitude) < ($1.pinOrder ?? .greatestFiniteMagnitude) }
+            return $0.id < $1.id
+        }
+    }
+
+    private var listChats: [PolymuxKit.Thread] { conversations.filter { $0.pinned != true } }
+    private var canPin: Bool { session.sidebar.threads.filter { $0.pinned == true }.count < 12 }
+
+    private func togglePin(_ thread: PolymuxKit.Thread) {
+        Task { await session.sidebar.setPin(thread.id, pinned: thread.pinned != true) }
+    }
+
+    private var pinGrid: some View {
+        #if os(macOS)
+        let width = max(1, min(3, Int((sidebarWidth - 32) / 95)))
+        #else
+        let width = max(1, min(3, Int((Double(columnWidth) - 32) / 95)))
+        #endif
+        return LazyVGrid(columns: Array(repeating: GridItem(.fixed(95), spacing: 8), count: width), spacing: 8) {
+            ForEach(pinnedChats) { thread in
+                PinnedChat(thread: thread, members: participants(thread), title: title(thread),
+                           selected: selection == thread.id, activity: session.sidebar.activity,
+                           connected: session.sidebar.isConnected) {
+                    selection = thread.id
+                    compactColumn = .detail
+                }
+                    .contextMenu {
+                        Button("Unpin", systemImage: "pin.slash") { togglePin(thread) }
+                        Button(thread.isGroup ? "Edit chat" : "Edit profile", systemImage: "pencil") { edit(thread) }
+                    }
+                    .accessibilityAction(named: "Unpin") { togglePin(thread) }
+                    .accessibilityIdentifier("sidebar.pin.\(thread.id)")
+            }
+        }
+        .padding(.vertical, 8)
+        .selectionDisabled()
+        .accessibilityElement(children: .contain)
+        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+        .listRowBackground(sidebarSurface)
+        .listRowSeparator(.hidden)
+    }
+
     private var filterMenu: some View {
         Menu {
             Picker("Show", selection: $filter) {
@@ -393,16 +448,21 @@ struct ShellView: View {
         .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
         .overlay {
             if thread.isGroup {
-                RowMenu(profile: { grouping = thread }, title: "Edit chat")
+                RowMenu(profile: { grouping = thread }, pin: { togglePin(thread) },
+                        pinned: thread.pinned == true, canPin: canPin, title: "Edit chat")
                     .accessibilityHidden(true)
             } else if let agent = participants(thread).first {
                 RowMenu(profile: { profiling = AvatarContact(agent: agent) },
                         avatar: { editing = AvatarContact(agent: agent) },
-                        delete: { requestDelete(agent) })
+                        delete: { requestDelete(agent) }, pin: { togglePin(thread) },
+                        pinned: thread.pinned == true, canPin: canPin)
                     .accessibilityHidden(true)
             }
         }
         .accessibilityActions {
+            if thread.pinned == true || canPin {
+                Button(thread.pinned == true ? "Unpin" : "Pin") { togglePin(thread) }
+            }
             Button(thread.isGroup ? "Edit chat" : "Edit profile") { edit(thread) }
             if !thread.isGroup, let agent = participants(thread).first {
                 Button("Customise avatar") { editing = AvatarContact(agent: agent) }
@@ -411,9 +471,12 @@ struct ShellView: View {
         }
         #else
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-        .listRowSeparator(thread.id == conversations.first?.id ? .hidden : .automatic, edges: .top)
-        .listRowSeparator(thread.id == conversations.last?.id ? .hidden : .automatic, edges: .bottom)
+        .listRowSeparator(thread.id == listChats.first?.id ? .hidden : .automatic, edges: .top)
+        .listRowSeparator(thread.id == listChats.last?.id ? .hidden : .automatic, edges: .bottom)
         .contextMenu {
+            Button(thread.pinned == true ? "Unpin" : "Pin", systemImage: thread.pinned == true ? "pin.slash" : "pin") { togglePin(thread) }
+                .disabled(thread.pinned != true && !canPin)
+            Divider()
             if thread.isGroup {
                 Button("Edit chat", systemImage: "pencil") { grouping = thread }
             } else if let agent = participants(thread).first {
@@ -452,6 +515,48 @@ struct ShellView: View {
             await session.sidebar.refresh()
             if !session.sidebar.threads.contains(where: { $0.id == selection }) { selection = conversations.first?.id }
         } catch { deleteError = error.localizedDescription }
+    }
+}
+
+private struct PinnedChat: View {
+    let thread: PolymuxKit.Thread
+    let members: [Agent]
+    let title: String
+    let selected: Bool
+    let activity: ActivityStore
+    let connected: Bool
+    let select: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: select) {
+            VStack(spacing: 4) {
+                if thread.isGroup {
+                    AvatarStack(members: members, conversationID: thread.id, runs: thread.runs,
+                                activity: activity, connected: connected).frame(width: 52, height: 52)
+                } else if let agent = members.first {
+                    AgentAvatar(agentID: agent.id, conversationID: thread.id, runs: thread.runs,
+                                activity: activity, connected: connected, unread: thread.unreadCount > 0)
+                        .frame(width: 52, height: 52)
+                }
+                Text(title).font(.caption).foregroundStyle(.primary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 92)
+            .background(Color.primary.opacity(selected ? 0.11 : hovered ? 0.06 : 0.03), in: RoundedRectangle(cornerRadius: 12))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(alignment: .topTrailing) {
+                if thread.unreadCount > 0 {
+                    Circle().fill(Color("AccentColor")).frame(width: 7, height: 7)
+                        .padding(8).accessibilityHidden(true)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .accessibilityLabel(title)
+        .accessibilityValue(thread.unreadCount > 0 ? "Pinned, unread" : "Pinned")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

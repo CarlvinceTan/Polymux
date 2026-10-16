@@ -178,7 +178,15 @@ public final class LocalCache: @unchecked Sendable {
         }
     }
     public func threadEdits() throws -> [Thread] { try metadata("threadEdits") ?? [] }
-    public func saveEdits(_ threads: [Thread]) throws { try setMetadata("threadEdits", value: threads) }
+    public func dirtyPins() throws -> [String] { try metadata("dirtyPins") ?? [] }
+    public func pinEdits() throws -> [String] { try metadata("pinEdits") ?? [] }
+    public func saveEdits(_ threads: [Thread], pins: [String]? = nil, dirtyPins: [String]? = nil) throws {
+        try transaction {
+            try setMetadata("threadEdits", value: threads)
+            if let pins { try setMetadata("pinEdits", value: pins) }
+            if let dirtyPins { try setMetadata("dirtyPins", value: dirtyPins) }
+        }
+    }
 
     public func save(agents: [Agent], threads: [Thread], pins: [String]? = nil) throws {
         try transaction {

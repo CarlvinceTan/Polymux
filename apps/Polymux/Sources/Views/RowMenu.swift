@@ -6,6 +6,9 @@ struct RowMenu: NSViewRepresentable {
     let profile: () -> Void
     var avatar: (() -> Void)? = nil
     var delete: (() -> Void)? = nil
+    var pin: (() -> Void)? = nil
+    var pinned = false
+    var canPin = true
     var title = "Edit profile"
 
     func makeNSView(context: Context) -> MenuAnchor {
@@ -18,6 +21,9 @@ struct RowMenu: NSViewRepresentable {
         view.profile = profile
         view.avatar = avatar
         view.delete = delete
+        view.pin = pin
+        view.pinned = pinned
+        view.canPin = canPin
         view.title = title
         view.enabled = context.environment.isEnabled
         view.attach()
@@ -30,6 +36,9 @@ final class MenuAnchor: NSView {
     var profile: (() -> Void)?
     var avatar: (() -> Void)?
     var delete: (() -> Void)?
+    var pin: (() -> Void)?
+    var pinned = false
+    var canPin = true
     var title = "Edit profile"
     var enabled = true
     private var keyboardMenu: TableMenu?
@@ -86,6 +95,12 @@ final class MenuAnchor: NSView {
     func populate(_ menu: NSMenu) {
         menu.removeAllItems()
         menu.autoenablesItems = false
+        if pin != nil {
+            let item = add(pinned ? "Unpin" : "Pin", symbol: pinned ? "pin.slash" : "pin",
+                           action: #selector(togglePin), to: menu)
+            item.isEnabled = enabled && (pinned || canPin)
+            menu.addItem(.separator())
+        }
         add(title, symbol: "pencil", action: #selector(editProfile), to: menu)
         if avatar != nil { add("Customise avatar", symbol: "face.smiling", action: #selector(editAvatar), to: menu) }
         if delete != nil {
@@ -111,6 +126,7 @@ final class MenuAnchor: NSView {
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
 
+    @objc private func togglePin() { pin?() }
     @objc private func editProfile() { profile?() }
     @objc private func editAvatar() { avatar?() }
     @objc private func deleteAgent() { delete?() }

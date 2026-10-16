@@ -27,6 +27,7 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
                                  agentIDs: members)
     }
     private static let answers = Answers()
+    private static let sidebar = Sidebar()
 
     static func failAnswers() { answers.fail() }
 
@@ -38,6 +39,14 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        if request.httpMethod == "PATCH", request.url?.path.contains("/threads/") == true {
+            if CommandLine.arguments.contains("--verify-pin-offline") { fail(); return }
+            do {
+                let data = try Self.sidebar.patch(request)
+                reply(data)
+            } catch { client?.urlProtocol(self, didFailWithError: error) }
+            return
+        }
         if request.url?.lastPathComponent == "answer" {
             Self.answers.add(self)
             return
@@ -46,21 +55,65 @@ final class VerifyFixture: URLProtocol, @unchecked Sendable {
             let data: Data
             switch request.url?.lastPathComponent {
             case "agents": data = try JSONEncoder().encode(Self.agents)
-            case "threads": data = try JSONEncoder().encode(Self.threads)
-            case "settings": data = try JSONEncoder().encode(Settings(appearance: "system", sidebarWidth: 360))
+            case "threads": data = try JSONEncoder().encode(Self.sidebar.threads)
+            case "settings": data = try JSONEncoder().encode(Settings(appearance: CommandLine.arguments.contains("--verify-dark") ? "dark" : "light", sidebarWidth: 360))
             default: data = Data("{}".utf8)
             }
-            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
-                                           headerFields: ["Content-Type": "application/json"])!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
+            reply(data)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
+    private func reply(_ data: Data) {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
     override func stopLoading() { Self.answers.remove(self) }
 
     private func fail() {
         client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+
+    private final class Sidebar: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values = VerifyFixture.threads.map { thread in
+            var thread = thread
+            if CommandLine.arguments.contains("--verify-pins"), ["t-chief", "t-aria"].contains(thread.id) {
+                thread.pinned = true
+                thread.pinOrder = thread.id == "t-chief" ? 0 : 1
+                thread.unreadCount = thread.id == "t-aria" ? 3 : 0
+            }
+            return thread
+        }
+
+        var threads: [PolymuxKit.Thread] { lock.withLock { values } }
+
+        func patch(_ request: URLRequest) throws -> Data {
+            var body = request.httpBody ?? Data()
+            if let stream = request.httpBodyStream {
+                stream.open()
+                defer { stream.close() }
+                var bytes = [UInt8](repeating: 0, count: 1024)
+                while stream.hasBytesAvailable {
+                    let count = stream.read(&bytes, maxLength: bytes.count)
+                    guard count > 0 else { break }
+                    body.append(contentsOf: bytes.prefix(count))
+                }
+            }
+            let patch = try JSONDecoder().decode(UpdateThreadRequest.self, from: body)
+            return try lock.withLock {
+                guard let index = values.firstIndex(where: { $0.id == request.url?.lastPathComponent }) else {
+                    throw URLError(.resourceUnavailable)
+                }
+                if let pinned = patch.pinned {
+                    values[index].pinned = pinned
+                    values[index].pinOrder = pinned ? patch.pinOrder : nil
+                }
+                return try JSONEncoder().encode(values[index])
+            }
+        }
     }
 
     private final class Answers: @unchecked Sendable {
