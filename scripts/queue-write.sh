@@ -13,6 +13,7 @@
 #                                    when only header lines (needs:, branch:, ...) come before it
 #   queue-write.sh --mv SRC DEST     locked rename (DEST may be a directory)
 #   queue-write.sh --rm FILE...      locked delete
+#   queue-write.sh --supersede QUEUED HELD   archive an older held retry of the same task
 # A valid brief: line 1 is "# <title>"; it has "needs: <x>" and "expected_min: <minutes>"; no
 # "branch:" line above the title; "after:" refs are pr:<N> or branch-on-main:<branch> (or "none");
 # a "pr:" line is <N>, #<N> or a github.com/.../pull/<N> URL; optional "type:" is one of
@@ -86,6 +87,17 @@ move() { [ -e "$1" ] || die "$1 is gone (moved by someone else?)" 5
   case $(basename "$(dirname "$1")"):$(basename "$(dirname "$t")") in queue-hold:queue) touch "$1" || return 1;; esac
   mv -f "$1" "$t" && echo "$t"; }
 remove() { local f rc=0; for f in "$@"; do [ -e "$f" ] || { echo "queue-write: $f is gone" >&2; rc=5; continue; }; rm -f "$f"; done; return $rc; }
+supersede() {
+  local queued=$1 held=$2 title old archive headers='^(unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|agent|queue-note|release):'
+  [ -f "$queued" ] && [ -f "$held" ] || return 0
+  title=$(awk -v h="$headers" 'NF && tolower($0)!~h{print;exit}' "$queued")
+  old=$(awk -v h="$headers" 'NF && tolower($0)!~h{print;exit}' "$held")
+  printf '%s\n' "$old" | grep -qE ' \(attempt [0-9]+\)$' || return 0
+  [ "$(printf '%s\n' "$title" | sed -E 's/ \(attempt [0-9]+\)$//')" = "$(printf '%s\n' "$old" | sed -E 's/ \(attempt [0-9]+\)$//')" ] && [ "$queued" -nt "$held" ] || return 0
+  mkdir -p "$OPS/queue-hold/superseded" || return 1
+  archive=$(mktemp -d "$OPS/queue-hold/superseded/attempt.XXXXXX") || return 1
+  move "$held" "$archive/" || { rmdir "$archive"; return 1; }
+}
 fix_one() {  # move the title to the top when only header/blank lines precede it
   local f=$1 t tmp; validate "$f" "$f" >/dev/null && { echo "ok: $f"; return 0; }
   t=$(awk '/^# [^ ]/{print NR; exit}' "$f")
@@ -100,7 +112,7 @@ fix() { local f rc=0; for f in "$@"; do fix_one "$f" || rc=2; done; return $rc; 
 DIR=$Q; NAME=""; FORCE=""; NOCHECK=""; MODE=write
 while [ $# -gt 0 ]; do case $1 in
   --dir) DIR=$2; shift 2;; --name) NAME=$2; shift 2;; --force) FORCE=1; shift;; --no-check) NOCHECK=1; shift;;
-  --check|--fix|--mv|--rm) MODE=${1#--}; shift; break;;
+  --check|--fix|--mv|--rm|--supersede) MODE=${1#--}; shift; break;;
   -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
   --) shift; break;; -) break;; -*) die "unknown option $1 (see --help)";; *) break;; esac; done
 case $MODE in
@@ -109,6 +121,7 @@ case $MODE in
   fix) [ $# -gt 0 ] || die "--fix needs a file"; locked fix "$@"; exit;;
   mv) [ $# = 2 ] || die "--mv SRC DEST"; locked move "$1" "$2"; exit;;
   rm) [ $# -gt 0 ] || die "--rm needs a file"; locked remove "$@"; exit;;
+  supersede) [ $# = 2 ] || die "--supersede QUEUED HELD"; locked supersede "$1" "$2"; exit;;
 esac
 [ $# -le 1 ] || die "one brief at a time"
 SRC=${1:--}; IN=$(mktemp) || exit 1; trap 'rm -f "$IN"' EXIT

@@ -41,6 +41,19 @@ deferred_hit(){ # $1 base title, $2 task id: print the $O/deferred/*.task (parke
 QWH=${QUEUE_WRITE:-$LANES_REPO/scripts/queue-write.sh}
 . "$LANES_REPO/scripts/lanelib.sh"
 qmv(){ if [ -f "$QWH" ]; then bash "$QWH" --force --mv "$1" "$2" >/dev/null; else mv "$1" "$2"; fi; }
+task_title(){ awk 'NF && tolower($0)!~/^(unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|agent|queue-note|release):/{print;exit}' "$1"; }
+supersede_holds(){
+  local f h archive
+  for f in "$Q"/*.task; do [ -f "$f" ] || continue
+    for h in "$O"/queue-hold/*.task; do [ -f "$h" ] || continue
+      [ -f "$QWH" ] || return 1
+      archive=$(bash "$QWH" --supersede "$f" "$h") || return 1
+      [ -n "$archive" ] || continue
+      printf '%s\t%s\tsuperseded\t%s\t%s\n' "$(date '+%F %T')" "$(basename "$h" .task)" "$(basename "$f" .task)" "$archive" >> "$O/events.tsv"
+      log "dispatch: superseded held $(basename "$h") with queued $(basename "$f"); kept in $archive"
+    done
+  done
+}
 # Briefs with no "needs:" line get a default inserted (logged) and are dispatched, instead of being refused by run-lane.
 # Polymux brief mentioning macOS/iOS/Swift/SwiftUI/Xcode, or touching apps/ios|apps/macos -> xcode,swift; else from paths
 # (apps/server -> go); Polymux fallback xcode,swift (other repos: none). Written via queue-write.sh, else temp + mv; mtime kept.
@@ -124,10 +137,11 @@ case $1 in
   storm && { log "dispatch: STORM: $SN+ units refused in a row within ${SW}s ($(cut -f2,3 "$RF" | tail -3 | tr '\t\n' ': ')); not dispatching until it clears (600 s tick)"; exit 0; }
   shift; LN=""; FREE=""; while [ $# -gt 0 ]; do case $1 in --free-lane) FREE=${2:-}; shift; shift;; *) LN=$1; shift;; esac; done
   DC=$(mktemp); FETCHED=""; trap fin EXIT
+  supersede_holds || { log "dispatch: could not archive a superseded hold; not dispatching"; exit 1; }
   holds
   RLB=${RUN_LANE:-$LANES_REPO/scripts/run-lane.sh}; RCK=""; grep -q -- '--check' "$RLB" 2>/dev/null && RCK=1   # run-lane's own refusal rules, side-effect free
   RCF=$ST/refused-cards   # "<epoch> <id>": a card whose child run-lane refused is skipped for SW s
-  held_titles=$(for h in "$O"/queue-hold/*.task; do [ -f "$h" ] && grep -vE '^(unit|needs|scope|expected_min|branch|after|card):' "$h" | head -1 | sed -E 's/ \(attempt [0-9]+\)$//'; done)
+  held_titles=$(for h in "$O"/queue-hold/*.task; do [ -f "$h" ] && task_title "$h" | sed -E 's/ \(attempt [0-9]+\)$//'; done)
   busy=$(for l in $(python3 "$LANES_REPO/scripts/lanes.py" order 2>/dev/null); do [ "$(lane_count "$l")" -ge "$(maxc "$l")" ] && echo "$l"; done | sort -u)   # busy only at max_concurrent; same count as --preflight
   ORD=$(python3 "$LANES_REPO/scripts/lanes.py" order 2>/dev/null); ORD=${ORD:-lane1}; last=$(cat "$ST/last-lane" 2>/dev/null)
   rot=$(echo $ORD | tr ' ' '\n' | awk -v l="$last" '{a[NR]=$0; if($0==l)k=NR} END{for(n=1;n<=NR;n++) print a[(k+n-1)%NR+1]}')
@@ -140,7 +154,7 @@ case $1 in
       [ "$(lane_count "$l")" -lt "$(maxc "$l")" ] && { LN=$l; return 0; }; done; LN=""; return 1; }
   if [ -z "$LN" ]; then for l in $rot; do echo "$busy" | grep -qxF "$l" || { LN=$l; break; }; done; fi
   [ -n "$LN" ] || { log "dispatch: all lanes busy"; exit 0; }
-  for f in "$Q"/*.task; do [ -f "$f" ] || continue; id=$(basename "$f" .task); t=$(grep -vE '^(unit|needs|scope|expected_min|branch|after):' "$f" | head -1)
+  for f in "$Q"/*.task; do [ -f "$f" ] || continue; id=$(basename "$f" .task); t=$(task_title "$f")
     b=$(echo "$t" | sed -E 's/ \(attempt [0-9]+\)$//'); C=$(for x in "$b" "$t"; do echo "$(slug "$x") $(slugo "$x")"; done; echo "$(strip "${id#*-}")"); C=$(echo $C | tr ' ' '\n' | sort -u | tr '\n' ' '); m=$(date -r "$f" '+%Y%m%d%H%M%S')
     # Cleanup events belong to the finished attempt, even when the retry has the same timestamp.
     why=$(evm "$O/events.tsv" 2>/dev/null | awk -F'\t' -v m="$m" '{
