@@ -30,8 +30,8 @@
   const requestedVersion = parts[0] === 'releases' && parts[1] ? decodeURIComponent(parts[1]) : null;
   const release = requestedVersion ? getRelease(requestedVersion) : releases[0];
   const githubReleaseUrl = release
-    ? `https://github.com/CarlvinceTan/Polymux/releases/tag/v${encodeURIComponent(release.version)}`
-    : 'https://github.com/CarlvinceTan/Polymux/releases/latest';
+    ? `https://github.com/CarlvinceTan/polymux/releases/tag/v${encodeURIComponent(release.version)}`
+    : 'https://github.com/CarlvinceTan/polymux/releases/latest';
   const isLatest = release ? release.version === releases[0]?.version : false;
   const installLabels: Record<SupportedPlatform, string> = {
     macos: 'Apple silicon',
@@ -143,7 +143,7 @@
       </nav>
     </div>
     <div class="site-shell-actions">
-      <a class="site-shell-github" href="https://github.com/CarlvinceTan/Polymux" aria-label="Polymux on GitHub">
+      <a class="site-shell-github" href="https://github.com/CarlvinceTan/polymux" aria-label="Polymux on GitHub">
         <img src={github} alt="" />
       </a>
       <a class="site-shell-download" href="/#download">Download</a>

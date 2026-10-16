@@ -6,12 +6,17 @@ import Darwin
 public struct APIClient: Sendable {
     public let baseURL: URL
     private let session: URLSession
-    let token: String?
+    private let credential: Task<String?, Never>
+    var token: String? { get async { await credential.value } }
 
     public init(baseURL: URL, session: URLSession = .shared, token: String? = nil) {
+        self.init(baseURL: baseURL, session: session, token: token, discover: Self.discoverToken)
+    }
+
+    init(baseURL: URL, session: URLSession, token: String?, discover: @escaping @Sendable (URL) -> String?) {
         self.baseURL = baseURL
         self.session = session
-        self.token = token ?? Self.localToken(baseURL)
+        credential = Task.detached { token ?? discover(baseURL) }
     }
 
     public func resolve(_ path: String) -> URL? {
@@ -27,7 +32,7 @@ public struct APIClient: Sendable {
     }
 
     public func registerPush(_ device: PushDevice) async throws -> PushStatus {
-        var request = try request("notifications/device")
+        var request = try await request("notifications/device")
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(device)
@@ -61,7 +66,7 @@ public struct APIClient: Sendable {
     }
 
     public func updateSettings(_ patch: SettingsPatch) async throws -> Settings {
-        var request = try request("settings")
+        var request = try await request("settings")
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(patch)
@@ -72,7 +77,7 @@ public struct APIClient: Sendable {
 
     public func speechKey(provider: String, key: String?) async throws -> Settings {
         guard provider == "gemini" else { throw ClientError.invalidURL }
-        var request = try request("settings/keys/\(provider)")
+        var request = try await request("settings/keys/\(provider)")
         request.httpMethod = key == nil ? "DELETE" : "PUT"
         if let key {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -84,7 +89,7 @@ public struct APIClient: Sendable {
     }
 
     func speechText(_ body: Data) async throws -> Data {
-        var request = try request("speech/text")
+        var request = try await request("speech/text")
         request.httpMethod = "POST"
         request.timeoutInterval = 50
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -105,7 +110,7 @@ public struct APIClient: Sendable {
     }
 
     public func createAgent(_ contact: CreateAgentRequest) async throws -> Agent {
-        var request = try request("agents")
+        var request = try await request("agents")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(contact)
@@ -120,7 +125,7 @@ public struct APIClient: Sendable {
 
     @discardableResult
     public func deleteAgent(id: String) async throws -> DeleteResponse {
-        var request = try request("agents/\(id)")
+        var request = try await request("agents/\(id)")
         request.httpMethod = "DELETE"
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
@@ -128,7 +133,7 @@ public struct APIClient: Sendable {
     }
 
     public func updateAgent(id: String, request update: UpdateAgentRequest) async throws -> AgentProfile {
-        var request = try request("agents/\(id)")
+        var request = try await request("agents/\(id)")
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(update)
@@ -138,7 +143,7 @@ public struct APIClient: Sendable {
     }
 
     public func updateAvatar(id: String, request design: AvatarDesign) async throws -> Agent {
-        var request = try request("agents/\(id)/avatar")
+        var request = try await request("agents/\(id)/avatar")
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(design)
@@ -156,7 +161,7 @@ public struct APIClient: Sendable {
     }
 
     public func createRoutine(agentID: String, schedule: RoutineRequest) async throws -> Routine {
-        var request = try request("agents/\(agentID)/routines")
+        var request = try await request("agents/\(agentID)/routines")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(schedule)
@@ -166,7 +171,7 @@ public struct APIClient: Sendable {
     }
 
     public func cancelRoutine(agentID: String, id: String) async throws {
-        var request = try request("agents/\(agentID)/routines/\(id)")
+        var request = try await request("agents/\(agentID)/routines/\(id)")
         request.httpMethod = "DELETE"
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
@@ -178,7 +183,7 @@ public struct APIClient: Sendable {
 
     /// Cancels a routine the agent created. Cheap to redo, so it applies immediately.
     public func deleteRoutine(agentID: String, routineID: String) async throws -> DeleteResponse {
-        var request = try request("agents/\(agentID)/routines/\(routineID)")
+        var request = try await request("agents/\(agentID)/routines/\(routineID)")
         request.httpMethod = "DELETE"
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
@@ -195,7 +200,7 @@ public struct APIClient: Sendable {
     }
 
     private func post<Value: Decodable>(_ path: String) async throws -> Value {
-        var request = try request(path)
+        var request = try await request(path)
         request.httpMethod = "POST"
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
@@ -203,7 +208,7 @@ public struct APIClient: Sendable {
     }
 
     private func post<Body: Encodable, Value: Decodable>(_ path: String, _ body: Body) async throws -> Value {
-        var request = try request(path)
+        var request = try await request(path)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
@@ -213,7 +218,7 @@ public struct APIClient: Sendable {
     }
 
     public func setProactivity(agentID: String, settings: Proactivity) async throws -> Proactivity {
-        var request = try request("agents/\(agentID)/proactivity")
+        var request = try await request("agents/\(agentID)/proactivity")
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(settings)
@@ -223,7 +228,7 @@ public struct APIClient: Sendable {
     }
 
     public func createThread(agentIDs: [String], title: String? = nil, leadAgentID: String? = nil) async throws -> Thread {
-        var request = try request("threads")
+        var request = try await request("threads")
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(CreateThreadRequest(leadAgentID: leadAgentID, agentIDs: agentIDs, title: title))
@@ -233,7 +238,7 @@ public struct APIClient: Sendable {
     }
 
     public func updateThread(id: String, title: String, agentIDs: [String]? = nil, leadAgentID: String? = nil) async throws -> Thread {
-        var request = try request("threads/\(id)")
+        var request = try await request("threads/\(id)")
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(UpdateThreadRequest(leadAgentID: leadAgentID, agentIDs: agentIDs, title: title))
@@ -257,7 +262,7 @@ public struct APIClient: Sendable {
     }
 
     public func voiceTask(threadID: String, request task: VoiceRequest) async throws -> VoiceResponse {
-        var request = try request("threads/\(threadID)/voice")
+        var request = try await request("threads/\(threadID)/voice")
         request.httpMethod = "POST"
         request.timeoutInterval = 10 * 60
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -287,7 +292,7 @@ public struct APIClient: Sendable {
         var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(name)\"\r\nContent-Type: application/octet-stream\r\n\r\n".utf8)
         body.append(data)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
-        var request = try request("attachments")
+        var request = try await request("attachments")
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let (response, metadata) = try await session.upload(for: request, from: body)
@@ -299,7 +304,7 @@ public struct APIClient: Sendable {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    var request = try request("threads/\(threadID)/stream", query: [URLQueryItem(name: "after", value: String(after))])
+                    var request = try await request("threads/\(threadID)/stream", query: [URLQueryItem(name: "after", value: String(after))])
                     request.timeoutInterval = 60 * 60
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     let (bytes, response) = try await session.bytes(for: request)
@@ -324,7 +329,7 @@ public struct APIClient: Sendable {
     }
 
     private func post<T: Encodable>(_ path: String, body: T, query: [URLQueryItem] = []) async throws {
-        var request = try request(path, query: query)
+        var request = try await request(path, query: query)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
@@ -332,7 +337,7 @@ public struct APIClient: Sendable {
         try validate(response, data: data)
     }
 
-    private func request(_ path: String, query: [URLQueryItem] = []) throws -> URLRequest {
+    private func request(_ path: String, query: [URLQueryItem] = []) async throws -> URLRequest {
         var parts = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
         if !query.isEmpty { parts?.queryItems = query }
         guard let url = parts?.url else { throw ClientError.invalidURL }
@@ -340,21 +345,29 @@ public struct APIClient: Sendable {
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("polymux-kit", forHTTPHeaderField: "X-Polymux-Client")
-        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let token = await credential.value { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        try Task.checkCancellation()
         return request
     }
 
-    public static func localToken(_ url: URL) -> String? {
+    public static func localToken(_ url: URL) async -> String? {
+        await Task.detached { discoverToken(url) }.value
+    }
+
+    private static func discoverToken(_ url: URL) -> String? {
         #if os(macOS)
-        let host = url.host?.lowercased() ?? ""
-        let local = ProcessInfo.processInfo.hostName.lowercased().components(separatedBy: ".")[0]
-        guard ["localhost", "127.0.0.1", "::1", local, "\(local).local"].contains(host)
-                || (host.hasSuffix(".ts.net") && !Set(Host(name: host).addresses).isDisjoint(with: localAddresses())) else { return nil }
         let directory = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"].map {
             URL(fileURLWithPath: $0, isDirectory: true)
         } ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Polymux/server")
-        return try? String(contentsOf: directory.appendingPathComponent("devices/local-token"), encoding: .utf8)
+        guard let token = try? String(contentsOf: directory.appendingPathComponent("devices/local-token"), encoding: .utf8) else { return nil }
+        let host = url.host?.lowercased() ?? ""
+        var name = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        guard gethostname(&name, name.count) == 0 else { return nil }
+        let local = String(cString: name).lowercased().components(separatedBy: ".")[0]
+        guard ["localhost", "127.0.0.1", "::1", local, "\(local).local"].contains(host)
+                || (host.hasSuffix(".ts.net") && !Set(Host(name: host).addresses).isDisjoint(with: localAddresses())) else { return nil }
+        return token
         #else
         return nil
         #endif

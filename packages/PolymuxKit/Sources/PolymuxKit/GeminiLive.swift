@@ -3,7 +3,7 @@ import Foundation
 @MainActor
 public final class GeminiLive: LiveProvider {
     public let inputRate = 16_000
-    private let makeSocket: (String) throws -> any LiveSocket
+    private let makeSocket: (String) async throws -> any LiveSocket
     private let requiresKey: Bool
     private var socket: (any LiveSocket)?
     private var reader: Task<Void, Never>?
@@ -23,10 +23,10 @@ public final class GeminiLive: LiveProvider {
     }
 
     public convenience init(client: APIClient) {
-        self.init(requiresKey: false) { _ in LiveWebSocket(url: try client.speechSocket(), token: client.token) }
+        self.init(requiresKey: false) { _ in LiveWebSocket(url: try client.speechSocket(), token: await client.token) }
     }
 
-    init(requiresKey: Bool = true, makeSocket: @escaping (String) throws -> any LiveSocket) {
+    init(requiresKey: Bool = true, makeSocket: @escaping (String) async throws -> any LiveSocket) {
         self.requiresKey = requiresKey
         self.makeSocket = makeSocket
     }
@@ -37,7 +37,8 @@ public final class GeminiLive: LiveProvider {
         let setup = try Self.setup(options)
         let current = UUID()
         token = current
-        let socket = try makeSocket(key)
+        let socket = try await makeSocket(key)
+        guard token == current, !Task.isCancelled else { socket.close(); throw CancellationError() }
         self.socket = socket
         let timeout = Task {
             try? await Task.sleep(for: .seconds(20))

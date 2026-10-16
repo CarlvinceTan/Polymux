@@ -52,7 +52,7 @@ TASKF=""; if [ -f "$TASK" ]; then TASKF=$TASK  # task file: "issue: N" (GitHub i
   SCOPE=$(sed -n 's/^scope: *//p' "$TASK" | head -1)
   BRANCH=$(sed -n 's/^branch: *//p' "$TASK" | head -1)
   WANT_AGENT=$(sed -n 's/^agent: *//p' "$TASK" | head -1 | tr -d ' ')   # watchdog retry: run only on this agent (codex|opencode|cursor)
-  TASK=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|type|area|agent):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
+  TASK=$(grep -viE '^(unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|agent):' "$TASK"); EXP=${EXP:-60}   # branch:/after: are headers too (a branch: above the title used to become the title)
 fi
 # GitHub labels for the PR (type:/area: headers, else inferred; see brief_labels in lanelib.sh)
 LBF=${TASKF:-$(mktemp)}; [ -n "$TASKF" ] || printf '%s\n' "$TASK" > "$LBF"
@@ -68,7 +68,7 @@ QW() { bash "$SD/queue-write.sh" "$@"; }   # every queue/queue-hold write goes t
 TARGET=${LANE_TARGET:-$HOST}   # dispatcher Xcode guard: refuse before any claim/worktree
 while [ $# -gt 0 ]; do case $1 in --branch) BRANCH=$2; shift 2;; --base) BASE=$2; shift 2;; *) shift;; esac; done
 TITLE=$(echo "$TASK" | head -1); SLUG=$(echo "$TITLE" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32 | sed 's/-*$//')   # '# SA1: x' -> sa1-x (no leading '-')
-ID="$(date +%m%d%H%M)-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
+ID="$(date +%m%d%H%M%S)$$-$SLUG"; BRANCH=${BRANCH:-agent/$SLUG}
 prompt() { echo "Task: $TASK
 Rules: work only in this worktree. Never search or list outside it (no ls, find or grep above it; no \$HOME scans). Keep the change small and scoped.${SCOPE:+ Only touch files matching: $SCOPE.} Build and test ONLY via
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
@@ -187,6 +187,7 @@ next_dispatch() { [ -n "$SIGNALED" ] && { echo "$(date '+%F %T') $SLUG rc=$1: no
   [ -f "$OPS/PAUSE" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (PAUSE set)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
   free_lane "$FREED"; }
 refusal() {  # $1 rc: refused before claiming the unit; still refill the lane unless refusals are storming
+  rm -f "${BRIEFF:-}"
   [ -n "$CHECK" ] && return 0
   [ -n "$SIGNALED" ] && { echo "$(date '+%F %T') $SLUG rc=$1: not chaining (killed by signal before the claim; a stop never restarts work)" >> "$OPS/logs/dispatch-chain.log"; return 0; }
   local now n RF="$OPS/refusals.tsv"; now=$(date +%s)
@@ -227,6 +228,9 @@ if [ "$MC" != 0 ]; then
   [ "$(lock_holder "$CAPL")" = $$ ] || { echo "refusing: lane '$LANE' cap mutex busy ($CAPL, pid $(lock_holder "$CAPL"))"; exit 5; }
   N=$(lane_live "$LANE"); [ "$N" -lt "$MC" ] || { lock_drop "$CAPL"; echo "refusing: lane '$LANE' already has $N running (max_concurrent $MC)"; exit 5; }
 fi
+# Dispatch may move the source brief as soon as it sees the unit lock.
+BRIEFF=$(mktemp) || { lock_drop "$CAPL"; exit 1; }
+if [ -n "$TASKF" ]; then cat "$TASKF" > "$BRIEFF"; else printf '%s\n' "$TASK" > "$BRIEFF"; fi || { lock_drop "$CAPL"; exit 1; }
 lock_take "$UL" || { lock_drop "$CAPL" 2>/dev/null; echo "unit '$SLUG' already has a writer (pid $(lock_holder "$UL")); not starting"; exit 3; }
 echo "$LANE" > "$UL/lane"; if [ "$MC" != 0 ]; then lock_drop "$CAPL"; fi
 for k in $(seq 1 50); do lock_take "$OPS/chain-state.lock" && break; sleep 0.1; done
@@ -236,12 +240,13 @@ cleanup_unit() {
   [ -n "$CLEANED" ] && return 0
   CLEANED=1
   [ -n "$OWN_WT" ] && unit_free "$WT" "$SLUG" "$(cfg get lock_dir)" "$LOG"
+  rm -f "${BRIEFF:-}"
   return 0
 }
 trap 'rc=$?; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && [ -n "${AP+x}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; cleanup_unit; lock_drop "$UL"; for b in $BLS; do lock_drop "$b"; done; next_dispatch $rc; exit $rc' EXIT
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 143' TERM
 trap 'SIGNALED=1; [ -n "${AP:-}" ] && stop_agent; [ -n "${WT:-}" ] && reap_wt "$WT" "${LOG:-/dev/null}"; AP=""; exit 130' INT
-BU card "$SLUG" "${TASKF:-/dev/null}"; STARTED=""
+BU card "$SLUG" "$BRIEFF"; STARTED=""
 ev queued "$LANE" "$TITLE (needs=$NEEDS, expected=${EXP}m)"
 git -C "$REPO" fetch -q origin; TRIED=""
 # No in-process failover (it stacked units onto busy lanes): one lane per run. On a first failure the
@@ -387,7 +392,7 @@ L=$LANE; for _once in 1; do   # 'continue' = this attempt failed
     [ -n "$TASKF" ] && QW --no-check --dir "$OPS/queue-hold" --name "$ID-infra.task" "$TASKF" >/dev/null
     ev infra "$L" "missing toolchain: ${MISS:-?}"; BU verify "$SLUG" blocked; echo "INFRA: missing toolchain: ${MISS:-?} -> $OPS/NEEDS_CODY"; exit 10; fi
   [ "$VRC" = 0 ] || { grep -q '^verify: allowed-files FAIL' "$LOG" && STOP_CLASS=scope; }
-  [ -x "$LANE_GUARD" ] && { "$LANE_GUARD" --task-end "$L" "$ID" "$VRC" "$LOG" "$STOP_CLASS" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
+  [ -x "$LANE_GUARD" ] && { "$LANE_GUARD" --task-end "$L" "$ID" "$VRC" "$LOG" "$STOP_CLASS" "$BRIEFF" "$WT" "$B" >> "$LOG" 2>&1 || true; }  # Carl's hook; non-fatal
   [ $VRC = 0 ] || { ev failed "$L" "verify failed"; continue; }
   git -C "$WT" push -q -u origin "$B" >> "$LOG" 2>&1 || { ev failed "$L" "push failed"; continue; }
   BODY="Task: $TITLE"$'\n'"Lane: $L ($(cfg lane "$L" agent)/$(cfg lane "$L" account)), tried:$TRIED"$'\n\n'
@@ -431,13 +436,10 @@ if [ "$AT" -lt 2 ]; then   # first failure: back to the queue for lane-guard to 
     case $f in "$OPS"/deferred/*) echo "$t" | grep -qE ' \(attempt [0-9]+\)$' || continue;; esac   # deferred/: only retries, not the parked brief
     [ "$(base_title "$t")" = "$BT" ] && DUP=$f; done
   DEF=$(deferred_hit "$BT" "$SLUG") && QD="$OPS/deferred"   # deferred by policy: park the retry beside it, never back in queue/
-  if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)-$SLUG-retry.task"
-    QB=$(mktemp); { echo "$BT (attempt 2)"; echo "needs: ${NEEDS:-none}"; echo "expected_min: $EXP"   # title first (queue-write rule)
-      [ -n "$TASKF" ] && grep -iE '^(unit|scope|card|issue|labels|after|type|area):' "$TASKF"; [ "$BRANCH" != "agent/$SLUG" ] && echo "branch: $BRANCH"
-      [ -n "$WDOG" ] && echo "agent: $(wd_alt)"
-      echo "$TASK" | tail -n +2
+  if [ -z "$DUP" ]; then Q="$QD/$(date +%m%d%H%M%S)$$-$SLUG-retry.task"
+    ALT=""; [ -n "$WDOG" ] && ALT=$(wd_alt)
+    QB=$(mktemp); { retry_brief "$BRIEFF" "$BT" "$NEEDS" "$EXP" "$BRANCH" "${WT:-}" "$ALT"
       [ -n "$WDOG" ] && printf '\n## Watchdog (attempt 1 on %s/%s stopped)\n%s. The previous agent looped; take a different approach.\nLast log lines:\n```\n%s\n```\n' "$L" "$(cfg lane "$L" agent)" "$WDOG" "$(tail -n 20 "$LOG" | sed 's/```//g')"; } > "$QB"
-    sleep 1   # file newer than our events (lane-guard drop rule)
     if [ -n "$DEF" ]; then
       if QW --dir "$QD" --name "$(basename "$Q")" "$QB" >/dev/null 2>"$QB.err"; then ev deferred "$L" "failed on $L; unit is deferred ($(basename "$DEF")), retry parked in deferred/ ($Q)"
         echo "$(date '+%F %T') $SLUG: retry parked in deferred/ ($(basename "$Q")), matches $(basename "$DEF")" >> "$OPS/logs/dispatch-chain.log"

@@ -22,7 +22,7 @@
   type ConnectedApp = {id: string; name: string; icon: string};
   type ConnectionGroup = {name: string; detail: string; apps: ConnectedApp[]};
 
-  const githubUrl = 'https://github.com/CarlvinceTan/Polymux';
+  const githubUrl = 'https://github.com/CarlvinceTan/polymux';
   const releaseUrl = `${githubUrl}/releases/latest`;
   const platformCopy: Record<Platform, {action: string; detail: string}> = {
     macos: {action: 'Download', detail: PLATFORM_DETAILS.macos},

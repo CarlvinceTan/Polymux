@@ -38,4 +38,4 @@ Open **System Settings → Privacy & Security**, enable the relevant permission 
 
 ## Still stuck
 
-Check the [GitHub issues](https://github.com/CarlvinceTan/Polymux/issues) for a matching report. When opening a new issue, include the Polymux version, operating system, the affected view or provider, and the exact error text. Remove keys, tokens, personal messages, and other private data first.
+Check the [GitHub issues](https://github.com/CarlvinceTan/polymux/issues) for a matching report. When opening a new issue, include the Polymux version, operating system, the affected view or provider, and the exact error text. Remove keys, tokens, personal messages, and other private data first.

@@ -1,6 +1,6 @@
 import {publishedReleaseVersions} from '../lib/published-release-versions.js';
 
-const REPOSITORY = 'CarlvinceTan/Polymux';
+const REPOSITORY = 'CarlvinceTan/polymux';
 const PUBLISHED_RELEASE_VERSIONS = new Set(publishedReleaseVersions);
 const GITHUB_TIMEOUT_MS = 10_000;
 

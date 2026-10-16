@@ -40,6 +40,7 @@ check "unit + branch locks released" '! ls -d "$LANES_HOME"/units/*.lock "$LANES
 OUT=$(LANE_CHAIN_MIN_S=0 LANE_FORCE_FAIL="laneA laneB" $RL laneA "$(task 'Always fails' t2)" 2>&1); RC=$?
 RQ=$(ls "$LANES_HOME"/queue/*-always-fails-retry.task 2>/dev/null | head -1)
 check "first failure: exit 1, re-queued as attempt 2, laneB not tried, no NEEDS_CODY" '[ $RC = 1 ] && echo "$OUT" | grep -q "REQUEUED after: laneA" && grep -qx "# Always fails (attempt 2)" "$RQ" && [ "$(head -1 "$RQ")" = "# Always fails (attempt 2)" ] && grep -qx "needs: none" "$RQ" && ! grep -q "always-fails	running	laneB" "$LANES_HOME/events.tsv" && [ ! -f "$LANES_HOME/NEEDS_CODY" ]'
+check "retry retains its generated branch" 'grep -qx "branch: agent/always-fails" "$RQ"'
 mv "$RQ" "$T/t2b.task"; OUT=$(LANE_FORCE_FAIL="laneA laneB" $RL laneB "$T/t2b.task" 2>&1); RC=$?
 check "attempt 2 fails -> exit 1, NEEDS_CODY + failures.tsv, nothing re-queued" '[ $RC = 1 ] && echo "$OUT" | grep -q "FAILED after: laneB" && grep -q "Always fails" "$LANES_HOME/NEEDS_CODY" && grep -q "Always fails (attempt 2)" "$LANES_HOME/failures.tsv" && ! ls "$LANES_HOME"/queue/*.task >/dev/null 2>&1'
 # 2d deferred by policy: a failed unit whose title/slug is parked in deferred/ is not re-queued; its retry goes to deferred/
@@ -690,6 +691,53 @@ cp "$(task 'Live duplicate' live)" "$LANES_HOME/queue/live.task"
 printf '%s\t123-live-duplicate\trunning\tlaneA\tlive\n' "$(date '+%F %T')" >> "$LANES_HOME/events.tsv"
 OUT=$(LANES_REPO="$T/repo" LANE_GUARD_STATE="$T/dispatch-state" LANE_GATE=true bash scripts/lane-guard.sh --dispatch laneB 2>&1); RC=$?
 check "dispatcher still drops a duplicate of a live attempt" '[ $RC = 0 ] && [ -f "$LANES_HOME/queue/dropped/live.task" ] && echo "$OUT" | grep -q "attempt already started (123-live-duplicate running)"'
+# Both failure paths retain all metadata, body text and committed work.
+cat > "$T/metadata.task" <<'TASK'
+# Retry preserves every original header
+needs: none
+expected_min: 5
+branch: test/retry-metadata
+pr: 211
+issue: 208
+priority: P0
+after: none
+type: bug
+area: lanes
+agent: opencode
+resume-from: saved-attempt
+scope: f.txt
+custom: retain this header
+
+Keep this original task detail.
+TASK
+headers() { awk '/^[a-z_-]+:/ { print }' "$1" | sort; }
+rm -f "$LANES_HOME"/queue/*.task
+mkdir -p "$LANES_HOME/chain-state.lock"; echo $$ > "$LANES_HOME/chain-state.lock/pid"
+( for k in $(seq 1 100); do
+    if [ -f "$LANES_HOME/units/retry-preserves-every-original-h.lock/pid" ]; then
+      mv "$T/metadata.task" "$T/metadata.moved"; lock_drop "$LANES_HOME/chain-state.lock"; exit 0
+    fi
+    sleep 0.05
+  done; exit 1 ) & MOVER=$!
+OUT=$(LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_STUB_CMD="$STUB_OK; exit 3" $RL laneA "$T/metadata.task" 2>&1); RC=$?
+wait "$MOVER"
+RQ=$(ls "$LANES_HOME"/queue/*-retry-preserves-every-original-h-retry.task 2>/dev/null | head -1)
+META_HEAD=$(git rev-parse test/retry-metadata)
+check "agent failure retry preserves all headers and task detail when dispatch moves the brief at claim" '[ $RC = 1 ] && [ -n "$RQ" ] && diff <(headers "$T/metadata.moved") <(headers "$RQ") && grep -qx "Keep this original task detail." "$RQ"'
+check "agent failure retry records its unpushed head and worktree" 'grep -qx "Unpushed head: $META_HEAD" "$RQ" && grep -qx "Worktree: $LANES_WT/laneA-retry-preserves-every-original-h" "$RQ"'
+rm -f "$LANES_HOME"/queue/*.task
+sed 's/^# .*/# Verify retry keeps original metadata/; s#test/retry-metadata#test/verify-metadata#' "$T/metadata.moved" > "$T/verify-metadata.task"
+OUT=$(LANES_REPO="$T/repo" LANE_GUARD_STATE="$T/retry-state" LANE_GATE=true LANE_GUARD="$T/repo/scripts/lane-guard.sh" LANE_CHAIN_MIN_S=0 LANE_NO_CHAIN=1 LANE_STUB_CMD="$STUB_OK" LANE_VERIFY_CMD='mv "$HOME/../verify-metadata.task" "$HOME/../verify-metadata.moved"; exit 1' $RL laneA "$T/verify-metadata.task" 2>&1); RC=$?
+RQ=$(ls "$LANES_HOME"/queue/*-verify-retry-keeps-original-meta-retry.task 2>/dev/null | head -1)
+META_HEAD=$(git rev-parse test/verify-metadata)
+OLD_ID=$(awk -F'\t' '$3=="queued"&&$5~/^# Verify retry keeps original metadata /{print $2}' "$LANES_HOME/events.tsv" | tail -1)
+check "verify failure produces one fresh retry after the original brief moves" '[ $RC = 1 ] && [ -n "$RQ" ] && [ "$(ls "$LANES_HOME"/queue/*.task | wc -l | tr -d " ")" = 1 ] && [ "$(basename "$RQ" .task)" != "$OLD_ID" ] && [ ! -f "$LANES_HOME/queue/$OLD_ID.task" ]'
+check "guard retry preserves all headers, body and unpushed head" 'diff <(headers "$T/verify-metadata.moved") <(headers "$RQ") && grep -qx "Keep this original task detail." "$RQ" && grep -qx "Unpushed head: $META_HEAD" "$RQ" && bash scripts/queue-write.sh --check "$RQ"'
+RETRY_STUB='test "$(git rev-parse HEAD)" = '"$META_HEAD"' && test "$(git symbolic-ref --short HEAD)" = test/verify-metadata && '"$STUB_OK"
+OUT=$(LANES_REPO="$T/repo" LANE_GUARD_STATE="$T/retry-state" LANE_GATE=true LANE_NO_CHAIN=1 LANE_DRY=1 LANE_STUB_CMD="$RETRY_STUB" bash scripts/lane-guard.sh --dispatch laneA 2>&1); RC=$?
+for k in $(seq 1 50); do grep -q 'verify-retry-keeps-original-meta.*dry' "$LANES_HOME/events.tsv" && break; sleep 0.1; done
+NEW_ID=$(awk -F'\t' '$3=="dry"&&$2~/verify-retry-keeps-original-meta$/{print $2}' "$LANES_HOME/events.tsv" | tail -1)
+check "guard retry dispatches on the original branch and unpushed head with a new run id" '[ $RC = 0 ] && [ -f "$LANES_HOME/queue/started/$(basename "$RQ")" ] && [ -n "$NEW_ID" ] && [ "$NEW_ID" != "$OLD_ID" ] && grep -q "DRY-OK laneA" "$LANES_HOME/logs/dispatch-$(basename "$RQ" .task).log"'
 # 34 Only real run failures count, even with non-run stops in the window.
 rm -f "$LANES_HOME/PAUSE" "$LANES_HOME/NEEDS_CODY" "$LANES_HOME/fast-fails.tsv"
 for kind in dep spec scope; do

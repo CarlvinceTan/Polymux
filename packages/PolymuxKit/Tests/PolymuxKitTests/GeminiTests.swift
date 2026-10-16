@@ -147,6 +147,26 @@ private func options() -> LiveOptions {
     #expect(socket.closed)
 }
 
+@Test @MainActor func geminiStopCancelsPendingCredential() async throws {
+    let socket = SocketProbe()
+    let waiting = AsyncStream<Void>.makeStream()
+    var resume: CheckedContinuation<any LiveSocket, Never>?
+    let provider = GeminiLive(makeSocket: { _ in
+        await withCheckedContinuation {
+            resume = $0
+            waiting.continuation.yield(())
+        }
+    })
+    let opening = Task { try await provider.start(options: options(), key: "placeholder") }
+    var iterator = waiting.stream.makeAsyncIterator()
+    await iterator.next()
+    await provider.stop()
+    try #require(resume).resume(returning: socket)
+    await #expect(throws: CancellationError.self) { try await opening.value }
+    #expect(socket.closed)
+    #expect(socket.sent.isEmpty)
+}
+
 @Test @MainActor func geminiReportsDepletedCreditsWithoutRawProviderDetails() async {
     let socket = SocketProbe()
     socket.failSend = true
