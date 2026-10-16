@@ -289,7 +289,9 @@ class NativeTests(unittest.TestCase):
             with (app / "Contents/Info.plist").open("wb") as output:
                 plistlib.dump({"CFBundleExecutable": "Polymux", "CFBundleIdentifier": "test.polymux." + root.name,
                               "CFBundlePackageType": "APPL", "NSPrincipalClass": "NSApplication"}, output)
-            subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True, capture_output=True)
+            entitlements = root / "entitlements.plist"
+            entitlements.write_bytes(plistlib.dumps(build.adhoc_entitlements(build.ROOT / "apps/Polymux/Polymux-macOS.entitlements")))
+            subprocess.run(["codesign", "--force", "--options", "runtime", "--sign", "-", "--entitlements", str(entitlements), str(app)], check=True, capture_output=True)
             observer = root / "Observe.swift"
             observer.write_text('''import AppKit
 let before = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
@@ -323,6 +325,26 @@ exit(process.terminationStatus)
 
 
 class BuildTests(unittest.TestCase):
+    def test_cached_restricted_signature_is_rebuilt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "Polymux.app/Contents"
+            app.mkdir(parents=True)
+            (app / "Info.plist").write_bytes(plistlib.dumps({"PolymuxBuildSHA": NEW}))
+            (root / "manifest.json").write_text(json.dumps({"sha": NEW, "appSHA": NEW}))
+            restricted = plistlib.dumps({"com.apple.developer.aps-environment": "production"}).decode()
+            with patch.object(build.host, "run", side_effect=["", restricted]):
+                self.assertFalse(build.cached(root, NEW, server=False, app=True))
+            source = build.ROOT / "apps/Polymux/Polymux-macOS.entitlements"
+            original = source.read_bytes()
+            value = build.adhoc_entitlements(source)
+            self.assertTrue(value["com.apple.security.device.audio-input"])
+            self.assertTrue(value["com.apple.security.device.camera"])
+            self.assertNotIn("com.apple.developer.aps-environment", value)
+            self.assertEqual(source.read_bytes(), original)
+            with patch.object(build.host, "run", side_effect=["", plistlib.dumps(value).decode()]):
+                self.assertTrue(build.cached(root, NEW, server=False, app=True))
+
     def test_receipt_advances_only_after_all_hosts_verify(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

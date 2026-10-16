@@ -19,6 +19,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30"]
 
 
+def adhoc_entitlements(path):
+    value = plistlib.loads(Path(path).read_bytes())
+    # APNS requires an Apple-issued signing identity and provisioning profile.
+    value.pop("com.apple.developer.aps-environment", None)
+    return value
+
+
 def build(ref, output, server=True, app=True):
     sha = host.revision(host.run(["git", "-C", str(ROOT), "rev-parse", "--verify", "--end-of-options", ref + "^{commit}"]))
     output = Path(output).resolve() / sha
@@ -41,6 +48,9 @@ def cached(output, sha, server, app):
             if manifest.get("appSHA") != sha or host.app_sha(output / "Polymux.app") != sha:
                 return False
             host.run(["codesign", "--verify", "--deep", "--strict", str(output / "Polymux.app")])
+            signed = host.run(["codesign", "-d", "--entitlements", ":-", str(output / "Polymux.app")])
+            if "com.apple.developer.aps-environment" in plistlib.loads(signed.encode()):
+                return False
         return True
     except (OSError, ValueError, host.DeployError):
         return False
@@ -80,8 +90,7 @@ def snapshot(sha, output, server, app):
             value = plistlib.loads(info.read_bytes())
             value["PolymuxBuildSHA"] = sha
             info.write_bytes(plistlib.dumps(value))
-            entitlements = plistlib.loads((source / "apps/Polymux/Polymux-macOS.entitlements").read_bytes())
-            entitlements["com.apple.developer.aps-environment"] = "production"
+            entitlements = adhoc_entitlements(source / "apps/Polymux/Polymux-macOS.entitlements")
             entitlement_path = output / "entitlements.plist"
             entitlement_path.write_bytes(plistlib.dumps(entitlements))
             launcher = app_path / "Contents/Helpers/deploy-launch"
