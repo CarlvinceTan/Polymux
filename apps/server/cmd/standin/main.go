@@ -44,9 +44,12 @@ func main() {
 
 func run() error {
 	if len(os.Args) != 3 {
-		return errors.New("usage: standin import|export DATA")
+		return errors.New("usage: standin import|export|preview|migrate DATA")
 	}
 	ctx := context.Background()
+	if os.Args[1] == "preview" || os.Args[1] == "migrate" {
+		return runMigration(ctx, os.Args[2], os.Stdin, os.Stdout, os.Args[1] == "migrate")
+	}
 	dir := os.Args[2]
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
