@@ -74,17 +74,12 @@ final class AppSession {
         #else
         client = APIClient(baseURL: url)
         #endif
-        let key = address.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
         cache = try await Task.detached {
-            let support = try FileManager.default.url(
-                for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-            )
-            let directory = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"].map {
-                URL(fileURLWithPath: $0, isDirectory: true)
-                    .appending(path: "app-\(key)", directoryHint: .isDirectory)
-            } ?? support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            return try LocalCache(url: directory.appending(path: "cache.sqlite"))
+            let file = ClientPaths.cache(address)
+            let directory = file.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            return try LocalCache(url: file)
         }.value
         sidebar = SidebarStore(client: client, cache: cache)
         await sidebar.load()

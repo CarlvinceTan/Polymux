@@ -149,7 +149,7 @@ public actor DeviceChannel {
                 guard current.native, credential.capabilities.contains("native"), nativeReady,
                       ControlPermissions.accessibility, ControlPermissions.screen,
                       let tool = tools.first(where: { $0.name == operation }) else { throw ControlError.denied }
-                let directory = root.appending(path: "Captures/\(UUID().uuidString)", directoryHint: .isDirectory)
+                let directory = Self.capturePath(FileManager.default.temporaryDirectory, id: UUID())
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                 defer { try? FileManager.default.removeItem(at: directory) }
                 let screenshot = directory.appending(path: "window.png")
@@ -171,6 +171,10 @@ public actor DeviceChannel {
             try Task.checkCancellation()
             return result
         } catch { return .failure(packet.id, error.localizedDescription) }
+    }
+
+    static func capturePath(_ temporary: URL, id: UUID) -> URL {
+        temporary.appending(path: "polymux-captures/\(id.uuidString)", directoryHint: .isDirectory)
     }
 
     private func send(_ packet: DevicePacket) async throws {

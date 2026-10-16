@@ -3,6 +3,7 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 import PolymuxControl
+import PolymuxKit
 
 @MainActor @Observable
 final class ControlCoordinator {
@@ -28,8 +29,7 @@ final class ControlCoordinator {
     private var stopping = false
 
     private init() {
-        root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appending(path: "Polymux/control", directoryHint: .isDirectory)
+        root = ClientPaths.control
         channel = DeviceChannel(root: root, binary: Bundle.main.bundleURL.appending(path: "Contents/Helpers/cua-driver"),
                                 bundleID: Bundle.main.bundleIdentifier ?? "com.flarehq.polymux.app")
     }
