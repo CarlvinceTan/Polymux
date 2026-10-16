@@ -88,6 +88,7 @@ step() {  # step NAME cmd...
   ROWS+=("| $n | $res | ${tests:--} | $((SECONDS - t))s |"); echo "verify: $n $res"
 }
 step readiness-tests bash "$ROOT/scripts/test-readiness.sh"
+[ ! -f "$ROOT/scripts/test-deploy.py" ] || step deploy-tests python3 "$ROOT/scripts/test-deploy.py"
 step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/main}"
 [ -n "${VERIFY_SCOPE:-}" ] && step allowed-files bash -c '. "$1"; scope_check "$2" "$3"' _ "$SD/lanelib.sh" "${TI_BASE:-origin/main}" "$VERIFY_SCOPE"
 # Lane scripts changed -> run their hermetic tests too.

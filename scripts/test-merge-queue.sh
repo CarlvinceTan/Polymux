@@ -118,4 +118,33 @@ S=$(mkpr p22); printf 'needs: none\nPlain title unit\nBody line kept?\nsecond bo
 printf 'pr: 22\nbranch: p22\nlane: lane3\nunit: \ntask: %s\n' "$T/p22.task" > "$MQ/2026-pr22"; cm 1 "$(verdict 22 "$S" PASS)" > "$T/comments.jsonl"
 MERGE_VERIFY_CMD='exit 1' run; F=$(ls "$LANES_HOME"/queue/*-fix-pr22.task 2>/dev/null | head -1)
 check "fix brief from a plain-title brief: title and body kept, title not repeated" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && head -1 "$F" | grep -qE "^# Fix PR #22 [0-9a-f]{7}-[0-9a-f]{7}: Plain title unit$" && grep -qxF "Body line kept?" "$F" && grep -qxF "second body line" "$F" && [ "$(grep -cxF "Plain title unit" "$F")" = 0 ]'
+# Deployment runs only after a merge, and failure alerts without re-merging the PR.
+cat > scripts/deploy.py <<'PYDEPLOY'
+import json, os, pathlib, subprocess, sys
+pathlib.Path(os.environ["DEPLOY_TEST_LOG"]).write_text(" ".join(sys.argv[1:4]))
+failed = int(os.environ.get("DEPLOY_TEST_FAIL", "0"))
+if not failed:
+    sha = subprocess.check_output(["git", "rev-parse", "origin/main"], text=True).strip()
+    pathlib.Path(sys.argv[sys.argv.index("--receipt") + 1]).write_text(json.dumps({"sha": sha}))
+sys.exit(failed)
+PYDEPLOY
+printf '# test host installer\n' > scripts/deploy_host.py
+git add scripts/deploy.py scripts/deploy_host.py; git commit -qm "Add test deployment"; git push -q origin main
+export DEPLOY_TEST_LOG="$T/deployed.json"
+S=$(mkpr p25); enq 25 p25; cm 1 "$(verdict 25 "$S" PASS)" > "$T/comments.jsonl"
+MERGE_MAIN_CHECKOUT="$T/repo" run
+check "merged main triggers checked deployment with the main ref" 'merged 25 && [ "$(cat "$T/deployed.json")" = "update --ref origin/main" ] && grep -q "pr25.*deployed" "$LANES_HOME/events.tsv"'
+S=$(mkpr p26); enq 26 p26; cm 1 "$(verdict 26 "$S" PASS)" > "$T/comments.jsonl"
+DEPLOY_TEST_FAIL=1 MERGE_MAIN_CHECKOUT="$T/repo" run
+check "deployment failure leaves merged PR done and records an actionable alert" 'merged 26 && [ -f "$MQ/done/2026-pr26" ] && grep -q "pr26.*deploy_failed" "$LANES_HOME/events.tsv" && grep -q "deployment after PR #26 failed" "$LANES_HOME/NEEDS_CODY" && [ -f "$LANES_HOME/deploy-pending" ]'
+S=$(mkpr p27); enq 27 p27; cm 1 "$(verdict 27 "$S" PASS)" > "$T/comments.jsonl"
+rm "$T/deployed.json"; echo '# uncommitted edit' >> scripts/deploy.py
+MERGE_MAIN_CHECKOUT="$T/repo" run
+check "uncommitted deployment code is preserved and never executed" 'merged 27 && [ ! -f "$T/deployed.json" ] && grep -q "uncommitted edit" scripts/deploy.py && grep -q "pr27.*deploy_failed" "$LANES_HOME/events.tsv"'
+git checkout -- scripts/deploy.py
+MERGE_MAIN_CHECKOUT="$T/repo" run
+check "next queue tick retries deployment without merging the PR again" '[ -f "$T/deployed.json" ] && [ ! -f "$LANES_HOME/deploy-pending" ] && ! grep -q "^pr merge " "$T/gh.log" && grep -q "pending main deployment verified" "$LANES_HOME/events.tsv"'
+echo outside > outside.txt; git add outside.txt; git commit -qm "Merge outside the queue"; git push -q origin main
+rm "$T/deployed.json"; MERGE_MAIN_CHECKOUT="$T/repo" run
+check "main changes outside the queue deploy on the next tick" '[ -f "$T/deployed.json" ] && [ ! -f "$LANES_HOME/deploy-pending" ] && ! grep -q "^pr merge " "$T/gh.log"'
 echo "test-merge-queue: $PASS passed, $FAILS failed"; [ $FAILS = 0 ]

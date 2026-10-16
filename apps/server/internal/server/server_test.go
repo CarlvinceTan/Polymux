@@ -26,6 +26,23 @@ type testFactory struct {
 	block bool
 }
 
+func TestHealthBuild(t *testing.T) {
+	api := settingsAPI(t)
+	api.config.BuildSHA = "0123456789abcdef0123456789abcdef01234567"
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+	var health struct {
+		Status   string `json:"status"`
+		BuildSHA string `json:"buildSHA"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || health.Status != "ok" || health.BuildSHA != api.config.BuildSHA {
+		t.Fatalf("health = %d %+v", response.Code, health)
+	}
+}
+
 func (f *testFactory) Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error) {
 	return &testSession{factory: f}, nil
 }

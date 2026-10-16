@@ -39,6 +39,8 @@ const (
 	extractTimeout = 3 * time.Minute
 )
 
+var buildSHA = "unknown"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "server: %v\n", err)
@@ -53,6 +55,7 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "device" {
 		return runDevice(os.Args[2:])
 	}
+	version := flag.Bool("version", false, "print the build commit and exit")
 	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "authenticated backend IP:port (loopback, private LAN or Tailscale; defaults to 127.0.0.1:7337)")
 	dev := flag.Bool("dev", os.Getenv("POLYMUX_DEV") == "1", "development mode (loopback is always allowed)")
 	dir := flag.String("data", os.Getenv("POLYMUX_DATA_DIR"), "data directory")
@@ -61,6 +64,10 @@ func run() error {
 	tailscale := flag.Bool("tailscale", os.Getenv("POLYMUX_TAILSCALE") == "1", "use Tailscale listeners (requires Tailscale)")
 	verify := fixture.Register(flag.CommandLine)
 	flag.Parse()
+	if *version {
+		fmt.Println(buildSHA)
+		return nil
+	}
 	if *verify {
 		dataDir, addr, err := fixture.Apply(*dir)
 		if err != nil {
@@ -206,7 +213,7 @@ func run() error {
 			return err
 		}
 	}
-	api, err := server.New(ctx, s, server.Config{MergeLane: strings.TrimSpace(os.Getenv("POLYMUX_MERGE_LANE")), DataDir: *dir, Model: model, Definitions: definitions, Factory: runtime, Index: index, Log: log, Push: sender, Devices: devices})
+	api, err := server.New(ctx, s, server.Config{BuildSHA: buildSHA, MergeLane: strings.TrimSpace(os.Getenv("POLYMUX_MERGE_LANE")), DataDir: *dir, Model: model, Definitions: definitions, Factory: runtime, Index: index, Log: log, Push: sender, Devices: devices})
 	if err != nil {
 		return err
 	}
