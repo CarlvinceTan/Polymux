@@ -579,7 +579,8 @@ func TestB1Spawn(t *testing.T) {
 				fail(t, "B1", fmt.Sprintf("send status %d", code))
 				return
 			}
-			WaitHold(t, "B1", opened, holdWait)
+			// The child opens after parent setup and spawning, so allow the full scenario deadline.
+			WaitHold(t, "B1", opened, deadline)
 			parent := h.WaitRun("a", "b1-user", "a", deadline)
 			owner := target.id
 			if owner == "" {

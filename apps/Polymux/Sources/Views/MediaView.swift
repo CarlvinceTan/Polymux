@@ -209,7 +209,7 @@ actor MediaCache {
             return file
         }
         var request = URLRequest(url: url)
-        if let token = APIClient.localToken(url) { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let token = await APIClient.localToken(url) { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let (temporary, response) = try await URLSession.shared.download(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw URLError(.badServerResponse) }
         try FileManager.default.moveItem(at: temporary, to: file)

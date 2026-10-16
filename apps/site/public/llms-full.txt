@@ -54,6 +54,6 @@ The extension communicates with the locally installed desktop app through a nati
 
 - Product: https://polymux.com/product/
 - Privacy: https://polymux.com/privacy-policy/
-- Releases: https://github.com/CarlvinceTan/Polymux/releases/latest
-- Source: https://github.com/CarlvinceTan/Polymux
+- Releases: https://github.com/CarlvinceTan/polymux/releases/latest
+- Source: https://github.com/CarlvinceTan/polymux
 - Contact: carlvince@polymux.com

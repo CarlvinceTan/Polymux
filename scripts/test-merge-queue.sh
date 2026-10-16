@@ -100,15 +100,22 @@ check "every generated fix brief passes queue-write --check" 'ls "$LANES_HOME"/q
 S=$(mkpr p20); printf 'branch: p20\n# P20: Thing\nneeds: xcode\n\nDo the thing.\n' > "$T/p20.task"
 printf 'pr: 20\nbranch: p20\nlane: lane3\nunit: \ntask: %s\n' "$T/p20.task" > "$MQ/2026-pr20"; cm 1 "$(verdict 20 "$S" PASS)" > "$T/comments.jsonl"
 MERGE_VERIFY_CMD='exit 1' run; F=$(ls "$LANES_HOME"/queue/*-fix-pr20.task 2>/dev/null | head -1)
-check "fix brief from a header-first task file: valid, title first, needs kept, type/expected_min defaulted" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && [ "$(head -1 "$F")" = "# P20: Thing" ] && grep -qx "needs: xcode" "$F" && grep -qx "type: bug" "$F" && grep -qx "expected_min: 60" "$F" && grep -q "Do the thing." "$F" && [ "$(grep -c "^branch:" "$F")" = 1 ]'
+check "fix brief from a header-first task file: valid, title first, needs kept, type/expected_min defaulted" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && head -1 "$F" | grep -qE "^# Fix PR #20 [0-9a-f]{7}-[0-9a-f]{7}: P20: Thing$" && grep -qx "needs: xcode" "$F" && grep -qx "type: bug" "$F" && grep -qx "expected_min: 60" "$F" && grep -q "Do the thing." "$F" && [ "$(grep -c "^branch:" "$F")" = 1 ]'
+FIRST=$F
+echo changed > main20.txt; git add main20.txt; git commit -qm main20; git push -q origin main
+printf 'pr: 20\nbranch: p20\nlane: lane3\nunit: \ntask: %s\n' "$T/p20.task" > "$MQ/2026-pr20"
+MERGE_VERIFY_CMD='exit 1' run
+SECOND=""; for f in "$LANES_HOME"/queue/*-fix-pr20.task; do [ "$f" != "$FIRST" ] && SECOND=$f; done
+unit_slug() { head -1 "$1" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-*//' | cut -c1-32; }
+check "a later failure of the same PR keeps both briefs and has a distinct unit slug" '[ -n "$SECOND" ] && [ -f "$FIRST" ] && [ "$(unit_slug "$FIRST")" != "$(unit_slug "$SECOND")" ] && bash scripts/queue-write.sh --check "$FIRST" "$SECOND"'
 # fix briefs keep every routing/scope header of the original brief
 S=$(mkpr p21); printf '# P21: Scoped\nneeds: go\nscope: scripts/**\nissue: 174\ncard: c-21\nunit: p21-scoped\nafter: pr:7\nlabels: type:bug,Lanes\narea: lanes\npriority: P1\n\nBody 21.\n' > "$T/p21.task"
 printf 'pr: 21\nbranch: p21\nlane: lane3\nunit: \ntask: %s\n' "$T/p21.task" > "$MQ/2026-pr21"; cm 1 "$(verdict 21 "$S" PASS)" > "$T/comments.jsonl"
 MERGE_VERIFY_CMD='exit 1' run; F=$(ls "$LANES_HOME"/queue/*-fix-pr21.task 2>/dev/null | head -1)
-check "fix brief keeps scope/issue/card/unit/after/labels/area/priority lines as-is" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && for l in "scope: scripts/**" "issue: 174" "card: c-21" "unit: p21-scoped" "after: pr:7" "labels: type:bug,Lanes" "area: lanes" "priority: P1" "needs: go" "Body 21."; do grep -qxF "$l" "$F" || exit 1; done && [ "$(head -1 "$F")" = "# P21: Scoped" ]'
+check "fix brief keeps scope/issue/card/unit/after/labels/area/priority lines as-is" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && for l in "scope: scripts/**" "issue: 174" "card: c-21" "unit: p21-scoped" "after: pr:7" "labels: type:bug,Lanes" "area: lanes" "priority: P1" "needs: go" "Body 21."; do grep -qxF "$l" "$F" || exit 1; done && head -1 "$F" | grep -qE "^# Fix PR #21 [0-9a-f]{7}-[0-9a-f]{7}: P21: Scoped$"'
 # a brief whose title is a plain first line (no "# ") keeps its title and body
 S=$(mkpr p22); printf 'needs: none\nPlain title unit\nBody line kept?\nsecond body line\n' > "$T/p22.task"
 printf 'pr: 22\nbranch: p22\nlane: lane3\nunit: \ntask: %s\n' "$T/p22.task" > "$MQ/2026-pr22"; cm 1 "$(verdict 22 "$S" PASS)" > "$T/comments.jsonl"
 MERGE_VERIFY_CMD='exit 1' run; F=$(ls "$LANES_HOME"/queue/*-fix-pr22.task 2>/dev/null | head -1)
-check "fix brief from a plain-title brief: '# <first line>' title, body kept, title not repeated" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && [ "$(head -1 "$F")" = "# Plain title unit" ] && grep -qxF "Body line kept?" "$F" && grep -qxF "second body line" "$F" && [ "$(grep -cxF "Plain title unit" "$F")" = 0 ]'
+check "fix brief from a plain-title brief: title and body kept, title not repeated" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && head -1 "$F" | grep -qE "^# Fix PR #22 [0-9a-f]{7}-[0-9a-f]{7}: Plain title unit$" && grep -qxF "Body line kept?" "$F" && grep -qxF "second body line" "$F" && [ "$(grep -cxF "Plain title unit" "$F")" = 0 ]'
 echo "test-merge-queue: $PASS passed, $FAILS failed"; [ $FAILS = 0 ]

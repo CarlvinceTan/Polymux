@@ -19,6 +19,41 @@ private final class ProbeRoutes: @unchecked Sendable {
     func remove(_ host: String) { _ = lock.withLock { handlers.removeValue(forKey: host) } }
 }
 
+private final class CredentialProbe: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false
+    private var released = false
+    private var mainThread = false
+    private var count = 0
+
+    var calls: Int { condition.withLock { count } }
+    var offMain: Bool { condition.withLock { started && !mainThread } }
+
+    func resolve(_ url: URL) -> String? {
+        condition.lock()
+        defer { condition.unlock() }
+        count += 1
+        started = true
+        mainThread = Thread.isMainThread
+        condition.broadcast()
+        let deadline = Date().addingTimeInterval(3)
+        while !released && condition.wait(until: deadline) {}
+        return "discovered-token"
+    }
+
+    func wait() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(3)
+        while !started && condition.wait(until: deadline) {}
+        return started
+    }
+
+    func release() {
+        condition.withLock { released = true; condition.broadcast() }
+    }
+}
+
 private final class ProbeProtocol: URLProtocol, @unchecked Sendable {
     static let routes = ProbeRoutes()
     private let lock = NSLock()
@@ -489,7 +524,44 @@ struct TransportTests {
         let api = APIClient(baseURL: URL(string: "http://\(host)")!,
                             session: URLSession(configuration: configuration), token: "test-device-token")
         #expect(try await api.agents().isEmpty)
-        #expect(APIClient.localToken(URL(string: "https://untrusted.example")!) == nil)
+        #expect(await APIClient.localToken(URL(string: "https://untrusted.example")!) == nil)
+    }
+
+    @Test @MainActor func discoveryKeepsMainActorFree() async throws {
+        let discovery = CredentialProbe()
+        defer { discovery.release() }
+        let host = ProbeProtocol.routes.add { request in
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer discovered-token")
+            return (200, Data("[]".utf8))
+        }
+        defer { ProbeProtocol.routes.remove(host) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProbeProtocol.self]
+        let api = APIClient(baseURL: URL(string: "http://\(host)")!, session: URLSession(configuration: configuration),
+                            token: nil, discover: discovery.resolve)
+        #expect(await Task.detached { discovery.wait() }.value)
+        #expect(discovery.offMain)
+        discovery.release()
+        async let first = api.agents()
+        async let second = api.agents()
+        #expect(try await first.isEmpty)
+        #expect(try await second.isEmpty)
+        #expect(discovery.calls == 1)
+    }
+
+    @Test func explicitCredentialSkipsDiscovery() async throws {
+        let discovery = CredentialProbe()
+        let host = ProbeProtocol.routes.add { request in
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer explicit-token")
+            return (200, Data("[]".utf8))
+        }
+        defer { ProbeProtocol.routes.remove(host) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProbeProtocol.self]
+        let api = APIClient(baseURL: URL(string: "http://\(host)")!, session: URLSession(configuration: configuration),
+                            token: "explicit-token", discover: discovery.resolve)
+        #expect(try await api.agents().isEmpty)
+        #expect(discovery.calls == 0)
     }
 
     @Test func speechUsesServerTransportWithoutClientCredentials() async throws {

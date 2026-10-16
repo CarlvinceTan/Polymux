@@ -85,6 +85,32 @@ for kind in equal newer queued; do
   PASS=$((PASS+1))
 done
 echo 'ok   conditional archival rechecks replaced queued and equal/newer held briefs under the queue lock'
+cat > "$T/runner" <<'SH'
+#!/bin/bash
+printf '%s\t987-fresh-pass\trunning\t%s\t%s\n' "$(date '+%F %T')" "$1" "$2" >> "$LANES_HOME/events.tsv"
+SH
+chmod +x "$T/runner"
+for kind in old-event old-ledger same-event same-ledger new-event new-ledger; do
+  export LANES_HOME="$T/$kind/ops" LANE_GUARD_STATE="$T/$kind/state"
+  mkdir -p "$LANES_HOME/queue" "$LANE_GUARD_STATE"
+  touch "$LANES_HOME/events.tsv"
+  brief=$LANES_HOME/queue/fresh.task
+  printf '# Fresh pass\nneeds: none\nexpected_min: 5\n' > "$brief"
+  now=$(date +%s); stamp=$now; filetime=$now
+  case $kind in old-*) stamp=$((now-10));; new-*) filetime=1;; esac
+  python3 -c 'import os,sys; os.utime(sys.argv[1], (int(sys.argv[2]), int(sys.argv[2])))' "$brief" "$filetime"
+  case $kind in
+    *-event) python3 -c 'import datetime,sys; stamp=datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime("%Y-%m-%d %H:%M:%S"); print("\n".join(stamp + "\t123-fresh-pass\t" + event + "\tlaneA\tpassed" for event in ("running", "dry")))' "$stamp" > "$LANES_HOME/events.tsv";;
+    *-ledger) printf '%s\tlaneA\t123-fresh-pass\t0\tok\t/dev/null\t# Fresh pass\n' "$stamp" > "$LANE_GUARD_STATE/tasks.tsv";;
+  esac
+  OUT=$(RUN_LANE="$T/runner" bash "$SRC/scripts/lane-guard.sh" --dispatch laneA)
+  case $kind in
+    new-*) [ -f "$LANES_HOME/queue/dropped/fresh.task" ]; [[ "$OUT" = *'passed'* ]];;
+    *) [ -f "$LANES_HOME/queue/started/fresh.task" ]; [[ "$OUT" = *'dispatch: started fresh on laneA'* ]];;
+  esac
+  PASS=$((PASS+1))
+done
+echo 'ok   older or simultaneous passes allow new briefs; newer passes still drop duplicates'
 export LANES_HOME="$T/ops" LANE_GUARD_STATE="$T/state"
 mkdir -p "$T/bin"
 cat > "$T/bin/gh" <<'SH'

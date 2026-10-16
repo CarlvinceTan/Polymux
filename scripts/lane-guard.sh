@@ -1,7 +1,7 @@
 #!/bin/bash
 # lane-guard: failure rules for the Polymux local-lanes flow (Cody's scripts/run-lane.sh; plan section 6). No LLM.
-#   lane-guard --task-end <lane> <task-id> <rc> <log> [dep|spec|scope|run]  hook after verify.sh (Cody adds it, non-fatal). rc 0 = ok.
-#     1st failure of a task -> re-queue: $OPS/queue/<task-id>.task = brief (title " (attempt 2)", so run-lane's failures.tsv stop rule
+#   lane-guard --task-end <lane> <task-id> <rc> <log> [dep|spec|scope|run] [brief] [worktree] [branch]  hook after verify.sh; rc 0 = ok.
+#     1st failure of a task -> re-queue with a fresh id and the original brief (title " (attempt 2)", so run-lane's failures.tsv stop rule
 #     doesn't refuse it) + "## Previous attempt failed" + last 60 log lines, secrets redacted. 2nd failure -> no re-queue, alert Chief once.
 #     Stop class (5th arg, default run): a dep/spec/scope stop is recorded in $O/fast-fails.tsv and stops there, so a
 #     brief that could not run never counts as a run failure; only run failures reach the 3-in-900s breaker (run-lane owns it).
@@ -39,6 +39,7 @@ deferred_hit(){ # $1 base title, $2 task id: print the $O/deferred/*.task (parke
     { [ "$t" = "$1" ] || [ "$st" = "$sl" ]; } && { echo "$f"; return 0; }; done; return 1; }
 # Queue writes go through Polymux scripts/queue-write.sh (one lock shared with run-lane; atomic; briefs validated).
 QWH=${QUEUE_WRITE:-$LANES_REPO/scripts/queue-write.sh}
+. "$LANES_REPO/scripts/lanelib.sh"
 qmv(){ if [ -f "$QWH" ]; then bash "$QWH" --force --mv "$1" "$2" >/dev/null; else mv "$1" "$2"; fi; }
 task_title(){ awk 'NF && tolower($0)!~/^(unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|agent|queue-note|release):/{print;exit}' "$1"; }
 supersede_holds(){
@@ -157,11 +158,12 @@ case $1 in
     b=$(echo "$t" | sed -E 's/ \(attempt [0-9]+\)$//'); C=$(for x in "$b" "$t"; do echo "$(slug "$x") $(slugo "$x")"; done; echo "$(strip "${id#*-}")"); C=$(echo $C | tr ' ' '\n' | sort -u | tr '\n' ' '); m=$(date -r "$f" '+%Y%m%d%H%M%S')
     # Cleanup events belong to the finished attempt, even when the retry has the same timestamp.
     why=$(evm "$O/events.tsv" 2>/dev/null | awk -F'\t' -v m="$m" '{
-        if($3=="pr"||$3=="dry"){print "already passed ("$2" "$3")";exit}
+        ts=$1;gsub(/[-: ]/,"",ts)
+        if($3=="pr"||$3=="dry"){delete live[$2];if(ts>m){print "already passed ("$2" "$3")";exit}next}
         if($3=="failed"||$3=="requeued"||$3=="superseded"||$3=="infra"||$3=="needs_cody"||$3=="deferred"){delete live[$2];next}
-        ts=$1;gsub(/[-: ]/,"",ts); if($3=="running"&&ts>=m)live[$2]=1
+        if($3=="running"&&ts>=m)live[$2]=1
       } END{for(id in live){print "attempt already started ("id" running)";exit}}')
-    [ -z "$why" ] && awk -F'\t' -v b="$b" '$7==b&&$4==0{f=1}END{exit !f}' "$ST/tasks.tsv" && why="passed (lane-guard ledger)"
+    [ -z "$why" ] && awk -F'\t' -v b="$b" -v m="$(_mtime "$f")" '$7==b&&$4==0&&$1>m{f=1}END{exit !f}' "$ST/tasks.tsv" && why="passed (lane-guard ledger)"
     if [ -n "$why" ]; then mkdir -p "$Q/dropped"; qmv "$f" "$Q/dropped/"; log "dispatch: dropped $id: $why"; continue; fi
     # Skip (leave in queue, try the next card in this pass) anything run-lane would refuse or must not start.
     skip(){ log "dispatch: skip $id: $*; trying next"; }
@@ -200,7 +202,7 @@ case $1 in
 --task-end) [ "$NOW" -lt "$CUT" ] && { log "task-end $3: before fresh-window cutoff, ignored"; exit 0; };;
 *) echo "usage: lane-guard --task-end <lane> <task-id> <rc> <log> [dep|spec|scope|run] | --preflight <lane> <task> | --dispatch [lane | --free-lane <lane>] | --stall | --queued | --progress" >&2; exit 2;;
 esac
-LN=$2 ID=$3 RC=$4 LG=$5 CLASS=${6:-run};
+LN=$2 ID=$3 RC=$4 LG=$5 CLASS=${6:-run}; BRIEF=${7:-} WT=${8:-} BRANCH=${9:-}
 case $CLASS in dep|spec|scope) printf '%s\t%s\t%s\n' "$NOW" "$ID" "$CLASS" >> "$O/fast-fails.tsv"; log "task-end $ID: $CLASS stop, not counted"; exit 0;; run) ;; *) exit 2;; esac
  IFS=$'\t' read -r T NEEDS EXP <<< "$(title "$ID")"; T=${T:-$ID}; BASE=$(echo "$T" | sed -E 's/ \(attempt [0-9]+\)$//')
 S=$(tail -n 40 "$LG" 2>/dev/null | grep -iE 'error|fail|fatal' | tail -1 | redact | sed -E 's#(https?:|/)[^ ):]*##g; s/[0-9]+/N/g; s/ +/ /g' | cut -c1-120); S=${S:-rc=$RC}
@@ -210,16 +212,16 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$NOW" "$LN" "$ID" "$RC" "$S" "$LG" "$BASE
 W(){ awk -F'\t' -v c="$CUT" '$1>=c' "$ST/tasks.tsv"; }
 [ "$RC" = 0 ] && for q in "$Q"/*.task; do [ -f "$q" ] && grep -qxF "$BASE (attempt 2)" "$q" && qrm "$q" && log "task-end $ID ok: dropped stale re-queue $(basename "$q")"; done
 if [ "$RC" != 0 ]; then n=$(W | awk -F'\t' -v b="$BASE" '$7==b&&$4!=0' | wc -l | tr -d ' ')
-  if [ "$n" = 1 ]; then f=$Q/$ID.task
-    rq(){ echo "$BASE (attempt 2)"; echo "needs: ${NEEDS:-none}"; echo "expected_min: ${EXP:-60}"; echo; echo "## Previous attempt failed"   # title first
+  if [ "$n" = 1 ]; then RID="$(date +%m%d%H%M%S)$$-$(slug "$BASE")-retry"; f=$Q/$RID.task
+    rq(){ retry_brief "$BRIEF" "$BASE" "$NEEDS" "$EXP" "$BRANCH" "$WT"; echo; echo "## Previous attempt failed"
       echo "lane $LN, rc $RC, log $LG (last 60 lines, secrets redacted):"; tail -n 60 "$LG" 2>/dev/null | redact; }
     DEF=$(deferred_hit "$BASE" "$ID")
-    if [ -n "$DEF" ]; then f=$O/deferred/$ID.task   # unit parked by policy (e.g. dogfood-first): retry goes beside it, never back to queue/
+    if [ -n "$DEF" ]; then f=$O/deferred/$RID.task   # unit parked by policy (e.g. dogfood-first): retry goes beside it, never back to queue/
       if [ ! -f "$QWH" ]; then rq > "$f"; log "DEFERRED $ID -> $f (matches $(basename "$DEF")); not re-queued"
-      elif err=$(rq | bash "$QWH" --dir "$O/deferred" --force --name "$ID.task" - 2>&1 >/dev/null); then log "DEFERRED $ID -> $f (matches $(basename "$DEF")); not re-queued"
+      elif err=$(rq | bash "$QWH" --dir "$O/deferred" --name "$RID.task" - 2>&1 >/dev/null); then log "DEFERRED $ID -> $f (matches $(basename "$DEF")); not re-queued"
       else log "DEFERRED $ID: write to deferred/ rejected by queue-write: $(echo "$err" | tr '\n' ' ')"; fi
     elif [ ! -f "$QWH" ]; then rq > "$f"; log "REQUEUE $ID -> $f"
-    elif err=$(rq | bash "$QWH" --force --name "$ID.task" - 2>&1 >/dev/null); then log "REQUEUE $ID -> $f"
+    elif err=$(rq | bash "$QWH" --name "$RID.task" - 2>&1 >/dev/null); then log "REQUEUE $ID -> $f"
     else log "REQUEUE $ID rejected by queue-write: $(echo "$err" | tr '\n' ' ')"; once "rq:$ID" && alert lane_escalation "re-queue of '$BASE' rejected: $(echo "$err" | head -2 | paste -sd'|' -)" "$LN" "$ID"; fi
   elif [ "$n" -ge 2 ]; then once "esc:$BASE" && alert lane_escalation "task '$BASE' failed $n times: $(W | awk -F'\t' -v b="$BASE" '$7==b&&$4!=0{print $5" ("$6")"}' | tail -2 | paste -sd'|' -)" "$LN" "$ID"; fi
 fi

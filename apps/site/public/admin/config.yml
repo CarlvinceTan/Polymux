@@ -1,6 +1,6 @@
 backend:
   name: github
-  repo: CarlvinceTan/Polymux
+  repo: CarlvinceTan/polymux
   branch: main
   auth_methods: [token]
 
