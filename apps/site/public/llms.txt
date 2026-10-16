@@ -15,11 +15,11 @@ Polymux runs on macOS, Windows, and Linux. It lets a user ask one assistant to f
 - [Polymux releases](https://polymux.com/releases/): Versioned release notes, improvements, and desktop downloads.
 - [Polymux vs Hermes Agent, OpenClaw, and Khoj](https://polymux.com/blog/polymux-vs-hermes-openclaw-khoj/): A comparison of four different approaches to personal AI assistants.
 - [Privacy policy](https://polymux.com/privacy-policy/): How the desktop app and browser extension handle information.
-- [Latest release](https://github.com/CarlvinceTan/Polymux/releases/latest): Current desktop downloads for supported operating systems.
+- [Latest release](https://github.com/CarlvinceTan/polymux/releases/latest): Current desktop downloads for supported operating systems.
 
 ## Source and support
 
-- [Source repository](https://github.com/CarlvinceTan/Polymux): Source code, issues, and release history.
+- [Source repository](https://github.com/CarlvinceTan/polymux): Source code, issues, and release history.
 - [Privacy contact](mailto:carlvince@polymux.com): Privacy questions.
 
 ## Product facts
