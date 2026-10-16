@@ -88,9 +88,12 @@ func (s *Store) UpdateThread(ctx context.Context, id string, request contract.Up
 		return err
 	}
 	defer tx.Rollback()
-	var primary, lead string
-	if err := tx.QueryRowContext(ctx, `SELECT agent_id,lead_agent_id FROM threads WHERE id=?`, id).Scan(&primary, &lead); err != nil {
+	var primary, lead, title string
+	if err := tx.QueryRowContext(ctx, `SELECT agent_id,lead_agent_id,title FROM threads WHERE id=?`, id).Scan(&primary, &lead, &title); err != nil {
 		return err
+	}
+	if request.Title != nil {
+		title = *request.Title
 	}
 	if request.AgentIDs != nil {
 		if primary == id {
@@ -125,7 +128,10 @@ func (s *Store) UpdateThread(ctx context.Context, id string, request contract.Up
 	if exists != 1 {
 		return ErrMembers
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE threads SET title=?,agent_id=?,lead_agent_id=? WHERE id=?`, request.Title, primary, lead, id); err != nil {
+	if err := updatePin(ctx, tx, id, request.Pinned, request.PinOrder); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET title=?,agent_id=?,lead_agent_id=? WHERE id=?`, title, primary, lead, id); err != nil {
 		return err
 	}
 	return tx.Commit()

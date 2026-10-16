@@ -157,17 +157,17 @@ func TestLeadPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: "Changed", AgentIDs: []string{"a", "b"}}); err != nil {
+	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: new("Changed"), AgentIDs: []string{"a", "b"}}); err != nil {
 		t.Fatal(err)
 	}
 	group, err = s.Thread(t.Context(), group.ID)
 	if err != nil || group.LeadAgentID == nil || *group.LeadAgentID != "b" {
 		t.Fatalf("lead changed %+v %v", group, err)
 	}
-	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: "Bad", LeadAgentID: ptr("missing")}); !errors.Is(err, ErrMembers) {
+	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: new("Bad"), LeadAgentID: ptr("missing")}); !errors.Is(err, ErrMembers) {
 		t.Fatal("invalid lead accepted", err)
 	}
-	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: "Solo", AgentIDs: []string{"a"}}); err != nil {
+	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: new("Solo"), AgentIDs: []string{"a"}}); err != nil {
 		t.Fatal(err)
 	}
 	group, _ = s.Thread(t.Context(), group.ID)

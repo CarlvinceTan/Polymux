@@ -305,6 +305,13 @@
             "type": "string"
           },
           "minItems": 1
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "pinOrder": {
+          "type": "number",
+          "minimum": 0
         }
       },
       "required": [
@@ -315,7 +322,8 @@
         "lastSeq",
         "unreadCount",
         "title",
-        "agentIDs"
+        "agentIDs",
+        "pinned"
       ]
     },
     "Attachment": {
@@ -1429,11 +1437,16 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "pinOrder": {
+          "type": "number",
+          "minimum": 0
         }
       },
-      "required": [
-        "title"
-      ]
+      "minProperties": 1
     }
   },
   "oneOf": [

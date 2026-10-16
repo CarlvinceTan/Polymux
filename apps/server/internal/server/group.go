@@ -99,9 +99,15 @@ func (s *Server) updateThread(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) {
 		return
 	}
-	request.Title = strings.TrimSpace(request.Title)
-	if request.Title == "" || len(request.Title) > 128 {
-		fail(w, 400, "invalid_title", "Enter a chat name within 128 characters.")
+	if request.Title != nil {
+		title := strings.TrimSpace(*request.Title)
+		if title == "" || len(title) > 128 {
+			fail(w, 400, "invalid_title", "Enter a chat name within 128 characters.")
+			return
+		}
+		request.Title = &title
+	} else if request.Pinned == nil && request.PinOrder == nil && request.AgentIDs == nil && request.LeadAgentID == nil {
+		fail(w, 400, "invalid_request", "Choose a chat field to update.")
 		return
 	}
 	s.actorsMu.Lock()
@@ -127,6 +133,14 @@ func (s *Server) updateThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.Store.UpdateThread(r.Context(), thread.ID, request); err != nil {
+		if errors.Is(err, store.ErrPinLimit) {
+			fail(w, 409, "pin_limit", "Unpin a chat before pinning another. You can pin up to twelve chats.")
+			return
+		}
+		if errors.Is(err, store.ErrPinOrder) {
+			fail(w, 400, "invalid_pin_order", "Choose a nonnegative order for a pinned chat.")
+			return
+		}
 		if errors.Is(err, store.ErrMembers) {
 			fail(w, 400, "invalid_members", "Choose between one and sixteen different agents.")
 			return

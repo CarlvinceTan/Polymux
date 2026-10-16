@@ -78,6 +78,8 @@ type Agent struct {
 }
 
 type Thread struct {
+	Pinned      bool     `json:"pinned"`
+	PinOrder    *float64 `json:"pinOrder,omitempty"`
 	LeadAgentID *string  `json:"leadAgentID,omitempty"`
 	Runs        []Run    `json:"runs"`
 	ID          string   `json:"id"`
@@ -341,5 +343,7 @@ type VoiceResponse struct {
 type UpdateThreadRequest struct {
 	LeadAgentID *string  `json:"leadAgentID,omitempty"`
 	AgentIDs    []string `json:"agentIDs,omitempty"`
-	Title       string   `json:"title"`
+	Title       *string  `json:"title,omitempty"`
+	Pinned      *bool    `json:"pinned,omitempty"`
+	PinOrder    *float64 `json:"pinOrder,omitempty"`
 }

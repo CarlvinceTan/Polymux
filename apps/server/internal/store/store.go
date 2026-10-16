@@ -90,7 +90,10 @@ PRAGMA user_version=2;`)
 	if err := s.migrateNotices(ctx); err != nil {
 		return err
 	}
-	return s.migrateApprovals(ctx)
+	if err := s.migrateApprovals(ctx); err != nil {
+		return err
+	}
+	return s.migratePins(ctx)
 }
 
 func Now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
@@ -411,7 +414,7 @@ func (s *Store) Agents(ctx context.Context) ([]contract.Agent, error) {
 }
 
 func (s *Store) Threads(ctx context.Context) ([]contract.Thread, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,(SELECT count(*) FROM messages m WHERE m.thread_id=t.id AND m.role='assistant' AND m.seq>t.last_read_seq),(SELECT data FROM messages m WHERE m.thread_id=t.id ORDER BY seq DESC LIMIT 1),COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),(SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position)) FROM threads t JOIN agents a ON a.id=t.agent_id ORDER BY CASE t.id WHEN 'assistant' THEN 0 ELSE 1 END,t.id`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,(SELECT count(*) FROM messages m WHERE m.thread_id=t.id AND m.role='assistant' AND m.seq>t.last_read_seq),(SELECT data FROM messages m WHERE m.thread_id=t.id ORDER BY seq DESC LIMIT 1),COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),(SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position)),t.pinned,t.pin_order FROM threads t JOIN agents a ON a.id=t.agent_id ORDER BY t.pinned DESC,t.pin_order,CASE t.id WHEN 'assistant' THEN 0 ELSE 1 END,t.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +424,7 @@ func (s *Store) Threads(ctx context.Context) ([]contract.Thread, error) {
 		var t contract.Thread
 		var last sql.NullString
 		var members string
-		if err := rows.Scan(&t.ID, &t.AgentID, &t.LastReadSeq, &t.LastSeq, &t.UnreadCount, &last, &t.Title, &members); err != nil {
+		if err := rows.Scan(&t.ID, &t.AgentID, &t.LastReadSeq, &t.LastSeq, &t.UnreadCount, &last, &t.Title, &members, &t.Pinned, &t.PinOrder); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(members), &t.AgentIDs); err != nil {
@@ -461,7 +464,7 @@ func (s *Store) Threads(ctx context.Context) ([]contract.Thread, error) {
 func (s *Store) Thread(ctx context.Context, id string) (contract.Thread, error) {
 	var t contract.Thread
 	var members string
-	err := s.DB.QueryRowContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),(SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position)) FROM threads t JOIN agents a ON a.id=t.agent_id WHERE t.id=?`, id).Scan(&t.ID, &t.AgentID, &t.LastReadSeq, &t.LastSeq, &t.Title, &members)
+	err := s.DB.QueryRowContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),(SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position)),t.pinned,t.pin_order FROM threads t JOIN agents a ON a.id=t.agent_id WHERE t.id=?`, id).Scan(&t.ID, &t.AgentID, &t.LastReadSeq, &t.LastSeq, &t.Title, &members, &t.Pinned, &t.PinOrder)
 	if err == nil {
 		err = json.Unmarshal([]byte(members), &t.AgentIDs)
 	}
