@@ -21,13 +21,13 @@ func (*integrationTool) Name() string                           { return "manage
 func (*integrationTool) Label() string                          { return "Configure integrations" }
 func (*integrationTool) ExecutionMode() agent.ToolExecutionMode { return agent.ToolModeSequential }
 func (*integrationTool) Description() string {
-	return "List, register or remove this agent's MCP connections and trusted Markdown skill paths, or enable CLI tools. Changes persist and are available next turn, not immediately. Prefer CLI plus a skill for occasional/simple work; MCP for frequent structured calls. Decide whether to ask in normal text from the user's task and established preferences. Inspect existing setup; never copy credentials into arguments, URLs, skills or memory. This does not install software or alter OS permissions."
+	return "List shared MCP setup, attach or detach this agent by name, register shared MCP setup, or remove this agent's MCP connections and trusted Markdown skill paths, or enable CLI tools. MCP setup is shared, but use is enabled only for this agent; attach reuses shared setup without copying credentials. Hidden connections cannot be attached. Changes persist and are available next turn, not immediately. Prefer CLI plus a skill for occasional/simple work; MCP for frequent structured calls. Decide whether to ask in normal text from the user's task and established preferences. Inspect existing setup; never copy credentials into arguments, URLs, skills or memory. This does not install software or alter OS permissions."
 }
 func (t *integrationTool) Schema() ai.ToolSchema {
 	return ai.ToolSchema{Name: t.Name(), Description: t.Description(), Parameters: map[string]any{
 		"type": "object", "additionalProperties": false,
 		"properties": map[string]any{
-			"action":      map[string]any{"type": "string", "enum": []string{"list", "mcp", "skill", "remove", "enable_cli", "device"}},
+			"action":      map[string]any{"type": "string", "enum": []string{"list", "mcp", "skill", "remove", "enable_cli", "device", "attach", "detach"}},
 			"host":        map[string]any{"type": "string", "description": "Existing SSH alias or user@tailnet-host; uses existing host keys"},
 			"cua_binary":  map[string]any{"type": "string", "description": "Optional absolute Cua executable on the device; requires cua_socket too"},
 			"cua_socket":  map[string]any{"type": "string", "description": "Existing Cua daemon socket on the device"},
@@ -81,12 +81,28 @@ func (t *integrationTool) Execute(ctx context.Context, _ string, args json.RawMe
 	d.Devices = slices.Clone(d.Devices)
 	switch input.Action {
 	case "list":
-		// Credentials and command arguments are not part of the product inventory.
-		names := []string{}
-		for _, server := range d.MCP {
-			names = append(names, server.Name)
+		inventory, err := s.mcpInventory(ctx, a.id, d.MCP, false)
+		if err != nil {
+			return agent.AgentToolResult{}, err
 		}
-		return toolResult(map[string]any{"mcp": names, "skills": d.Skills, "tools": d.Tools, "devices": d.Devices})
+		names := []string{}
+		available := []string{}
+		for _, item := range inventory {
+			if item.Enabled {
+				names = append(names, item.Name)
+			}
+			if item.Shared {
+				available = append(available, item.Name)
+			}
+		}
+		return toolResult(map[string]any{"mcp": names, "availableMCP": available, "skills": d.Skills, "tools": d.Tools, "devices": d.Devices})
+	case "attach", "detach":
+		legacy := slices.ContainsFunc(d.MCP, func(config agentruntime.MCPServer) bool { return config.Name == input.Name })
+		enabled := input.Action == "attach"
+		if err := s.Store.BindMCP(ctx, a.id, input.Name, &enabled, nil, legacy); err != nil {
+			return agent.AgentToolResult{}, err
+		}
+		return toolResult(map[string]any{"configured": true, "available": "next turn"})
 	case "device":
 		device := agentruntime.Device{Name: input.Name, Host: input.Host}
 		if !device.Valid() {
@@ -163,14 +179,43 @@ func (t *integrationTool) Execute(ctx context.Context, _ string, args json.RawMe
 	default:
 		return agent.AgentToolResult{}, errors.New("invalid integration action")
 	}
-	if len(d.MCP) > 16 || len(d.Skills) > 16 || len(d.Devices) > 16 {
+	if len(d.MCP) > 64 || len(d.Skills) > 16 || len(d.Devices) > 16 {
 		return agent.AgentToolResult{}, errors.New("integration limit reached")
 	}
 	data, err := json.Marshal(d)
 	if err != nil {
 		return agent.AgentToolResult{}, err
 	}
-	if _, err := s.Store.UpdateDefinition(ctx, d.Agent, data); err != nil {
+	if input.Action == "mcp" || input.Action == "device" && input.CuaBinary != "" {
+		index := slices.IndexFunc(d.MCP, func(config agentruntime.MCPServer) bool { return config.Name == input.Name })
+		var devices []agentruntime.Device
+		if input.Action == "device" {
+			devices = d.Devices
+		}
+		nativeOnly := input.NativeOnly
+		if input.Action == "device" {
+			nativeOnly = new(true)
+		}
+		if err := s.registerMCP(ctx, d.MCP[index], a.id, d.MCP, devices, nativeOnly); err != nil {
+			return agent.AgentToolResult{}, err
+		}
+	} else if input.Action == "remove" {
+		mcp, err := json.Marshal(d.MCP)
+		if err != nil {
+			return agent.AgentToolResult{}, err
+		}
+		devices, err := json.Marshal(d.Devices)
+		if err != nil {
+			return agent.AgentToolResult{}, err
+		}
+		skills, err := json.Marshal(d.Skills)
+		if err != nil {
+			return agent.AgentToolResult{}, err
+		}
+		if err := s.Store.RemoveIntegrations(ctx, a.id, input.Name, mcp, devices, skills); err != nil {
+			return agent.AgentToolResult{}, err
+		}
+	} else if _, err := s.Store.UpdateDefinition(ctx, d.Agent, data); err != nil {
 		return agent.AgentToolResult{}, err
 	}
 	a.definition = d

@@ -947,3 +947,22 @@ public struct UpdateThreadRequest: Codable, Hashable, Sendable {
         self.title = title
     }
 }
+
+public struct MCPConnection: Codable, Hashable, Sendable {
+    public var name: String
+    public var enabled: Bool
+    public var hidden: Bool
+    public var shared: Bool
+
+    public init(
+        name: String = "",
+        enabled: Bool = false,
+        hidden: Bool = false,
+        shared: Bool = false
+    ) {
+        self.name = name
+        self.enabled = enabled
+        self.hidden = hidden
+        self.shared = shared
+    }
+}

@@ -209,11 +209,7 @@ func TestIntroQueuesUserTask(t *testing.T) {
 }
 
 func TestToolsAreRedacted(t *testing.T) {
-	api, _ := startTest(t, &testFactory{})
-	a := api.actors["assistant"]
-	a.mu.Lock()
-	a.session = &cycleSession{}
-	a.mu.Unlock()
+	api, _ := startTest(t, &cycleFactory{})
 	request := contract.SendRequest{ID: "cycle", Text: "Use tools", AttachmentIDs: []string{}}
 	if _, _, err := api.Store.Send(t.Context(), "assistant", request, []contract.Part{{Kind: "text", Text: &request.Text}}, "assistant"); err != nil {
 		t.Fatal(err)
@@ -240,6 +236,12 @@ func TestToolsAreRedacted(t *testing.T) {
 	if strings.Join(kinds, ",") != "tool.start,tool.done" {
 		t.Fatalf("events %v", kinds)
 	}
+}
+
+type cycleFactory struct{}
+
+func (*cycleFactory) Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error) {
+	return &cycleSession{}, nil
 }
 
 type cycleSession struct{}

@@ -1434,6 +1434,30 @@
       "required": [
         "title"
       ]
+    },
+    "MCPConnection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "shared": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "enabled",
+        "hidden",
+        "shared"
+      ]
     }
   },
   "oneOf": [

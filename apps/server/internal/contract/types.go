@@ -343,3 +343,10 @@ type UpdateThreadRequest struct {
 	AgentIDs    []string `json:"agentIDs,omitempty"`
 	Title       string   `json:"title"`
 }
+
+type MCPConnection struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	Hidden  bool   `json:"hidden"`
+	Shared  bool   `json:"shared"`
+}

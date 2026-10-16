@@ -90,7 +90,10 @@ PRAGMA user_version=2;`)
 	if err := s.migrateNotices(ctx); err != nil {
 		return err
 	}
-	return s.migrateApprovals(ctx)
+	if err := s.migrateApprovals(ctx); err != nil {
+		return err
+	}
+	return s.migrateMCP(ctx)
 }
 
 func Now() string { return time.Now().UTC().Format(time.RFC3339Nano) }

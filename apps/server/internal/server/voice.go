@@ -146,6 +146,10 @@ func (v *voiceWork) run(ctx context.Context, task voiceTask) (agentruntime.Resul
 	d := a.definition
 	a.mu.Unlock()
 	v.server.actorsMu.RUnlock()
+	d.MCP, err = v.server.effectiveMCP(ctx, task.target, d.MCP)
+	if err != nil {
+		return empty, "", err
+	}
 	d.Ephemeral = true
 	d.Scope = "voice-" + v.id
 	d.BeforeTool = beforeTool

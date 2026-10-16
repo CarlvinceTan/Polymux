@@ -82,6 +82,7 @@ type actor struct {
 	definition agentruntime.Definition
 	revision   uint64
 	sessionRev uint64
+	sessionMCP [32]byte
 	mu         sync.Mutex
 	sessionMu  sync.Mutex
 	session    agentruntime.Session
@@ -262,6 +263,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routes() {
 	s.mountProviders()
+	s.mcpRoutes()
 	s.mux.HandleFunc("POST /triggers/{id}/events", s.ingestEvent)
 	s.mux.HandleFunc("GET /notifications", s.notices)
 	s.mux.HandleFunc("PUT /notifications/device", s.registerPush)
@@ -1007,13 +1009,24 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	}
 	a.mu.Lock()
 	d, revision := a.definition, a.revision
+	effective, scopeErr := s.effectiveMCP(runCtx, a.id, d.MCP)
+	if scopeErr != nil {
+		err = errors.Join(err, scopeErr)
+	} else {
+		d.MCP = effective
+	}
+	configJSON, scopeErr := json.Marshal(d.MCP)
+	if scopeErr != nil {
+		err = errors.Join(err, scopeErr)
+	}
+	scopeHash := sha256.Sum256(configJSON)
 	sess := a.session
 	isolated := delegated || automatic(work.Trigger)
 	if isolated {
 		sess = nil
 	}
 	var stale agentruntime.Session
-	reopen := a.sessionRev != revision || work.Trigger == "created"
+	reopen := a.sessionRev != revision || a.sessionMCP != scopeHash || work.Trigger == "created"
 	if health, ok := sess.(interface{ Reusable() bool }); ok {
 		reopen = reopen || !health.Reusable()
 	}
@@ -1147,6 +1160,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				a.mu.Lock()
 				a.session = sess
 				a.sessionRev = revision
+				a.sessionMCP = scopeHash
 				a.mu.Unlock()
 			}
 		}
