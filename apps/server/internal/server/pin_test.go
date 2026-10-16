@@ -63,7 +63,7 @@ func TestPinAPI(t *testing.T) {
 	response = httptest.NewRecorder()
 	api.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/threads", nil))
 	var threads []contract.Thread
-	if err := json.Unmarshal(response.Body.Bytes(), &threads); err != nil || len(threads) != 2 || threads[0].ID != "b" || !threads[0].Pinned {
+	if err := json.Unmarshal(response.Body.Bytes(), &threads); err != nil || len(threads) != 2 || threads[0].ID != "b" || (threads[0].Pinned == nil || !*threads[0].Pinned) {
 		t.Fatal("thread list did not expose ordered pins", err)
 	}
 }

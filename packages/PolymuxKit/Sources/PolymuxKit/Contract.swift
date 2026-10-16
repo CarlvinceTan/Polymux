@@ -220,6 +220,8 @@ public struct Thread: Codable, Hashable, Sendable {
     public var lastMessage: Message?
     public var title: String
     public var agentIDs: [String]
+    public var pinned: Bool?
+    public var pinOrder: Double?
 
     public init(
         leadAgentID: String? = nil,
@@ -231,7 +233,9 @@ public struct Thread: Codable, Hashable, Sendable {
         unreadCount: Int64 = 0,
         lastMessage: Message? = nil,
         title: String = "",
-        agentIDs: [String] = []
+        agentIDs: [String] = [],
+        pinned: Bool? = nil,
+        pinOrder: Double? = nil
     ) {
         self.leadAgentID = leadAgentID
         self.runs = runs
@@ -243,6 +247,8 @@ public struct Thread: Codable, Hashable, Sendable {
         self.lastMessage = lastMessage
         self.title = title
         self.agentIDs = agentIDs
+        self.pinned = pinned
+        self.pinOrder = pinOrder
     }
 }
 
@@ -935,15 +941,21 @@ public struct VoiceResponse: Codable, Hashable, Sendable {
 public struct UpdateThreadRequest: Codable, Hashable, Sendable {
     public var leadAgentID: String?
     public var agentIDs: [String]?
-    public var title: String
+    public var title: String?
+    public var pinned: Bool?
+    public var pinOrder: Double?
 
     public init(
         leadAgentID: String? = nil,
         agentIDs: [String]? = nil,
-        title: String = ""
+        title: String? = nil,
+        pinned: Bool? = nil,
+        pinOrder: Double? = nil
     ) {
         self.leadAgentID = leadAgentID
         self.agentIDs = agentIDs
         self.title = title
+        self.pinned = pinned
+        self.pinOrder = pinOrder
     }
 }

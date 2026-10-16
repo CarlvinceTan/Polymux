@@ -55,7 +55,7 @@ func TestPinPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	threads, err = s.Threads(t.Context())
-	if err != nil || threads[0].ID != group.ID || !threads[0].Pinned || threads[0].PinOrder == nil || *threads[0].PinOrder != 0.5 || threads[0].UnreadCount != 1 {
+	if err != nil || threads[0].ID != group.ID || (threads[0].Pinned == nil || !*threads[0].Pinned) || threads[0].PinOrder == nil || *threads[0].PinOrder != 0.5 || threads[0].UnreadCount != 1 {
 		t.Fatal("pin order did not survive reopening", err)
 	}
 	after, err := s.Thread(t.Context(), group.ID)
@@ -66,7 +66,7 @@ func TestPinPersists(t *testing.T) {
 		t.Fatal("pin update lost a live message", err)
 	}
 	b, err := s.Thread(t.Context(), "b")
-	if err != nil || b.Pinned || b.PinOrder != nil {
+	if err != nil || (b.Pinned == nil || *b.Pinned) || b.PinOrder != nil {
 		t.Fatal("unpin did not clear its order", err)
 	}
 	var title string
@@ -98,7 +98,7 @@ func TestPinLimit(t *testing.T) {
 		t.Fatal("pin limit was not enforced", err)
 	}
 	after, err := s.Thread(t.Context(), group.ID)
-	if err != nil || after.Pinned || after.Title != group.Title || !reflect.DeepEqual(after.AgentIDs, group.AgentIDs) {
+	if err != nil || (after.Pinned == nil || *after.Pinned) || after.Title != group.Title || !reflect.DeepEqual(after.AgentIDs, group.AgentIDs) {
 		t.Fatal("pin limit left a partial membership/title update", err)
 	}
 	if err := s.UpdateThread(t.Context(), agents[0].ID, contract.UpdateThreadRequest{Pinned: new(true)}); err != nil {
@@ -145,7 +145,7 @@ func TestPinUpgrade(t *testing.T) {
 	}
 	defer s.Close()
 	thread, err := s.Thread(t.Context(), "a")
-	if err != nil || thread.Title != "Existing agent" || thread.Pinned || thread.PinOrder != nil {
+	if err != nil || thread.Title != "Existing agent" || (thread.Pinned == nil || *thread.Pinned) || thread.PinOrder != nil {
 		t.Fatal("existing thread was reset during the pin migration", err)
 	}
 }

@@ -78,8 +78,6 @@ type Agent struct {
 }
 
 type Thread struct {
-	Pinned      bool     `json:"pinned"`
-	PinOrder    *float64 `json:"pinOrder,omitempty"`
 	LeadAgentID *string  `json:"leadAgentID,omitempty"`
 	Runs        []Run    `json:"runs"`
 	ID          string   `json:"id"`
@@ -90,6 +88,8 @@ type Thread struct {
 	LastMessage *Message `json:"lastMessage,omitempty"`
 	Title       string   `json:"title"`
 	AgentIDs    []string `json:"agentIDs"`
+	Pinned      *bool    `json:"pinned,omitempty"`
+	PinOrder    *float64 `json:"pinOrder,omitempty"`
 }
 
 type Attachment struct {
