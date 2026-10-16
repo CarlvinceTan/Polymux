@@ -67,6 +67,11 @@ func updatePin(ctx context.Context, tx *sql.Tx, id string, pinned *bool, order *
 	if !next {
 		position = nil
 	}
+	if next {
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET section_id=NULL,section_order=NULL WHERE id=?`, id); err != nil {
+			return err
+		}
+	}
 	_, err := tx.ExecContext(ctx, `UPDATE threads SET pinned=?,pin_order=? WHERE id=?`, next, position, id)
 	return err
 }

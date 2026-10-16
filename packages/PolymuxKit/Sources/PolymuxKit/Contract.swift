@@ -222,6 +222,8 @@ public struct Thread: Codable, Hashable, Sendable {
     public var agentIDs: [String]
     public var pinned: Bool?
     public var pinOrder: Double?
+    public var sectionID: String?
+    public var sectionOrder: Double?
 
     public init(
         leadAgentID: String? = nil,
@@ -235,7 +237,9 @@ public struct Thread: Codable, Hashable, Sendable {
         title: String = "",
         agentIDs: [String] = [],
         pinned: Bool? = nil,
-        pinOrder: Double? = nil
+        pinOrder: Double? = nil,
+        sectionID: String? = nil,
+        sectionOrder: Double? = nil
     ) {
         self.leadAgentID = leadAgentID
         self.runs = runs
@@ -249,6 +253,8 @@ public struct Thread: Codable, Hashable, Sendable {
         self.agentIDs = agentIDs
         self.pinned = pinned
         self.pinOrder = pinOrder
+        self.sectionID = sectionID
+        self.sectionOrder = sectionOrder
     }
 }
 
@@ -957,5 +963,33 @@ public struct UpdateThreadRequest: Codable, Hashable, Sendable {
         self.title = title
         self.pinned = pinned
         self.pinOrder = pinOrder
+    }
+}
+
+public struct Section: Codable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public var order: Double
+    public var collapsed: Bool
+    public var createdAt: String
+    public var updatedAt: String
+    public var chatCount: Int64
+
+    public init(
+        id: String = "",
+        name: String = "",
+        order: Double = 0,
+        collapsed: Bool = false,
+        createdAt: String = "",
+        updatedAt: String = "",
+        chatCount: Int64 = 0
+    ) {
+        self.id = id
+        self.name = name
+        self.order = order
+        self.collapsed = collapsed
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.chatCount = chatCount
     }
 }

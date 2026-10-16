@@ -312,6 +312,12 @@
         "pinOrder": {
           "type": "number",
           "minimum": 0
+        },
+        "sectionID": {
+          "type": "string"
+        },
+        "sectionOrder": {
+          "type": "number"
         }
       },
       "required": [
@@ -1447,6 +1453,42 @@
       },
       "minProperties": 1,
       "required": []
+    },
+    "Section": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "order": {
+          "type": "number"
+        },
+        "collapsed": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "chatCount": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "order",
+        "collapsed",
+        "createdAt",
+        "updatedAt",
+        "chatCount"
+      ]
     }
   },
   "oneOf": [

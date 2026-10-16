@@ -78,18 +78,20 @@ type Agent struct {
 }
 
 type Thread struct {
-	LeadAgentID *string  `json:"leadAgentID,omitempty"`
-	Runs        []Run    `json:"runs"`
-	ID          string   `json:"id"`
-	AgentID     string   `json:"agentID"`
-	LastReadSeq int64    `json:"lastReadSeq"`
-	LastSeq     int64    `json:"lastSeq"`
-	UnreadCount int64    `json:"unreadCount"`
-	LastMessage *Message `json:"lastMessage,omitempty"`
-	Title       string   `json:"title"`
-	AgentIDs    []string `json:"agentIDs"`
-	Pinned      *bool    `json:"pinned,omitempty"`
-	PinOrder    *float64 `json:"pinOrder,omitempty"`
+	LeadAgentID  *string  `json:"leadAgentID,omitempty"`
+	Runs         []Run    `json:"runs"`
+	ID           string   `json:"id"`
+	AgentID      string   `json:"agentID"`
+	LastReadSeq  int64    `json:"lastReadSeq"`
+	LastSeq      int64    `json:"lastSeq"`
+	UnreadCount  int64    `json:"unreadCount"`
+	LastMessage  *Message `json:"lastMessage,omitempty"`
+	Title        string   `json:"title"`
+	AgentIDs     []string `json:"agentIDs"`
+	Pinned       *bool    `json:"pinned,omitempty"`
+	PinOrder     *float64 `json:"pinOrder,omitempty"`
+	SectionID    *string  `json:"sectionID,omitempty"`
+	SectionOrder *float64 `json:"sectionOrder,omitempty"`
 }
 
 type Attachment struct {
@@ -346,4 +348,14 @@ type UpdateThreadRequest struct {
 	Title       *string  `json:"title,omitempty"`
 	Pinned      *bool    `json:"pinned,omitempty"`
 	PinOrder    *float64 `json:"pinOrder,omitempty"`
+}
+
+type Section struct {
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	Order     float64 `json:"order"`
+	Collapsed bool    `json:"collapsed"`
+	CreatedAt string  `json:"createdAt"`
+	UpdatedAt string  `json:"updatedAt"`
+	ChatCount int64   `json:"chatCount"`
 }

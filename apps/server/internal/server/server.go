@@ -290,6 +290,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /agents/{id}/focus/answer", s.answerFocus)
 	s.mux.HandleFunc("GET /agents/{id}/proactivity", s.getProactivity)
 	s.mux.HandleFunc("PATCH /agents/{id}/proactivity", s.setProactivity)
+	s.sidebarRoutes()
 	s.mux.HandleFunc("GET /threads", func(w http.ResponseWriter, r *http.Request) {
 		v, err := s.Store.Threads(r.Context())
 		s.respond(w, v, err)
