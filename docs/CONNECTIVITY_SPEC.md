@@ -146,7 +146,7 @@ Status pill in the app: "Same Wi-Fi" / "Direct" / "Via relay: <name>" / "Offline
 - Mobile/CGNAT: https://ar5iv.labs.arxiv.org/html/2311.04658 , https://cs.ucr.edu/~zhiyunq/pub/sigcomm11_netpiculet.pdf
 - OpenCode (mDNS reference): https://opencode.ai/docs/server/ , https://opencode.ai/docs/web/
 - OpenTunnel (rejected): https://opentunnel.net/
-- Polymux code: github.com/CarlvinceTan/Polymux @ dd052ff, apps/server/cmd/server/{main,host,device}.go
+- Polymux code: github.com/CarlvinceTan/polymux @ dd052ff, apps/server/cmd/server/{main,host,device}.go
 
 ## 10. Optional integrations (amendment, 11 Oct 2026)
 Server-free linking (§2–§6) stays the default and needs nothing else. **Tailscale is kept**, not removed: it becomes an opt-in integration instead of a requirement. Opt-in integrations exist for users who want always-reachable links and/or background push; none is enabled by default and none is run by Polymux.

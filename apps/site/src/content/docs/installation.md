@@ -14,7 +14,7 @@ Polymux is a desktop application for macOS, Windows, and Linux. Download release
 
 ## Download a release
 
-Use the [download button](/#download) on the Polymux website. It selects the appropriate release for the current operating system when one is available. You can also browse every build on [GitHub Releases](https://github.com/CarlvinceTan/Polymux/releases/latest).
+Use the [download button](/#download) on the Polymux website. It selects the appropriate release for the current operating system when one is available. You can also browse every build on [GitHub Releases](https://github.com/CarlvinceTan/polymux/releases/latest).
 
 | Platform | Package | Current support |
 | --- | --- | --- |
@@ -34,4 +34,4 @@ Open **Settings → General** to see the installed version and check for updates
 
 ## Build from source
 
-Developers can build Polymux from its [public repository](https://github.com/CarlvinceTan/Polymux). The repository README and `docs/DEVELOPMENT.md` contain the current setup, test, and packaging commands.
+Developers can build Polymux from its [public repository](https://github.com/CarlvinceTan/polymux). The repository README and `docs/DEVELOPMENT.md` contain the current setup, test, and packaging commands.

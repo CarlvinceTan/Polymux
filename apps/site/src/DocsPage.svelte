@@ -109,7 +109,7 @@
     </div>
 
     <div class="site-shell-actions docs-header-actions">
-      <a class="site-shell-github" href="https://github.com/CarlvinceTan/Polymux" aria-label="Polymux on GitHub">
+      <a class="site-shell-github" href="https://github.com/CarlvinceTan/polymux" aria-label="Polymux on GitHub">
         <img src={github} alt="" />
       </a>
       <a class="site-shell-download" href="/#download">Download</a>
