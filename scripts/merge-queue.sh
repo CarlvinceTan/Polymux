@@ -55,16 +55,22 @@ approved() {  # $1 pr, $2 head -> sets RS
   RS=$(reviewed_sha "$1") || return 1; merge_only "$RS" "$2" || { echo "approval: head ${2:0:7} is not reviewed ${RS:0:7} plus merge-only commits" >> "$LOG"; return 1; }; }
 # fix_brief PR BRANCH LANE TASKFILE WHY LOG: a fix brief that passes queue-write --check: "# title" first, then
 # needs:/type:/expected_min: (from the task file when it has them), pr:, branch:, lane:, then the brief body and failure tail.
-fix_brief() { local pr=$1 br=$2 ln=$3 tf=$4 why=$5 log=$6 t="" tl="" nd="" ty="" ex="" h='^(unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|lane):'
+fix_brief() { local pr=$1 br=$2 ln=$3 tf=$4 why=$5 log=$6 t="" tl="" nd="" ty="" ex="" areas="" labels="" value mapped h='^(unit|needs|scope|expected_min|card|issue|labels|branch|after|pr|priority|type|area|lane):'
   if [ -n "$tf" ] && [ -f "$tf" ]; then tl=$(grep -m1 -E '^# [^ ]' "$tf"); t=$tl
     # no "# " title: the first non-header, non-blank line is the title (as run-lane reads it)
     [ -n "$t" ] || { tl=$(grep -vE "$h" "$tf" | grep -m1 -vE '^[[:space:]]*$'); [ -n "$tl" ] && t="# $tl"; }
-    nd=$(sed -n 's/^needs: *//p' "$tf" | head -1); ty=$(sed -n 's/^type: *//p' "$tf" | head -1); ex=$(sed -n 's/^expected_min: *\([0-9][0-9]*\) *$/\1/p' "$tf" | head -1); fi
+    nd=$(sed -n 's/^needs: *//p' "$tf" | head -1); ty=$(sed -n 's/^type: *//p' "$tf" | head -1); ex=$(sed -n 's/^expected_min: *\([0-9][0-9]*\) *$/\1/p' "$tf" | head -1)
+    labels=$(sed -n 's/^[Ll]abels: *//p' "$tf" | head -1); [ -z "$labels" ] || labels=$(label_list "$labels") || return 2
+    for value in $(sed -n 's/^area: *//p' "$tf" | head -1 | tr ',' ' '); do
+      mapped=$(gh_label area "$value") || return 2; mapped=$(printf '%s' "$mapped" | tr 'A-Z' 'a-z'); areas="${areas:+$areas,}$mapped"
+    done; fi
+  ty=$(gh_label type "${ty:-bug}") || return 2; ty=$(printf '%s' "$ty" | tr 'A-Z' 'a-z')
   echo "${t:-# Fix PR #$pr after post-approval re-verify}"
   echo "needs: ${nd:-none}"; echo "type: ${ty:-bug}"; echo "expected_min: ${ex:-60}"; echo "pr: $pr"; echo "branch: $br"; [ -n "$ln" ] && echo "lane: $ln"
-  # every other header of the original brief (scope, unit, card/issue, labels, after, area, priority) carried as-is
-  [ -n "$tf" ] && [ -f "$tf" ] && grep -E '^(unit|scope|card|issue|labels|after|area|priority):' "$tf"
-  if [ -n "$tl" ]; then echo; grep -vE "$h" "$tf" | awk -v t="$tl" '!d && $0 == t { d = 1; next } { print }'; fi
+  [ -z "$areas" ] || echo "area: $areas"; [ -z "$labels" ] || echo "labels: $labels"
+  # Other routing and scope headers stay as written.
+  [ -n "$tf" ] && [ -f "$tf" ] && grep -E '^(unit|scope|card|issue|after|priority):' "$tf"
+  if [ -n "$tl" ]; then echo; grep -viE "$h" "$tf" | awk -v t="$tl" '!d && $0 == t { d = 1; next } { print }'; fi
   printf '\n## Post-approval re-verify failed (merge lane)\n%s. Merge origin/main into this branch (no rebase or force-push), fix, verify, and push to PR #%s.\n```\n%s\n```\n' "$why" "$pr" "$(tail -n 40 "$log")"; }
 case ${1:-} in
 enqueue)

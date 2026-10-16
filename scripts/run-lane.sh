@@ -58,8 +58,8 @@ fi
 LBF=${TASKF:-$(mktemp)}; [ -n "$TASKF" ] || printf '%s\n' "$TASK" > "$LBF"
 PR_TITLE=$(brief_title "$LBF"); PR_LINK=$(brief_link "$LBF"); PR_WARNING=""
 [ -n "$PR_LINK" ] || PR_WARNING="missing issue: in brief"
-LABELS=$(brief_labels "$LBF" "$(basename "${TASKF:-inline}")"); [ -n "$TASKF" ] || rm -f "$LBF"
-BL=$(sed -n 's/^[Ll]abels: *//p' "${TASKF:-/dev/null}" 2>/dev/null | head -1 | tr -d ' '); [ -n "$BL" ] && LABELS=$BL   # brief "Labels:" line wins
+LABELS=$(brief_labels "$LBF" "$(basename "${TASKF:-inline}")") || { [ -n "$TASKF" ] || rm -f "$LBF"; echo "refusing: invalid brief label headers"; exit 2; }
+[ -n "$TASKF" ] || rm -f "$LBF"
 # Lane gate FIRST: a disabled (lane1 = main Cursor account), expired or unknown lane never runs; no claim, worktree or vault read.
 cfg usable "$LANE" || { echo "refusing: lane '$LANE' is disabled, expired or unknown in agents/lanes.toml"; exit 5; }
 cfg mainkey "$LANE" && { echo "refusing: lane '$LANE' key/account points at the main account"; exit 5; }
