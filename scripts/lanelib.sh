@@ -159,6 +159,9 @@ gh_write() { local -a a=(); local v tmp=""
     -F|--body-file) tmp=$(mktemp); if [ "$2" = - ]; then notion_scrub; else notion_scrub < "$2"; fi > "$tmp"; a+=("$1" "$tmp"); shift 2;;
     *) v=$(printf '%s\n' "$1" | notion_scrub); a+=("$v"); shift;; esac; done
   ${GH_CMD:-gh} "${a[@]}"; local rc=$?; [ -n "$tmp" ] && rm -f "$tmp"; return $rc; }
+# HMAC key for signed review verdicts (verdict.py). VERDICT_KEY_CMD: test hook.
+verdict_key() { if [ -n "${VERDICT_KEY_CMD:-}" ]; then bash -c "$VERDICT_KEY_CMD"; else
+  vault get "${VERDICT_KEY_TITLE:-Polymux review verdict HMAC}" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])'; fi; }
 # Worktree in-use checks (cleanup.sh, run-lane.sh free_branch): live verify lock or fresh verify marker,
 # a build slot naming it, a live unit lock for it, or any process with the path in its args.
 fresh() { [ -e "$1" ] && [ $(( $(date +%s) - $(_mtime "$1") )) -lt $(( ${VERIFY_FRESH_MIN:-120} * 60 )) ]; }

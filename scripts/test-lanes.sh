@@ -24,7 +24,7 @@ TOML
 printf '.build/\n' > .gitignore   # same ignore as the real repo: scratch homes stay invisible to git status
 echo base > README; git add -A; git commit -qm base; git remote add origin "$T/origin.git"; git push -q origin main
 export HOME="$T/home" LANES_HOME="$T/home/ops/lanes" LANES_WT="$T/home/code/wt" LANE_SKIP_SETUP=1 LANE_TARGET=testmac
-export LANE_STAGGER=0 LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
+export LANE_POLL=1 LANE_GUARD="$T/no-lane-guard" DISPATCH_INTAKE="$T/intake.jsonl"
 mkdir -p "$HOME/code/wt" "$LANES_HOME"
 export LANE_CHAIN_DEBOUNCE_S=0 LANE_BREAKER_N=99   # global breaker off except in its own test (19e); many cases fail fast on purpose
 task() { printf '# %s\nneeds: none\nexpected_min: 5\n' "$1" > "$T/$2.task"; echo "$T/$2.task"; }

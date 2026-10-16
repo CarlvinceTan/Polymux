@@ -34,9 +34,6 @@ MAIN=${MERGE_MAIN_CHECKOUT:-$HOME/code/proj/Polymux}; SLUG_REPO=$(repo_slug "$RE
 ev() { printf '%s\t%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$1" "$2" merge "${3:-}" >> "$EV"; }
 BU() { [ -n "$UNIT" ] && bash "$SD/board-update.sh" "$@" >> "$LOG" 2>&1 || true; }
 field() { sed -n "s/^$1: *//p" "$2" 2>/dev/null | head -1; }
-QMARK="<!-- polymux-merge-queue -->"   # tags anything the queue ever writes to GitHub; verdict.py ignores it
-verdict_key() { if [ -n "${VERDICT_KEY_CMD:-}" ]; then bash -c "$VERDICT_KEY_CMD"; else
-  vault get "${VERDICT_KEY_TITLE:-Polymux review verdict HMAC}" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])'; fi; }
 reviewed_sha() {  # $1 pr -> prints the sha of the newest valid signed verdict if it is PASS; else fails
   local f r; f=$(mktemp)
   gh api "repos/$SLUG_REPO/issues/$1/comments" --paginate --jq '.[] | {id, created_at, body, user: {login: .user.login}}' > "$f" 2>>"$LOG" || { rm -f "$f"; return 1; }

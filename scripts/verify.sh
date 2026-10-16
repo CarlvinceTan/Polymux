@@ -58,12 +58,10 @@ acquire() {  # mkdir is atomic; stale slots (dead pid) are reclaimed
   while :; do
     local m=$MAX   # ~/ops/pr-verify busy -> share politely: at most one of ours at a time
     pgrep -f "xcodebuild.*ops/pr-verify" >/dev/null && m=1
-    if :; then
-      for i in $(seq 1 "$m"); do
-        s="$LOCKS/slot$i"
-        if lock_take "$s"; then echo "$ROOT" > "$s/wt"; SLOT=$s; return; fi
-      done
-    fi
+    for i in $(seq 1 "$m"); do
+      s="$LOCKS/slot$i"
+      if lock_take "$s"; then echo "$ROOT" > "$s/wt"; SLOT=$s; return; fi
+    done
     [ $((SECONDS - t0)) -gt 7200 ] && { echo "verify: no build slot after 2h"; echo blocked > "$P/level"; exit 3; }
     sleep 15
   done

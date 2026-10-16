@@ -136,7 +136,7 @@ case $1 in
   storm(){ [ "$(awk -F'\t' -v c=$((NOW-SW)) '$1>=c' "$RF" 2>/dev/null | wc -l | tr -d ' ')" -ge "$SN" ]; }
   storm && { log "dispatch: STORM: $SN+ units refused in a row within ${SW}s ($(cut -f2,3 "$RF" | tail -3 | tr '\t\n' ': ')); not dispatching until it clears (600 s tick)"; exit 0; }
   shift; LN=""; FREE=""; while [ $# -gt 0 ]; do case $1 in --free-lane) FREE=${2:-}; shift; shift;; *) LN=$1; shift;; esac; done
-  DC=$(mktemp); FETCHED=""; trap fin EXIT
+  DC=$(mktemp); trap fin EXIT
   supersede_holds || { log "dispatch: could not archive a superseded hold; not dispatching"; exit 1; }
   holds
   RLB=${RUN_LANE:-$LANES_REPO/scripts/run-lane.sh}; RCK=""; grep -q -- '--check' "$RLB" 2>/dev/null && RCK=1   # run-lane's own refusal rules, side-effect free
