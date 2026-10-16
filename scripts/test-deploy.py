@@ -291,7 +291,7 @@ class NativeTests(unittest.TestCase):
                               "CFBundlePackageType": "APPL", "NSPrincipalClass": "NSApplication"}, output)
             entitlements = root / "entitlements.plist"
             entitlements.write_bytes(plistlib.dumps(build.adhoc_entitlements(build.ROOT / "apps/Polymux/Polymux-macOS.entitlements")))
-            subprocess.run(["codesign", "--force", "--sign", "-", "--entitlements", str(entitlements), str(app)], check=True, capture_output=True)
+            subprocess.run(["codesign", "--force", "--options", "runtime", "--sign", "-", "--entitlements", str(entitlements), str(app)], check=True, capture_output=True)
             observer = root / "Observe.swift"
             observer.write_text('''import AppKit
 let before = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
