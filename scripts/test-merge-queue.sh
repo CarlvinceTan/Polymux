@@ -87,8 +87,8 @@ git push -q origin "$MC:refs/heads/p17"; enq 17 p17; cm 1 "$(verdict 17 "$S" PAS
 check "merge whose tree equals a CONFLICTED merge-tree result (exit 1) voids the approval" '! merged 17 && grep -q "merge-tree exit 1" "$LANES_HOME/logs/merge-pr17.log"'
 # 18 merge lane verifies with VERIFY_TARGETS=full even when the caller's env says affected
 S=$(mkpr p18); enq 18 p18; cm 1 "$(verdict 18 "$S" PASS)" > "$T/comments.jsonl"
-: > "$T/gh.log"; VERIFY_TARGETS=affected MERGE_VERIFY_CMD='echo "VT=$VERIFY_TARGETS" > "$HOME/vt18"; mkdir -p .build/proof && echo unit-test-verified > .build/proof/level' bash scripts/merge-queue.sh run >/dev/null 2>&1
-check "merge lane forces VERIFY_TARGETS=full (inherited affected ignored)" 'merged 18 && [ "$(cat "$HOME/vt18")" = VT=full ]'
+: > "$T/gh.log"; VERIFY_TARGETS=affected MERGE_VERIFY_CMD='printf "VT=%s\nPR=%s\n" "$VERIFY_TARGETS" "$VERIFY_PR" > "$HOME/vt18"; mkdir -p .build/proof && echo unit-test-verified > .build/proof/level' bash scripts/merge-queue.sh run >/dev/null 2>&1
+check "merge lane forces full verification and passes the PR for evidence labels" 'merged 18 && [ "$(cat "$HOME/vt18")" = "$(printf "VT=full\nPR=18")" ]'
 # 12 review-verdict.sh output is accepted by the checker; key never printed
 S=$(mkpr p12); cp "$SRC/scripts/review-verdict.sh" scripts/
 printf '#!/bin/bash\necho "$*" >> "%s/gh.log"\ncase "$1 $2" in "pr view") echo %s;; "api repos"*) cat "%s/comments.jsonl";; esac; exit 0\n' "$T" "$S" "$T" > "$T/bin/gh"

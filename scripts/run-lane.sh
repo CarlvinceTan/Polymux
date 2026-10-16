@@ -20,7 +20,7 @@ publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own 
   for f in "$wt"/.build/proof/*.png "$wt"/.build/proof/*.mp4; do [ -f "$f" ] && n=$((n+1)); done
   [ $n = 0 ] && { echo "_no media captured_"; return; }
   err=$( cd "$wt" && export GIT_INDEX_FILE=$idx && git read-tree --empty &&
-    for f in .build/proof/*.png .build/proof/*.mp4; do [ -f "$f" ] || continue
+    for f in .build/proof/*.png .build/proof/*.mp4 .build/proof/evidence.json; do [ -f "$f" ] || continue
       git update-index --add --cacheinfo "100644,$(git hash-object -w "$f"),$(basename "$f")" || exit 1; done &&
     c=$(git commit-tree "$(git write-tree)" -m "proof $id") &&
     git push -q origin "$c:refs/heads/$ref" 2>&1 ); local rc=$?; rm -f "$idx"
@@ -29,7 +29,8 @@ publish_proof() {  # $1 worktree, $2 task id -> markdown; media goes to its own 
     echo "_media upload to \`$ref\` failed: $(echo "$err" | tail -1 | cut -c1-200)_"; return; fi
   local u="https://github.com/$SLUG_REPO/raw/$ref"; echo "$u" > "$wt/.build/proof/url-base"   # for approve-proof.sh
   for f in "$wt"/.build/proof/*.png; do [ -f "$f" ] && echo "![$(basename "$f")]($u/$(basename "$f"))"; done
-  [ -f "$wt/.build/proof/ios.mp4" ] && echo "[iOS video]($u/ios.mp4)"
+  for f in "$wt"/.build/proof/*.mp4; do [ -f "$f" ] && echo "[$(basename "$f")]($u/$(basename "$f"))"; done
+  [ -f "$wt/.build/proof/evidence.json" ] && echo "[Capture details]($u/evidence.json)"
 }
 if [ "${1:-}" = "--verify-only" ]; then
   BR=$2; ID="verify-${BR//\//-}"; WT="$WTR/$ID"; BL=$(branch_lock_dir "$BR")
@@ -74,7 +75,8 @@ Rules: work only in this worktree. Never search or list outside it (no ls, find 
 'bash "$SD/verify.sh"' and iterate until it exits 0 (never run it in the background). Commit your work with a clear message
 ending in the trailer line 'Lane: $1/$(cfg lane "$1" agent)'.
 Do not push and do not open a PR. Never skip, delete or weaken tests.
-For UI changes, capture the affected flow in light and dark themes. Save screenshots in .build/captures; performance or responsiveness work also needs a short .mp4 recording there.
+After your final source commit, capture each affected UI flow in light and dark themes in .build/captures. Performance or responsiveness work also needs a short .mp4 there.
+Register each file with 'python3 scripts/check-evidence.py $BASE .build/captures --record .build/captures/FILE --flow FLOW --state STATE --theme light|dark|neutral --path CHANGED_UI_FILE' (repeat --path for every UI file covered; omit it for non-UI recordings). Every changed UI path needs light and dark screenshots. Then verify again. Source edits or another commit invalidate registrations; recapture and register afterward.
 A behaviour change needs a test change (or a 'No-test-reason: ...' line in the commit). Size cap: ${SIZE_CAP:-300} changed lines for this run. Before your final commit run 'git diff --stat $START..HEAD' (this run's start commit $START; plus 'git diff --stat' for uncommitted work): if the total is over the cap, cut the change down, or end the commit message with a 'Size-reason: ...' trailer if the brief allows it. Otherwise the lane rejects the work. Commit early (a WIP commit is fine): a run with no commit and no file changes for $((IDLE_S / 60)) minutes is stopped. Never open a browser, a browser profile or any Grok Bot session. If you cannot make verify.sh pass, say why and stop."; }
 run_agent() {  # $1 lane, $2 worktree, $3 log. Lane identity is in the committer name.
   cfg usable "$1" || { echo "refusing: lane $1 not usable" >>"$3"; return 95; }   # belt and braces
