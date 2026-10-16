@@ -72,7 +72,7 @@ deploy_main() {
   git -C "$MAIN" pull -q --ff-only origin main || return 1
   [ -f "$MAIN/scripts/deploy.py" ] && [ -f "$MAIN/scripts/deploy_host.py" ] || return 1
   git -C "$MAIN" diff --quiet HEAD -- scripts/deploy.py scripts/deploy_host.py || return 1
-  python3 "$MAIN/scripts/deploy.py" update --ref origin/main
+  python3 "$MAIN/scripts/deploy.py" update --ref origin/main --receipt "$OPS/deployed.json"
 }
 case ${1:-} in
 enqueue)
@@ -90,6 +90,11 @@ status) for e in "$MQ"/*-pr*; do [ -f "$e" ] && echo "$(basename "$e"): $(field 
 run)
   ML="$OPS/locks/merge-lane"; lock_take "$ML" || { echo "merge lane busy (pid $(lock_holder "$ML"))"; exit 0; }
   trap 'lock_drop "$ML"' EXIT
+  if [ -f "$MAIN/scripts/deploy.py" ]; then
+    latest=$(git -C "$REPO" ls-remote origin refs/heads/main 2>/dev/null | cut -f1)
+    deployed=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("sha", ""))' "$OPS/deployed.json" 2>/dev/null || true)
+    [ -z "$latest" ] || [ "$latest" = "$deployed" ] || touch "$OPS/deploy-pending"
+  fi
   if [ -f "$OPS/deploy-pending" ]; then
     LOG="$OPS/logs/deploy-retry.log"
     if deploy_main >> "$LOG" 2>&1; then

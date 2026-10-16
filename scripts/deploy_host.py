@@ -73,6 +73,24 @@ def revision(value):
     return value
 
 
+@contextlib.contextmanager
+def data_lock(data):
+    data = Path(data)
+    if data.is_symlink():
+        raise DeployError("server data must not be a symlink")
+    data.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = data / ".server.lock"
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise DeployError("another Polymux process owns the data directory") from error
+        yield path
+    finally:
+        os.close(descriptor)
+
+
 def atomic_copy(source, target):
     target = Path(target)
     staged = target.with_name(target.name + ".deploy-" + uuid.uuid4().hex)
@@ -157,16 +175,19 @@ def wait_health(service, sha, timeout=30):
 def restore(root, state, service, timeout):
     service.stop()
     backup = Path(state["backup"])
-    if state["snapshot"]:
-        data = Path(state["data"])
-        staged = data.with_name(data.name + ".restore-" + uuid.uuid4().hex)
-        shutil.copytree(backup / "data", staged, symlinks=True)
-        atomic_copy(backup / "server", state["binary"])
-        if data.exists():
+    data = Path(state["data"])
+    with data_lock(data) as gate:
+        if state["snapshot"]:
+            staged = data.with_name(data.name + ".restore-" + uuid.uuid4().hex)
+            shutil.copytree(backup / "data", staged, symlinks=True)
+            # Keep exclusion on the active path when the data directory is replaced.
+            (staged / ".server.lock").unlink(missing_ok=True)
+            os.link(gate, staged / ".server.lock")
+            atomic_copy(backup / "server", state["binary"])
             failed = data.with_name(data.name + ".failed-" + uuid.uuid4().hex)
-            os.replace(data, failed)
+            swap(staged, data)
+            os.replace(staged, failed)
             state["failedData"] = str(failed)
-        os.replace(staged, data)
     service.start()
     wait_health(service, state["previous"].get("buildSHA"), timeout)
     state["result"] = "rolled_back"
@@ -205,11 +226,12 @@ def install_server(artifact, sha, root, service, timeout=30, rollback_check=Fals
         save(root / "pending.json", state)
         try:
             service.stop()
-            shutil.copy2(service.binary, backup / "server")
-            shutil.copytree(service.data, backup / "data", symlinks=True)
-            state["snapshot"] = True
-            save(root / "pending.json", state)
-            atomic_copy(artifact, service.binary)
+            with data_lock(service.data):
+                shutil.copy2(service.binary, backup / "server")
+                shutil.copytree(service.data, backup / "data", symlinks=True)
+                state["snapshot"] = True
+                save(root / "pending.json", state)
+                atomic_copy(artifact, service.binary)
             service.start()
             wait_health(service, sha, timeout)
             if rollback_check:
@@ -218,13 +240,13 @@ def install_server(artifact, sha, root, service, timeout=30, rollback_check=Fals
             save(backup / "result.json", state)
             save(root / "pending.json", state)
             (root / "pending.json").unlink()
-        except BaseException:
+        except BaseException as failure:
             state.pop("result", None)
             try:
                 save(root / "pending.json", state)
                 restore(root, state, service, timeout)
             except BaseException as error:
-                raise DeployError(f"deployment failed; rollback needs recovery from {backup}") from error
+                raise DeployError(f"deployment failed ({failure}); rollback needs recovery from {backup}: {error}") from error
             raise DeployError(f"deployment failed; previous binary and data restored from {backup}")
 
 
@@ -243,7 +265,7 @@ def swap(left, right):
 
 
 def app_pids(app):
-    executable = str(Path(app) / "Contents/MacOS/Polymux")
+    executable = str(Path(app).resolve() / "Contents/MacOS/Polymux")
     processes = run(["ps", "-axo", "pid=,comm="])
     return [int(pid) for line in processes.splitlines() for pid, command in [line.strip().split(None, 1)]
             if command == executable]
@@ -263,8 +285,8 @@ def stop_app(app):
         time.sleep(0.1)
 
 
-def start_app(app):
-    run(["open", str(app)])
+def start_app(app, launcher):
+    run([str(launcher), str(app)], timeout=30)
     until = time.monotonic() + 15
     while not app_pids(app):
         if time.monotonic() >= until:
@@ -278,6 +300,7 @@ def install_app(artifact, sha, destination, root, launch=False):
     if app_sha(artifact) != sha:
         raise DeployError("staged application does not report its expected build")
     run(["codesign", "--verify", "--deep", "--strict", str(artifact)])
+    launcher = artifact / "Contents/Helpers/deploy-launch"
     with locked(root):
         if (root / "pending.json").exists():
             raise DeployError("recover the interrupted server deployment first")
@@ -286,7 +309,7 @@ def install_app(artifact, sha, destination, root, launch=False):
         if destination.exists() and app_sha(destination) == sha and digest(artifact / "Contents/MacOS/Polymux") == digest(destination / "Contents/MacOS/Polymux"):
             run(["codesign", "--verify", "--deep", "--strict", str(destination)])
             if launch and not app_pids(destination):
-                start_app(destination)
+                start_app(destination, launcher)
             return
         staged = destination.with_name(".Polymux-staged-" + uuid.uuid4().hex + ".app")
         run(["ditto", str(artifact), str(staged)])
@@ -305,7 +328,7 @@ def install_app(artifact, sha, destination, root, launch=False):
                 raise DeployError("installed application build does not match")
             run(["codesign", "--verify", "--deep", "--strict", str(destination)])
             if launch:
-                start_app(destination)
+                start_app(destination, launcher)
         except BaseException:
             if installed and launch:
                 stop_app(destination)
@@ -314,7 +337,7 @@ def install_app(artifact, sha, destination, root, launch=False):
             elif installed:
                 os.replace(destination, staged)
             if launch and replaced:
-                start_app(destination)
+                start_app(destination, launcher)
             raise
         finally:
             if staged.exists():

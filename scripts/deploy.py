@@ -84,8 +84,11 @@ def snapshot(sha, output, server, app):
             entitlements["com.apple.developer.aps-environment"] = "production"
             entitlement_path = output / "entitlements.plist"
             entitlement_path.write_bytes(plistlib.dumps(entitlements))
+            launcher = app_path / "Contents/Helpers/deploy-launch"
+            host.run(["xcrun", "swiftc", "-O", "-o", str(launcher), str(source / "scripts/deploy-launch.swift")])
             host.run(["codesign", "--force", "--options", "runtime", "--sign", "-",
                       str(app_path / "Contents/Helpers/cua-driver")])
+            host.run(["codesign", "--force", "--options", "runtime", "--sign", "-", str(launcher)])
             host.run(["codesign", "--force", "--options", "runtime", "--entitlements", str(entitlement_path),
                       "--sign", "-", str(app_path)])
             host.run(["codesign", "--verify", "--deep", "--strict", str(app_path)])
@@ -144,6 +147,7 @@ def install(bundle, server=True, app=True, clients=("cvmac",)):
         print("deploy: cvmini application verified at " + sha)
         for client in clients:
             remote_app(client, artifact, sha)
+    return sha
 
 
 def main():
@@ -154,6 +158,7 @@ def main():
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--output", type=Path, default=ROOT / ".build/deploy")
     parser.add_argument("--client", action="append", help="SSH client host; defaults to cvmac")
+    parser.add_argument("--receipt", type=Path, help="save the commit only after every requested host verifies")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--server-only", action="store_true")
     selection.add_argument("--apps-only", action="store_true")
@@ -169,7 +174,9 @@ def main():
         bundle = build(args.ref, args.output, server, app)
         print("deploy: prepared " + str(bundle))
     if args.action != "build":
-        install(bundle, server, app, tuple(args.client or ["cvmac"]))
+        sha = install(bundle, server, app, tuple(args.client or ["cvmac"]))
+        if args.receipt:
+            host.save(args.receipt, {"sha": sha})
 
 
 if __name__ == "__main__":

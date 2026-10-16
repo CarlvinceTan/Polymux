@@ -113,9 +113,13 @@ MERGE_VERIFY_CMD='exit 1' run; F=$(ls "$LANES_HOME"/queue/*-fix-pr22.task 2>/dev
 check "fix brief from a plain-title brief: '# <first line>' title, body kept, title not repeated" '[ -n "$F" ] && bash scripts/queue-write.sh --check "$F" && [ "$(head -1 "$F")" = "# Plain title unit" ] && grep -qxF "Body line kept?" "$F" && grep -qxF "second body line" "$F" && [ "$(grep -cxF "Plain title unit" "$F")" = 0 ]'
 # Deployment runs only after a merge, and failure alerts without re-merging the PR.
 cat > scripts/deploy.py <<'PYDEPLOY'
-import os, pathlib, sys
-pathlib.Path(os.environ["DEPLOY_TEST_LOG"]).write_text(" ".join(sys.argv[1:]))
-sys.exit(int(os.environ.get("DEPLOY_TEST_FAIL", "0")))
+import json, os, pathlib, subprocess, sys
+pathlib.Path(os.environ["DEPLOY_TEST_LOG"]).write_text(" ".join(sys.argv[1:4]))
+failed = int(os.environ.get("DEPLOY_TEST_FAIL", "0"))
+if not failed:
+    sha = subprocess.check_output(["git", "rev-parse", "origin/main"], text=True).strip()
+    pathlib.Path(sys.argv[sys.argv.index("--receipt") + 1]).write_text(json.dumps({"sha": sha}))
+sys.exit(failed)
 PYDEPLOY
 printf '# test host installer\n' > scripts/deploy_host.py
 git add scripts/deploy.py scripts/deploy_host.py; git commit -qm "Add test deployment"; git push -q origin main
@@ -133,4 +137,7 @@ check "uncommitted deployment code is preserved and never executed" 'merged 27 &
 git checkout -- scripts/deploy.py
 MERGE_MAIN_CHECKOUT="$T/repo" run
 check "next queue tick retries deployment without merging the PR again" '[ -f "$T/deployed.json" ] && [ ! -f "$LANES_HOME/deploy-pending" ] && ! grep -q "^pr merge " "$T/gh.log" && grep -q "pending main deployment verified" "$LANES_HOME/events.tsv"'
+echo outside > outside.txt; git add outside.txt; git commit -qm "Merge outside the queue"; git push -q origin main
+rm "$T/deployed.json"; MERGE_MAIN_CHECKOUT="$T/repo" run
+check "main changes outside the queue deploy on the next tick" '[ -f "$T/deployed.json" ] && [ ! -f "$LANES_HOME/deploy-pending" ] && ! grep -q "^pr merge " "$T/gh.log"'
 echo "test-merge-queue: $PASS passed, $FAILS failed"; [ $FAILS = 0 ]

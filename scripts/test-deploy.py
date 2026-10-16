@@ -1,9 +1,11 @@
 """Hermetic deployment checks; never address a live launch agent or application."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import plistlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -45,12 +47,13 @@ class Service:
 
     def start(self):
         self.starts += 1
-        self.active = True
-        if self.binary.read_text() == NEW:
-            (self.data / "state").write_text("candidate migration changed state")
-            (self.data / "new-file").write_text("candidate created this")
-            if self.crash:
-                raise InterruptedError("interrupted after replacement")
+        with deploy.data_lock(self.data):
+            self.active = True
+            if self.binary.read_text() == NEW:
+                (self.data / "state").write_text("candidate migration changed state")
+                (self.data / "new-file").write_text("candidate created this")
+                if self.crash:
+                    raise InterruptedError("interrupted after replacement")
 
     def health(self):
         if not self.active or self.reject and self.binary.read_text() == NEW:
@@ -100,6 +103,37 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(failed), 1)
         self.assertTrue((failed[0] / "new-file").exists())
 
+    def test_occupied_data_lock_refuses_snapshot_without_mutation(self):
+        with deploy.data_lock(self.service.data):
+            with self.assertRaisesRegex(deploy.DeployError, "owns the data directory"):
+                self.install()
+        self.assertEqual(self.service.binary.read_text(), OLD)
+        self.assertEqual((self.service.data / "state").read_text(), "valuable old state")
+        self.assertFalse((self.service.data / "new-file").exists())
+        state = json.loads((self.root / "pending.json").read_text())
+        self.assertFalse(state["snapshot"])
+        self.assertFalse((Path(state["backup"]) / "server").exists())
+        with deploy.locked(self.root):
+            deploy.recover(self.root, self.service, timeout=0)
+        self.restored()
+
+    def test_data_lock_survives_atomic_restore(self):
+        self.service.reject = True
+        original = deploy.swap
+        observed = []
+        def swapped(staged, active):
+            original(staged, active)
+            if Path(active) == self.service.data:
+                with self.assertRaisesRegex(deploy.DeployError, "owns the data directory"):
+                    with deploy.data_lock(active):
+                        pass
+                observed.append(True)
+        with patch.object(deploy, "swap", side_effect=swapped):
+            with self.assertRaises(deploy.DeployError):
+                self.install()
+        self.assertEqual(observed, [True])
+        self.restored()
+
     def test_explicit_rollback_check_rejects_a_healthy_candidate(self):
         with self.assertRaisesRegex(deploy.DeployError, "previous binary and data restored"):
             deploy.install_server(self.artifact, NEW, self.root, self.service, timeout=0, rollback_check=True)
@@ -132,6 +166,11 @@ class ServerTests(unittest.TestCase):
             with self.assertRaisesRegex(deploy.DeployError, "rollback needs recovery"):
                 self.install()
         self.assertTrue((self.root / "pending.json").exists())
+        with deploy.data_lock(self.service.data), deploy.locked(self.root):
+            with self.assertRaisesRegex(deploy.DeployError, "owns the data directory"):
+                deploy.recover(self.root, self.service, timeout=0)
+        self.assertEqual(self.service.binary.read_text(), NEW)
+        self.assertEqual((self.service.data / "state").read_text(), "candidate migration changed state")
         with deploy.locked(self.root):
             deploy.recover(self.root, self.service, timeout=0)
         self.restored()
@@ -223,7 +262,7 @@ class AppTests(unittest.TestCase):
 
     def test_launch_failure_restores_and_restarts_previous_app(self):
         observed = []
-        def start(app):
+        def start(app, _launcher):
             observed.append(deploy.app_sha(app))
             if observed[-1] == NEW:
                 raise deploy.DeployError("new application failed to launch")
@@ -234,7 +273,70 @@ class AppTests(unittest.TestCase):
         self.assertEqual(deploy.app_sha(self.current), OLD)
 
 
+@unittest.skipUnless(sys.platform == "darwin", "Mac background application launch")
+class NativeTests(unittest.TestCase):
+    def test_native_launch_preserves_foreground_and_exact_path(self):
+        with tempfile.TemporaryDirectory(prefix="polymux-launch-") as directory:
+            root = Path(directory).resolve()
+            launcher = root / "deploy-launch"
+            subprocess.run(["xcrun", "swiftc", "-O", "-o", str(launcher),
+                            str(Path(__file__).with_name("deploy-launch.swift"))], check=True, capture_output=True)
+            app = root / "Check.app"
+            (app / "Contents/MacOS").mkdir(parents=True)
+            source = root / "Check.swift"
+            source.write_text("import AppKit\nNSApplication.shared.setActivationPolicy(.regular)\nNSApplication.shared.run()\n")
+            subprocess.run(["xcrun", "swiftc", "-O", "-o", str(app / "Contents/MacOS/Polymux"), str(source)], check=True, capture_output=True)
+            with (app / "Contents/Info.plist").open("wb") as output:
+                plistlib.dump({"CFBundleExecutable": "Polymux", "CFBundleIdentifier": "test.polymux." + root.name,
+                              "CFBundlePackageType": "APPL", "NSPrincipalClass": "NSApplication"}, output)
+            subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True, capture_output=True)
+            observer = root / "Observe.swift"
+            observer.write_text('''import AppKit
+let before = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+guard before > 0 else { exit(77) }
+let process = Process()
+process.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
+process.arguments = [CommandLine.arguments[2]]
+let output = Pipe()
+process.standardOutput = output
+try process.run()
+process.waitUntilExit()
+let launched = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)!.trimmingCharacters(in: .whitespacesAndNewlines)
+Thread.sleep(forTimeInterval: 0.3)
+let after = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+print("\\(before) \\(after) \\(launched)")
+exit(process.terminationStatus)
+''')
+            observed = subprocess.run(["xcrun", "swift", str(observer), str(launcher), str(app)], capture_output=True, text=True, timeout=60)
+            if observed.returncode == 77:
+                self.skipTest("no active GUI session")
+            self.assertEqual(observed.returncode, 0, observed.stderr)
+            before, after, pid = map(int, observed.stdout.split())
+            try:
+                executable = subprocess.check_output(["ps", "-p", str(pid), "-o", "comm="], text=True).strip()
+                self.assertEqual(executable, str(app / "Contents/MacOS/Polymux"))
+                self.assertEqual(before, after, "background launch changed the foreground application")
+                print(f"Background launch preserved foreground PID {before} -> {after}; exact-path app PID {pid}")
+            finally:
+                if deploy.app_pids(app) == [pid]:
+                    os.kill(pid, signal.SIGTERM)
+
+
 class BuildTests(unittest.TestCase):
+    def test_receipt_advances_only_after_all_hosts_verify(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = root / "receipt.json"
+            receipt.write_text(json.dumps({"sha": OLD}))
+            arguments = ["deploy.py", "install", "--bundle", str(root), "--receipt", str(receipt)]
+            with patch.object(sys, "argv", arguments), patch.object(build, "install", side_effect=build.host.DeployError("client unavailable")):
+                with self.assertRaises(build.host.DeployError):
+                    build.main()
+            self.assertEqual(json.loads(receipt.read_text())["sha"], OLD)
+            with patch.object(sys, "argv", arguments), patch.object(build, "install", return_value=NEW):
+                build.main()
+            self.assertEqual(json.loads(receipt.read_text())["sha"], NEW)
+
     def test_build_uses_exact_commit_even_with_dirty_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
