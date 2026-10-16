@@ -198,6 +198,22 @@ check "cleanup keeps detached HEAD not on a remote" 'echo "$OUT" | grep -q "keep
 check "cleanup would prune old proof branch only" 'echo "$OUT" | grep -q "would: .*--delete proof-media/old-run" && ! echo "$OUT" | grep -q "delete proof-media-verify-vo-one"'
 check "dry run kept the old proof branch" 'git ls-remote --exit-code origin refs/heads/proof-media/old-run >/dev/null'
 check "cleanup would remove merged" 'echo "$OUT" | grep -q "remove: $HOME/code/wt/merged (merged=1"'
+CW="$HOME/.cursor/worktrees/check"; REG="$CW/registered[1].+(ok)"; UNREG="$CW/registered1Xok"
+mkdir -p "$CW" "$UNREG" "$T/cleanup-bin"; echo unregistered > "$UNREG/.git"
+git worktree add -q --detach "$REG" main
+export CLEANUP_GIT=$(command -v git) CLEANUP_LIST="$T/cleanup-list"
+git worktree list --porcelain > "$CLEANUP_LIST"
+python3 -c 'print("branch refs/heads/padding\n" * 100000)' >> "$CLEANUP_LIST"
+cat > "$T/cleanup-bin/git" <<'GIT'
+#!/bin/bash
+case "$*" in *"worktree list --porcelain") exec cat "$CLEANUP_LIST";; esac
+exec "$CLEANUP_GIT" "$@"
+GIT
+chmod +x "$T/cleanup-bin/git"
+OUT=$(PATH="$T/cleanup-bin:$T/bin:$PATH" bash scripts/cleanup.sh 2>&1); RC=$?
+check "cleanup drains long porcelain output and matches registered Cursor paths literally" \
+  '[ $RC = 0 ] && ! grep -qF "keep: $REG (cursor worktree not registered" <<< "$OUT" && grep -qF "keep: $UNREG (cursor worktree not registered" <<< "$OUT"'
+git worktree remove "$REG"; rm -rf "$UNREG"
 check "cleanup dry run deleted nothing" '[ -d "$HOME/code/wt/merged" ] && echo "$OUT" | grep -q "dry run"'
 check "cleanup dry run would trash (move), not delete" 'echo "$OUT" | grep -q "would: git -C .* worktree move $HOME/code/wt/merged $HOME/code/wt-trash/merged"'
 PATH="$T/bin:$PATH" bash scripts/cleanup.sh --apply >/dev/null 2>&1

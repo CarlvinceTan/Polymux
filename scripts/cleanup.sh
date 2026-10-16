@@ -102,7 +102,7 @@ for r,ds in json.load(sys.stdin)['devices'].items():
 done
 # ~/.cursor/worktrees dirs that git no longer knows: report only (Cursor owns them)
 for d in "$CW"/*/*; do [ -d "$d" ] || continue
-  git -C "$REPO" worktree list --porcelain | grep -qxF "worktree $d" && continue
+  git -C "$REPO" worktree list --porcelain | out_has -x "$(printf 'worktree %s' "$d" | sed 's/[][(){}.^$?+*|\\]/\\&/g')" && continue
   [ -e "$d/.git" ] && keep "$d" "cursor worktree not registered with this repo; last activity $(( ( $(date +%s) - $(last_activity "$d") ) / 86400 ))d"; done
 do_ xcrun simctl delete unavailable
 git -C "$REPO" worktree prune --dry-run -v; [ $APPLY = 1 ] && git -C "$REPO" worktree prune
