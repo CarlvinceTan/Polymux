@@ -100,11 +100,12 @@ set_select() { gql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updatePro
 set_text() { local t; t=$(printf '%s\n' "$3" | notion_scrub)   # scrub Notion links/ids, never refuse
   gql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$t:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{text:$t}}){projectV2Item{id}}}' \
   -f p="$PROJ" -f i="$1" -f f="$2" -f t="$t" >/dev/null; }
+content_node() { case $1 in ""|null|PVTI_*) return 1;; *) return 0;; esac; }
 issue_node() { local n; n=$(awk -F'\t' -v k="$1" '$2==k && $3!=""{print $3; exit}' "$BOARD_MAP" 2>/dev/null)
-  [ -n "$n" ] || n=$(cat "$OPS/board/issue-$1.node" 2>/dev/null)
-  [ -n "$n" ] || { n=$(gql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){id}}}' \
-    -f o="${REPO_SLUG%%/*}" -f r="${REPO_SLUG#*/}" -F n="$1" --jq .data.repository.issue.id) && [ -n "$n" ] && echo "$n" > "$OPS/board/issue-$1.node"; }
-  [ -n "$n" ] && echo "$n"; }
+  content_node "$n" || n=$(cat "$OPS/board/issue-$1.node" 2>/dev/null)
+  content_node "$n" || { n=$(gql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){id}}}' \
+    -f o="${REPO_SLUG%%/*}" -f r="${REPO_SLUG#*/}" -F n="$1" --jq .data.repository.issue.id) && content_node "$n" && echo "$n" > "$OPS/board/issue-$1.node"; }
+  content_node "$n" && echo "$n"; }
 NAME="the issue #$ISSUE item"; [ -n "$ISSUE" ] || NAME="the PR item"
 if [ $DRY = 1 ]; then
   [ -n "$PRURL" ] && log "DRY-RUN would add PR $PRURL to project 3 (Status 'In review')${ISSUE:+; PR field of #$ISSUE = $PRURL}"

@@ -17,6 +17,7 @@ case "$*" in
   "pr view"*) echo 2026-10-13T01:00:00Z;;
   "pr create"*) echo https://github.com/o/r/pull/100;;
   "api graphql"*addProjectV2ItemById*) [ -f $S/addfail ] && exit 1; c=$(printf '%s' "$*" | sed -n 's/.* c=\([^ ]*\).*/\1/p')
+    case $c in PVTI_*) echo "Project item is not issue content" >&2; exit 1;; esac
     printf 'ITEM_%s\t%s\n' "$c" "$(cat $S/cur 2>/dev/null)";;
   "api graphql"*updateProjectV2ItemFieldValue*) [ -f $S/fail ] && exit 1; echo '{}';;
   "api graphql"*"issue(number"*) [ -f $S/lookfail ] && exit 1; echo "LOOKED_$(printf '%s' "$*" | sed -n 's/.* n=\([0-9]*\).*/\1/p')";;
@@ -66,6 +67,17 @@ printf '3f80dbb6e05381f591eff5293992f92c\t174\t\n' >> "$BOARD_MAP"; printf 'need
 PATH=$BP $BU card diff-unit "$T/d.task"; : > "$T/ghb.log"; echo Backlog > "$T/cur"; PATH=$BP $BU start diff-unit
 check "board: legacy card with empty map node (DIFF-1 #174) -> issue lookup + Status 'In progress' (65b9edf8)" \
   '[ "$(cat "$C/diff-unit")" = 174 ] && [ "$(grep -c "issue(number.* n=174" "$T/ghb.log")" = 1 ] && [ "$(NA "c=LOOKED_174")" = 1 ] && [ "$(NW "o=65b9edf8")" = 1 ]'
+N=71; for source in map cache; do
+  U="pvti-$source"; echo "$N" > "$C/$U"
+  if [ "$source" = map ]; then printf 'bad-node\t%s\tPVTI_stale\n' "$N" >> "$BOARD_MAP"
+  else echo PVTI_stale > "$LANES_HOME/board/issue-$N.node"; fi
+  : > "$T/ghb.log"; : > "$BLOG"; echo Backlog > "$T/cur"
+  PATH=$BP $BU pr "$U" https://github.com/o/r/pull/71
+  PATH=$BP $BU verify "$U" unit-test-verified
+  check "board: PVTI in $source is refreshed; PR, Status and Verification target the issue item" \
+    '[ "$(grep -c "issue(number.* n=$N" "$T/ghb.log")" = 1 ] && [ "$(cat "$LANES_HOME/board/issue-$N.node")" = "LOOKED_$N" ] && [ "$(NA "c=LOOKED_$N")" = 2 ] && ! grep -q " c=PVTI_" "$T/ghb.log" && [ "$(NW "i=ITEM_LOOKED_$N.*t=https://github.com/o/r/pull/71")" = 1 ] && [ "$(NW "i=ITEM_LOOKED_$N.*o=abdef12c")" = 1 ] && [ "$(NW "i=ITEM_LOOKED_$N.*o=38201913")" = 1 ] && ! grep -q board_error "$BLOG"'
+  N=$((N+1))
+done
 : > "$T/ghb.log"; touch "$T/addfail"; OUT=$(PATH=$BP $BU merged fake-unit); rm "$T/addfail"
 touch "$T/lookfail"; echo 8 > "$C/look-unit"; PATH=$BP $BU start look-unit >/dev/null; rm "$T/lookfail"
 check "board: failed add / lookup -> board_error, no field write, exit 0" '[ "$(NW)" = 0 ] && echo "$OUT" | grep -q "^board_error:" && grep -q "board_error	start	issue #8 node lookup failed" "$LANES_HOME/events.tsv"'
