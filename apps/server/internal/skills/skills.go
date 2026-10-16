@@ -7,7 +7,7 @@ import (
 )
 
 // IssueRepo is the target repo for user bug reports.
-const IssueRepo = "CarlvinceTan/Polymux"
+const IssueRepo = "CarlvinceTan/polymux"
 
 //go:embed polymux/SKILL.md report/SKILL.md
 var files embed.FS

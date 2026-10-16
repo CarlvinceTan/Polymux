@@ -1,4 +1,4 @@
-const REPOSITORY = 'CarlvinceTan/Polymux';
+const REPOSITORY = 'CarlvinceTan/polymux';
 
 export function isElectronRelease(tag) {
   return /^v0\.3\.\d+$/.test(tag);

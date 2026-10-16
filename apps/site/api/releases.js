@@ -1,6 +1,6 @@
 import {isElectronRelease} from '../lib/update-feed.js';
 
-const REPOSITORY = 'CarlvinceTan/Polymux';
+const REPOSITORY = 'CarlvinceTan/polymux';
 
 export default async function handler(_request, response) {
   const result = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`, {

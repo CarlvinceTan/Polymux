@@ -90,13 +90,13 @@ Hermes, OpenClaw, and Khoj each make a strong case for their centre of gravity. 
 
 We are building Polymux because we think a personal assistant needs a home: a calm, understandable place where communication, files, browsing, models, and ongoing work meet. The agent matters, but so does the environment around it.
 
-If that workspace-first approach sounds like the way you want to work, [explore Polymux](/) or [follow the project on GitHub](https://github.com/CarlvinceTan/Polymux).
+If that workspace-first approach sounds like the way you want to work, [explore Polymux](/) or [follow the project on GitHub](https://github.com/CarlvinceTan/polymux).
 
 ---
 
 ## Sources
 
-- [Polymux source and product overview](https://github.com/CarlvinceTan/Polymux)
+- [Polymux source and product overview](https://github.com/CarlvinceTan/polymux)
 - [Hermes Agent feature overview](https://hermes-agent.nousresearch.com/docs/user-guide/features/overview/)
 - [OpenClaw documentation](https://docs.openclaw.ai/)
 - [Khoj documentation](https://docs.khoj.dev/)

@@ -19,7 +19,7 @@ test('maps the latest release to native installers for each platform', async (co
     json: async () => [{
       tag_name: 'v0.3.0',
       published_at: '2026-08-23T00:00:00Z',
-      html_url: 'https://github.com/CarlvinceTan/Polymux/releases/tag/v0.3.0',
+      html_url: 'https://github.com/CarlvinceTan/polymux/releases/tag/v0.3.0',
       assets: [
         {name: 'Polymux-0.3.0-arm64.dmg', browser_download_url: 'https://files/mac', size: 1},
         {name: 'Polymux-0.3.0-Setup.exe', browser_download_url: 'https://files/windows', size: 2},
@@ -44,7 +44,7 @@ test('skips app-v releases when selecting the latest downloadable release', asyn
         tag_name: 'app-v0.4.0',
         draft: false,
         published_at: '2026-10-01T00:00:00Z',
-        html_url: 'https://github.com/CarlvinceTan/Polymux/releases/tag/app-v0.4.0',
+        html_url: 'https://github.com/CarlvinceTan/polymux/releases/tag/app-v0.4.0',
         assets: [
           {name: 'Polymux-0.4.0-arm64.dmg', browser_download_url: 'https://files/mac-app', size: 1},
         ],
@@ -53,7 +53,7 @@ test('skips app-v releases when selecting the latest downloadable release', asyn
         tag_name: 'v0.3.4',
         draft: false,
         published_at: '2026-09-01T00:00:00Z',
-        html_url: 'https://github.com/CarlvinceTan/Polymux/releases/tag/v0.3.4',
+        html_url: 'https://github.com/CarlvinceTan/polymux/releases/tag/v0.3.4',
         assets: [
           {name: 'Polymux-0.3.4-arm64.dmg', browser_download_url: 'https://files/mac', size: 1},
         ],
@@ -86,7 +86,7 @@ test('resolves a requested version by its release tag', async (context) => {
       json: async () => ({
         tag_name: 'v0.2.2',
         published_at: '2026-08-28T00:00:00Z',
-        html_url: 'https://github.com/CarlvinceTan/Polymux/releases/tag/v0.2.2',
+        html_url: 'https://github.com/CarlvinceTan/polymux/releases/tag/v0.2.2',
         assets: [{name: 'Polymux-0.2.2-arm64.dmg', browser_download_url: 'https://files/mac-0.2.2', size: 4}],
       }),
     };
