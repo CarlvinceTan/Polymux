@@ -190,15 +190,28 @@ func run() error {
 	if bin := os.Getenv("POLYMUX_EXTRACTOR"); bin != "" {
 		index.Extractor = &search.SubprocessExtractor{Bin: bin, Timeout: extractTimeout}
 	}
+	var embedder *search.HTTPEmbedder
 	if bin := os.Getenv("POLYMUX_LLAMA"); bin != "" {
-		process, err := embedproc.Start(ctx, embedproc.Config{Bin: bin, Model: os.Getenv("POLYMUX_EMBED_MODEL"), Log: log})
+		process, err := embedproc.Start(ctx, embedproc.Config{Bin: bin, Model: os.Getenv("POLYMUX_EMBED_MODEL"),
+			Mmproj: os.Getenv("POLYMUX_EMBED_MMPROJ"), Log: log})
 		if err != nil {
 			return err
 		}
 		defer process.Close()
-		index.Embedder = &search.HTTPEmbedder{URL: process.URL(), Model: embedModel, Dims: embedDims, Client: client}
+		embedder = &search.HTTPEmbedder{URL: process.URL(), Model: embedModel, Dims: embedDims, Client: client,
+			Media: os.Getenv("POLYMUX_EMBED_MMPROJ") != ""}
 	} else if url := os.Getenv("POLYMUX_EMBED_URL"); url != "" {
-		index.Embedder = &search.HTTPEmbedder{URL: url, Model: embedModel, Dims: embedDims, Client: client}
+		// An external endpoint's capabilities are unknown here, so it embeds text only.
+		embedder = &search.HTTPEmbedder{URL: url, Model: embedModel, Dims: embedDims, Client: client}
+	}
+	if embedder != nil {
+		index.Embedder = embedder
+		if embedder.Media {
+			if err := embedder.CheckMedia(ctx); err != nil {
+				log.Error("media embedding disabled", "error", err)
+				embedder.Media = false
+			}
+		}
 	}
 	if index.Embedder != nil {
 		if _, err := s.DB.ExecContext(ctx, `UPDATE messages SET indexing_state='pending' WHERE indexing_state='error'`); err != nil {

@@ -19,9 +19,10 @@ import (
 const readyTimeout = 90 * time.Second
 
 type Config struct {
-	Bin   string // llama-server binary
-	Model string // GGUF path; empty uses llama.cpp's bundled EmbeddingGemma default
-	Log   *slog.Logger
+	Bin    string // llama-server binary
+	Model  string // GGUF path; empty uses llama.cpp's bundled EmbeddingGemma default
+	Mmproj string // multimodal projector GGUF; without it media is never embedded
+	Log    *slog.Logger
 }
 
 type Process struct {
@@ -45,6 +46,9 @@ func Start(ctx context.Context, cfg Config) (*Process, error) {
 		args = append(args, "-m", cfg.Model)
 	} else {
 		args = append(args, "--embd-gemma-default")
+	}
+	if cfg.Mmproj != "" {
+		args = append(args, "--mmproj", cfg.Mmproj)
 	}
 	cmd := exec.Command(cfg.Bin, args...)
 	logs := &bounded{}
