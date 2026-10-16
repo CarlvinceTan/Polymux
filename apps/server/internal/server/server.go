@@ -159,7 +159,7 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 			d.ExtraTools = current.ExtraTools
 			// The configured default (for example POLYMUX_CODING_REPO) applies
 			// until a stored workspace replaces it.
-			if d.Workspace == "" {
+			if d.Workspace == "" && !d.WorkspaceSet {
 				d.Workspace = current.Workspace
 			}
 		}
@@ -280,6 +280,8 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("POST /agents", s.createAgent)
 	s.mux.HandleFunc("GET /agents/{id}", s.agentProfile)
+	s.mux.HandleFunc("GET /agents/{id}/configuration", s.agentConfiguration)
+	s.mux.HandleFunc("PATCH /agents/{id}/configuration", s.configureAgent)
 	s.mux.HandleFunc("PATCH /agents/{id}", s.updateAgent)
 	s.mux.HandleFunc("PATCH /agents/{id}/avatar", s.updateAvatar)
 	s.mux.HandleFunc("DELETE /agents/{id}", s.deleteAgent)

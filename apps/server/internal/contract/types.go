@@ -343,3 +343,15 @@ type UpdateThreadRequest struct {
 	AgentIDs    []string `json:"agentIDs,omitempty"`
 	Title       string   `json:"title"`
 }
+
+type AgentConfiguration struct {
+	Workspace string   `json:"workspace"`
+	Tools     []string `json:"tools"`
+	Skills    []string `json:"skills"`
+}
+
+type ConfigurationPatch struct {
+	Workspace *string  `json:"workspace,omitempty"`
+	Tools     []string `json:"tools,omitempty"`
+	Skills    []string `json:"skills,omitempty"`
+}

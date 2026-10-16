@@ -947,3 +947,35 @@ public struct UpdateThreadRequest: Codable, Hashable, Sendable {
         self.title = title
     }
 }
+
+public struct AgentConfiguration: Codable, Hashable, Sendable {
+    public var workspace: String
+    public var tools: [String]
+    public var skills: [String]
+
+    public init(
+        workspace: String = "",
+        tools: [String] = [],
+        skills: [String] = []
+    ) {
+        self.workspace = workspace
+        self.tools = tools
+        self.skills = skills
+    }
+}
+
+public struct ConfigurationPatch: Codable, Hashable, Sendable {
+    public var workspace: String?
+    public var tools: [String]?
+    public var skills: [String]?
+
+    public init(
+        workspace: String? = nil,
+        tools: [String]? = nil,
+        skills: [String]? = nil
+    ) {
+        self.workspace = workspace
+        self.tools = tools
+        self.skills = skills
+    }
+}

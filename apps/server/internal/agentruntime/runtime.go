@@ -36,6 +36,8 @@ type Definition struct {
 	// Workspace is an absolute git repository path on the server host. A
 	// conversation whose agent has one runs in its own worktree of that repo.
 	Workspace string `json:"workspace,omitempty"`
+	// Keep an explicit clear from inheriting the startup default again.
+	WorkspaceSet bool `json:"workspaceSet,omitempty"`
 	// Worktree is the conversation's prepared checkout, resolved per session.
 	Worktree   string                   `json:"-"`
 	ExtraTools []agent.AgentTool        `json:"-"`
