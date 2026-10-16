@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f7f7f5" />
     <title>Privacy — Polymux</title>
-    <meta name="description" content="Polymux has no account. Your data stays on your devices, and an agent's MCP connections are yours." />
+    <meta name="description" content="How the native Polymux app, your agent server, models, and connected tools handle your data." />
     <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1" />
     <link rel="canonical" href="https://polymux.com/privacy" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Polymux" />
     <meta property="og:title" content="Privacy — Polymux" />
-    <meta property="og:description" content="Polymux has no account. Your data stays on your devices." />
+    <meta property="og:description" content="Your app caches conversations; your configured server runs agents and stores their history." />
     <meta property="og:url" content="https://polymux.com/privacy" />
     <meta name="twitter:card" content="summary" />
 
@@ -22,8 +22,8 @@
         "@id": "https://polymux.com/privacy#webpage",
         "url": "https://polymux.com/privacy",
         "name": "Privacy — Polymux",
-        "description": "Polymux has no account. Your data stays on your devices.",
-        "dateModified": "2026-10-13",
+        "description": "Data boundaries between the native app, agent server, models, and tools.",
+        "dateModified": "2026-10-16",
         "isPartOf": {"@id": "https://polymux.com/#website"},
         "about": {"@id": "https://polymux.com/#software"}
       }
@@ -87,7 +87,7 @@
   <body>
     <header>
   <a class="brand" href="/" aria-label="Polymux home">
-    <img src="../../desktop/src/renderer/public/polymux.svg" alt="" />
+    <img src="../src/assets/polymux.svg" alt="" />
     <span>Polymux</span>
   </a>
   <a class="home-link" href="/">Back to home</a>
@@ -97,34 +97,39 @@
   <div class="title-block">
     <p class="eyebrow">Legal</p>
     <h1>Privacy</h1>
-    <p class="effective">Last updated 13 October 2026</p>
+    <p class="effective">Last updated 16 October 2026</p>
   </div>
 
   <article>
     <section>
       <h2>Overview</h2>
       <p>
-        Polymux has no account to sign in to. Chats, files, and settings stay
-        on your devices. The general <a href="/privacy-policy/">Polymux Privacy Policy</a>
-        covers the rest of the product.
+        Polymux has no separate hosted account to sign in to. The native app
+        connects to an agent server you configure. The general
+        <a href="/privacy-policy/">Polymux Privacy Policy</a> covers the product,
+        including details retained for older integrations.
       </p>
     </section>
 
     <section>
       <h2>Your data</h2>
       <p>
-        Polymux does not upload your chats or files to a Polymux account.
-        Pair another of your devices with a link or QR code. The data stays
-        on those devices.
+        The app caches conversations on its device. Messages and attachments
+        are sent to your configured server, which stores authoritative history
+        and runs agents. If the server is on another computer, your data is not
+        confined to the app device. Hosted models and configured tools can
+        receive task content under their own terms.
       </p>
     </section>
 
     <section>
       <h2>Agents and connections</h2>
       <p>
-        Agents connect tools through MCP. An agent's own MCP connection is
-        yours. Polymux does not sign you in to Google, Microsoft, or any
-        other account on your behalf.
+        An agent's MCP connections belong to you and run through its server
+        configuration. Installing a tool does not connect every account or
+        authorise every action. Review the service, account, access scope, and
+        approval requests. See <a href="/docs/privacy-and-permissions/">Privacy
+        and permissions</a> for native-app guidance.
       </p>
     </section>
 
@@ -138,7 +143,7 @@
 </main>
 
 <footer>
-  <a class="brand" href="/"><img src="../../desktop/src/renderer/public/polymux.svg" alt="" /><span>Polymux</span></a>
+  <a class="brand" href="/"><img src="../src/assets/polymux.svg" alt="" /><span>Polymux</span></a>
   <span>Privacy</span>
 </footer>
     <script type="module" src="/src/analytics.ts"></script>

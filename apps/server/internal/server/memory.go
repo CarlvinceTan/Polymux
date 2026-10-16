@@ -177,12 +177,26 @@ func (t *memoryTool) Execute(ctx context.Context, _ string, args json.RawMessage
 		if err != nil {
 			return agent.AgentToolResult{}, err
 		}
+		payload, err := store.NewActivity("memory.saved", document.Name, document.Text)
+		if err != nil {
+			return agent.AgentToolResult{}, err
+		}
+		if err := t.store.Activity(ctx, scope, owner, payload); err != nil {
+			return agent.AgentToolResult{}, err
+		}
 		return toolResult(document)
 	case "forget":
 		if input.Revision == nil {
 			return agent.AgentToolResult{}, errors.New("memory revision is required")
 		}
 		if err := t.provider.Forget(ctx, owner, scope, input.Name, *input.Revision); err != nil {
+			return agent.AgentToolResult{}, err
+		}
+		payload, err := store.NewActivity("memory.deleted", input.Name, input.Name)
+		if err != nil {
+			return agent.AgentToolResult{}, err
+		}
+		if err := t.store.Activity(ctx, scope, owner, payload); err != nil {
 			return agent.AgentToolResult{}, err
 		}
 		return toolResult(map[string]bool{"forgotten": true})

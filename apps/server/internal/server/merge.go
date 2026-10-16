@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/store"
@@ -29,10 +28,10 @@ type mergeArgs struct {
 var mergeSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func (*mergeTool) Name() string                           { return "merge_pr" }
-func (*mergeTool) Label() string                          { return "Squash-merge PR at reviewed head?" }
+func (*mergeTool) Label() string                          { return "Promote dev to main at reviewed head?" }
 func (*mergeTool) ExecutionMode() agent.ToolExecutionMode { return agent.ToolModeSequential }
 func (*mergeTool) Schema() ai.ToolSchema {
-	return ai.ToolSchema{Name: "merge_pr", Description: "Request approval to squash-merge a PR at the exact reviewed head. For a card's merge intent, copy pr and headSha unchanged. Never replace a moved head or use bash to bypass approval.", Parameters: map[string]any{
+	return ai.ToolSchema{Name: "merge_pr", Description: "Request approval to promote dev to main at the exact reviewed head. Only the repository's dev-to-main PR is accepted. Never replace a moved head or use bash to bypass approval.", Parameters: map[string]any{
 		"type": "object", "additionalProperties": false, "required": []string{"pr", "headSha"},
 		"properties": map[string]any{"pr": map[string]any{"type": "integer", "minimum": 1}, "headSha": map[string]any{"type": "string", "pattern": mergeSHA.String()}},
 	}}
@@ -63,14 +62,14 @@ func (t *mergeTool) Execute(ctx context.Context, call string, raw json.RawMessag
 	if json.Unmarshal(raw, &args) != nil || args.PR < 1 || !mergeSHA.MatchString(args.HeadSHA) {
 		return result, fmt.Errorf("invalid PR or reviewed head SHA")
 	}
-	data, err := repoOutput(ctx, t.dir, "gh", "pr", "view", strconv.Itoa(args.PR), "--json", "state,isDraft,headRefOid,statusCheckRollup")
+	data, err := repoOutput(ctx, t.dir, "gh", "pr", "view", strconv.Itoa(args.PR), "--json", "state,isDraft,isCrossRepository,headRefName,baseRefName,headRefOid,statusCheckRollup")
 	if err != nil {
 		return result, fmt.Errorf("could not re-read PR: %w", err)
 	}
 	var pr struct {
-		State, HeadRefOid string
-		IsDraft           bool
-		StatusCheckRollup []struct{ Status, Conclusion, State string }
+		State, HeadRefName, BaseRefName, HeadRefOid string
+		IsDraft, IsCrossRepository                  bool
+		StatusCheckRollup                           []struct{ Status, Conclusion, State string }
 	}
 	if err = json.Unmarshal(data, &pr); err != nil {
 		return result, err
@@ -80,6 +79,10 @@ func (t *mergeTool) Execute(ctx context.Context, call string, raw json.RawMessag
 		return result, fmt.Errorf("PR #%d is not open", args.PR)
 	case pr.IsDraft:
 		return result, fmt.Errorf("PR #%d is draft", args.PR)
+	case pr.IsCrossRepository:
+		return result, fmt.Errorf("PR #%d must use this repository's dev branch", args.PR)
+	case pr.HeadRefName != "dev" || pr.BaseRefName != "main":
+		return result, fmt.Errorf("PR #%d must promote dev to main", args.PR)
 	case pr.HeadRefOid != args.HeadSHA:
 		return result, fmt.Errorf("PR #%d head moved; review the new head", args.PR)
 	case len(pr.StatusCheckRollup) == 0:
@@ -90,25 +93,18 @@ func (t *mergeTool) Execute(ctx context.Context, call string, raw json.RawMessag
 			return result, fmt.Errorf("PR #%d checks failing or pending", args.PR)
 		}
 	}
-	if !filepath.IsAbs(state.mergeLane) {
-		return result, fmt.Errorf("merge requires an absolute merge-lane path in server configuration")
+	if !filepath.IsAbs(state.mergeRoot) {
+		return result, fmt.Errorf("merge requires an absolute merge root in server configuration")
 	}
-	script := filepath.Join(state.mergeLane, "scripts", "merge-queue.sh")
-	name, argv := "gh", []string{"pr", "merge", strconv.Itoa(args.PR), "--squash", "--match-head-commit", args.HeadSHA}
-	for _, path := range []string{script, filepath.Join(state.mergeLane, "scripts", "lanes.py")} {
-		if _, statErr := os.Stat(path); statErr != nil {
-			return result, fmt.Errorf("merge lane tooling unavailable: %w", statErr)
-		}
+	if !state.mergeQueue {
+		return result, fmt.Errorf("dev promotion requires the merge queue")
 	}
-	enabled, probeErr := repoOutput(ctx, state.mergeLane, "python3", filepath.Join(state.mergeLane, "scripts", "lanes.py"), "lane", "merge", "enabled")
-	if probeErr != nil {
-		return result, fmt.Errorf("could not read merge lane configuration: %w", probeErr)
+	script := filepath.Join(state.mergeRoot, "scripts", "merge", "merge-queue.sh")
+	if _, statErr := os.Stat(script); statErr != nil {
+		return result, fmt.Errorf("merge queue tooling unavailable: %w", statErr)
 	}
-	if strings.TrimSpace(string(enabled)) == "True" {
-		name, argv = "bash", []string{script, "enqueue", strconv.Itoa(args.PR)}
-		status = "Queued for merge"
-	}
-	_, err = repoOutput(ctx, state.mergeLane, name, argv...)
+	status = "Queued for promotion"
+	_, err = repoOutput(ctx, state.mergeRoot, "bash", script, "enqueue", strconv.Itoa(args.PR))
 	if err != nil {
 		return result, fmt.Errorf("merge refused: %w", err)
 	}

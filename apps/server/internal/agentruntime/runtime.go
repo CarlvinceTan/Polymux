@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -36,6 +37,8 @@ type Definition struct {
 	// Workspace is an absolute git repository path on the server host. A
 	// conversation whose agent has one runs in its own worktree of that repo.
 	Workspace string `json:"workspace,omitempty"`
+	// Keep an explicit clear from inheriting the startup default again.
+	WorkspaceSet bool `json:"workspaceSet,omitempty"`
 	// Worktree is the conversation's prepared checkout, resolved per session.
 	Worktree   string                   `json:"-"`
 	ExtraTools []agent.AgentTool        `json:"-"`
@@ -58,12 +61,16 @@ func (d Definition) SystemPrompt() string {
 }
 
 type Delta struct {
-	Text   string
-	Tool   string
-	Args   string
-	Kind   string
-	ToolID string
-	Failed bool
+	Text    string
+	Tool    string
+	Args    string
+	Kind    string
+	ToolID  string
+	Failed  bool
+	Attempt int
+	// Brief and Output feed the chat tool rows: the argument summary and result excerpt.
+	Brief  string
+	Output string
 }
 type Result struct {
 	Text  string
@@ -288,7 +295,7 @@ func buildPrompt(d Definition, tools []string, mcpDown bool) (string, error) {
 		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(repo, home+string(filepath.Separator)) {
 			repo = "~" + strings.TrimPrefix(repo, home)
 		}
-		prompt += "\nStart your first reply with: Working in " + repo + " on branch " + BranchName(d.Agent.ID, WorkspaceThread(d)) + "."
+		prompt += "\nStart your first reply with: Working in " + repo + " in a detached conversation checkout. Do not create or push another branch; commit verified changes here and report their hashes for integration into the repository's development branch."
 		if d.Worktree != "" {
 			prompt += "\nThis conversation's checkout is " + d.Worktree + ", shared with no other conversation; keep edits there. The source repository is " + d.Workspace + "."
 		}
@@ -373,9 +380,17 @@ func (s *pigSession) Send(ctx context.Context, m contract.Message, emit func(Del
 			d.Kind = "tool.start"
 			d.ToolID = e.ToolCallID
 			d.Tool = e.ToolName
+			d.Brief = toolSummary(e.ToolName, e.Args)
 		case agent.ToolExecutionEndEvent:
 			d.Kind = "tool.done"
 			d.ToolID, d.Tool, d.Failed = e.ToolCallID, e.ToolName, e.IsError
+			d.Output = toolExcerpt(e.Result.Content)
+		case agent.AutoRetryStartEvent:
+			// One notice per attempt. The matching end closes that same cycle.
+			d.Kind = "run.retrying"
+			d.Attempt = e.Attempt
+		case agent.AutoRetryEndEvent:
+			return
 		default:
 			return
 		}
@@ -444,6 +459,50 @@ func (s *pigSession) Send(ctx context.Context, m contract.Message, emit func(Del
 	eventMu.Lock()
 	defer eventMu.Unlock()
 	return result, errors.Join(err, writeErr)
+}
+
+// redact and clip bound what chat rows show; a payload is never sent whole.
+var secrets = regexp.MustCompile(`(?i)\b(?:sk-|ghp_|github_pat_|xox[baprs]-|ntn_|secret_)[A-Za-z0-9_-]{12,}|\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|["']?(?:api[_-]?key|(?:access[_-]?)?token|secret|password|passwd|authorization)["']?\s*[=:]\s*(?:bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s"']+)|bearer\s+\S+`)
+
+func redact(text string) string { return secrets.ReplaceAllString(text, "[redacted]") }
+
+func clip(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	return strings.ToValidUTF8(text[:limit-3], "") + "…"
+}
+
+// toolSummary names a call its chat row shows: the command for bash, the path for file tools.
+func toolSummary(name string, args json.RawMessage) string {
+	var fields map[string]any
+	if len(args) == 0 || json.Unmarshal(args, &fields) != nil {
+		return ""
+	}
+	keys := map[string][]string{"bash": {"command"}, "shell": {"command"}, "read": {"path"}, "write": {"path"},
+		"edit": {"path"}, "ls": {"path"}, "find": {"path", "pattern"}}[name]
+	for _, key := range keys {
+		if value, ok := fields[key].(string); ok && value != "" {
+			return clip(redact(value), 200)
+		}
+	}
+	return ""
+}
+
+func toolExcerpt(content []ai.ToolResultMessageContent) string {
+	var parts []string
+	size := 0
+	for _, block := range content {
+		text, ok := block.(ai.TextContent)
+		if !ok || text.Text == "" {
+			continue
+		}
+		parts = append(parts, text.Text)
+		if size += len(text.Text); size >= 2048 {
+			break
+		}
+	}
+	return clip(redact(strings.Join(parts, "\n")), 2048)
 }
 
 func quoteText(reply *contract.ReplyContext) (string, error) {

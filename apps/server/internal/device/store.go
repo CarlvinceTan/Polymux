@@ -83,7 +83,7 @@ func Open(ctx context.Context, dir, hostname string) (*Store, error) {
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite3", "file:"+path+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err := sql.Open("sqlite3", "file:"+path+"?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +238,21 @@ func (s *Store) Issue(ctx context.Context, address, agent string, caps []string)
 	if err != nil {
 		return "", err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO tickets VALUES(?,?,?,?)`, hash(code), agent, string(data), time.Now().Add(10*time.Minute).Unix())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `DELETE FROM tickets WHERE expires<=? OR (agent=? AND capabilities LIKE '[%')`, s.moment().Unix(), agent)
+	if err == nil {
+		err = ticketCap(ctx, tx)
+	}
+	if err == nil {
+		_, err = tx.ExecContext(ctx, `INSERT INTO tickets VALUES(?,?,?,?)`, hash(code), agent, string(data), s.moment().Add(3*time.Minute).Unix())
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
 	if err != nil {
 		return "", err
 	}
@@ -260,7 +274,7 @@ func (s *Store) Enroll(ctx context.Context, code, name string, caps []string) (E
 	defer tx.Rollback()
 	var agent, encoded string
 	// Control tickets are JSON arrays. App tickets are objects and must stay put.
-	err = tx.QueryRowContext(ctx, `DELETE FROM tickets WHERE hash=? AND expires>? AND capabilities LIKE '[%' RETURNING agent,capabilities`, hash(code), time.Now().Unix()).Scan(&agent, &encoded)
+	err = tx.QueryRowContext(ctx, `DELETE FROM tickets WHERE hash=? AND expires>? AND capabilities LIKE '[%' RETURNING agent,capabilities`, hash(code), s.moment().Unix()).Scan(&agent, &encoded)
 	if err != nil {
 		return Enrollment{}, errors.New("pairing code expired or already used")
 	}
@@ -379,10 +393,13 @@ func (s *Store) IssueApp(ctx context.Context, candidates []string, agent string)
 		return "", err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `DELETE FROM tickets WHERE capabilities=?`, appTicket); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM tickets WHERE capabilities=? OR expires<=?`, appTicket, s.moment().Unix()); err != nil {
 		return "", err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO tickets(hash,agent,capabilities,expires) VALUES(?,?,?,?)`, hash(code), agent, appTicket, s.moment().Add(10*time.Minute).Unix())
+	if err = ticketCap(ctx, tx); err != nil {
+		return "", err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO tickets(hash,agent,capabilities,expires) VALUES(?,?,?,?)`, hash(code), agent, appTicket, s.moment().Add(3*time.Minute).Unix())
 	if err == nil {
 		err = tx.Commit()
 	}
@@ -443,6 +460,9 @@ func (s *Store) RedeemApp(ctx context.Context, caller, code string) (string, err
 		if qerr == nil && expires <= now.Unix() {
 			reason = ErrExpired
 		}
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM tickets WHERE expires<=?`, now.Unix()); err != nil {
+		return "", err
 	}
 	fails++
 	lockUntil := int64(0)
@@ -538,3 +558,24 @@ func randBytes(n int) []byte {
 	return b
 }
 func hash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+
+func ticketCap(ctx context.Context, tx *sql.Tx) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tickets`).Scan(&count); err != nil {
+		return err
+	}
+	if count >= 64 {
+		return errors.New("too many pairing codes")
+	}
+	return nil
+}
+
+func (s *Store) enrollApp(ctx context.Context, caller, code string) (Enrollment, error) {
+	agent, err := s.RedeemApp(ctx, caller, code)
+	if err != nil {
+		return Enrollment{}, err
+	}
+	p := Enrollment{Pairing: Pairing{ID: randomID(), Name: "App", Agent: agent, Capabilities: []string{}}, Token: randomID()}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO devices(id,name,agent,capabilities,token_hash) VALUES(?,?,?,?,?)`, p.ID, p.Name, agent, "[]", hash(p.Token))
+	return p, err
+}

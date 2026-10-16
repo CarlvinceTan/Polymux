@@ -26,7 +26,7 @@ func NewOffer(id Identity, lan []string, now time.Time) (Offer, error) {
 	if len(id.PublicKey) != ed25519.PublicKeySize {
 		return Offer{}, errors.New("invalid issuer key")
 	}
-	o := Offer{Issuer: append(ed25519.PublicKey(nil), id.PublicKey...), LAN: append([]string(nil), lan...), Expires: now.Add(10 * time.Minute)}
+	o := Offer{Issuer: append(ed25519.PublicKey(nil), id.PublicKey...), LAN: append([]string(nil), lan...), Expires: now.Add(3 * time.Minute)}
 	if _, err := rand.Read(o.Secret[:]); err != nil {
 		return Offer{}, err
 	}

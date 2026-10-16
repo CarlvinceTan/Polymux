@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,17 +40,26 @@ type DurableRuntime struct {
 
 // NewDurable opens a durable harness over the given storage. Conversations, generations,
 // tools and usage are durable; Polymux's own session persistence stores the conversation id.
-func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Client, storage durable.Storage) (*DurableRuntime, error) {
+func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Client, storage durable.Storage, extra ...string) (*DurableRuntime, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
+	if err := EnableRetry(); err != nil {
+		slog.Warn("provider retry settings were not applied", "error", err)
+	}
 	registry := harness.CreateRegistry()
 	opened, err := harness.OpenHarness(ctx, cacheHistory(storage), harness.HarnessOptions{
-		Models: durableModels(baseURL, key, model, client),
+		Models: durableModels(baseURL, key, model, client, extra...),
 		Settings: func() *harness.HarnessSettings {
-			return &harness.HarnessSettings{Compaction: &harness.CompactionPolicyPatch{
-				ReserveTokens: new(4096), KeepRecentTokens: new(4096), BackgroundTokens: new(0),
-			}}
+			return &harness.HarnessSettings{
+				// Text classification would retry a 400 or 401 whose body says overloaded.
+				Retry: &harness.RetryPolicyPatch{Enabled: new(false)},
+				// PiG's HTTP retry stays inert; statusRetry honours Retry-After.
+				Stream: &durable.ConversationStreamOptions{MaxRetries: new(0)},
+				Compaction: &harness.CompactionPolicyPatch{
+					ReserveTokens: new(4096), KeepRecentTokens: new(4096), BackgroundTokens: new(0),
+				},
+			}
 		},
 		Registry: registry,
 		Env: func(_ context.Context, target harness.EnvTarget) (env.ExecutionEnv, error) {
@@ -192,16 +203,27 @@ const DurableProvider = "polymux"
 const MaxRequestBytes = 128 << 10
 
 // durableModels registers Polymux's OpenAI-compatible endpoint with the durable models runtime.
-func durableModels(baseURL, key, model string, client Client) *ai.Models {
-	provider := ai.NewOpenAIProvider(ai.OpenAIConfig{BaseURL: baseURL, APIKey: key, Model: model, ProviderID: DurableProvider, ExtraHeaders: client.Headers})
+func durableModels(baseURL, key, model string, client Client, extra ...string) *ai.Models {
+	providers := make(map[string]ai.Provider)
+	var registered []*ai.Model
+	for _, id := range append([]string{model}, extra...) {
+		if _, exists := providers[id]; exists {
+			continue
+		}
+		providers[id] = ai.NewOpenAIProvider(ai.OpenAIConfig{BaseURL: baseURL, APIKey: key, Model: id, ProviderID: DurableProvider, ExtraHeaders: client.Headers})
+		registered = append(registered, &ai.Model{ID: id, Capabilities: ai.ModelCapabilities{ContextWindow: 16384}, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: baseURL}})
+	}
+	stream := func(ctx context.Context, selected *ai.Model, transcript ai.TranscriptContext, opts ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
+		return passthrough(providers[selected.ID])(ctx, selected, transcript, opts)
+	}
 	models := ai.CreateModels()
 	models.SetProvider(&ai.ModelsProvider{
 		ID: DurableProvider, Name: DurableProvider, BaseURL: baseURL,
 		GetModels: func() ([]*ai.Model, error) {
-			return []*ai.Model{{ID: model, Capabilities: ai.ModelCapabilities{ContextWindow: 16384}, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: baseURL}}}, nil
+			return registered, nil
 		},
-		Stream:       passthrough(provider),
-		StreamSimple: passthrough(provider),
+		Stream:       stream,
+		StreamSimple: stream,
 		Auth: ai.ProviderAuth{APIKey: &ai.APIKeyAuth{Name: "Polymux key", Resolve: func(context.Context, ai.APIKeyAuthInput) (*ai.AuthResult, error) {
 			return &ai.AuthResult{Auth: ai.ModelAuth{APIKey: key}, Source: DurableProvider}, nil
 		}}},
@@ -212,8 +234,151 @@ func durableModels(baseURL, key, model string, client Client) *ai.Models {
 // passthrough adapts an ai.Provider to the models runtime stream signature.
 func passthrough(provider ai.Provider) ai.ModelsStreamFunction {
 	return func(ctx context.Context, _ *ai.Model, transcript ai.TranscriptContext, opts ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
-		return provider.Stream(ctx, transcript, opts)
+		id := markerID(transcript)
+		opts.MaxRetries = new(0)
+		if opts.Fetch == nil {
+			opts.Fetch = retryClient()
+		}
+		// Upstream owns the summarizer prompt, so pin facts here; the summary entry stores the copy.
+		if pinned, ok := pinFacts(transcript.Messages()); ok {
+			transcript = ai.NormalizeContext(ai.Context{Messages: pinned})
+		}
+		stream, err := provider.Stream(ctx, transcript, opts)
+		return retainPartial(ctx, id, stream), err
 	}
+}
+
+const maxFactBytes = 2048
+
+var factCue = regexp.MustCompile(`(?i)\d|my name is|\bdecided\b|\bdecision\b|\bagreed to\b`)
+
+func pinFacts(messages []ai.Message) ([]ai.Message, bool) {
+	summary := false
+	for _, message := range messages {
+		if strings.Contains(textOf(message), "You are a context summarization assistant") {
+			summary = true
+		}
+	}
+	if !summary {
+		return nil, false
+	}
+	for i, message := range messages {
+		user, ok := message.(ai.UserMessage)
+		if !ok {
+			continue
+		}
+		block := factBlock(textOf(message))
+		if block == "" {
+			continue
+		}
+		messages[i] = appendUserText(user, "\n\n"+block)
+		return messages, true
+	}
+	return nil, false
+}
+
+// factBlock appends a Facts section of user-stated lines. Oldest stay; newest drop past 2KB.
+func factBlock(prompt string) string {
+	open := strings.Index(prompt, "<conversation>\n")
+	close := strings.Index(prompt, "\n</conversation>")
+	if open < 0 || close < open {
+		return ""
+	}
+	facts := []string{}
+	seen := map[string]bool{}
+	rest := prompt[open:close]
+	for {
+		at := strings.Index(rest, "[User]: ")
+		if at < 0 {
+			break
+		}
+		rest = rest[at+len("[User]: "):]
+		cut := len(rest)
+		for _, next := range []string{"\n\n[Assistant", "\n\n[Tool", "\n\n[User]:"} {
+			if j := strings.Index(rest, next); j >= 0 && j < cut {
+				cut = j
+			}
+		}
+		for _, line := range strings.Split(rest[:cut], "\n") {
+			line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- "))
+			if line == "" || strings.HasPrefix(line, "Current UTC time:") || len(line) > 240 {
+				continue
+			}
+			if seen[line] || !factCue.MatchString(line) {
+				continue
+			}
+			seen[line] = true
+			facts = append(facts, line)
+		}
+		rest = rest[cut:]
+	}
+	var b strings.Builder
+	b.WriteString("Facts:")
+	for _, fact := range facts {
+		line := "\n- " + fact
+		if b.Len()+len(line) > maxFactBytes {
+			break
+		}
+		b.WriteString(line)
+	}
+	if b.Len() == len("Facts:") {
+		return ""
+	}
+	return "Carry this Facts section forward verbatim in every summary. " +
+		"It lists user-stated facts (names, numbers, dates, decisions). " +
+		"Drop the newest facts first so the section stays within 2048 bytes.\n\n" + b.String()
+}
+
+func textOf(message ai.Message) string {
+	switch typed := message.(type) {
+	case ai.SystemMessage:
+		switch content := typed.Content.(type) {
+		case ai.SystemText:
+			return string(content)
+		case ai.SystemTextBlocks:
+			var b strings.Builder
+			for _, block := range content {
+				b.WriteString(block.Text)
+			}
+			return b.String()
+		}
+	case ai.UserMessage:
+		switch content := typed.Content.(type) {
+		case ai.UserText:
+			return string(content)
+		case ai.UserContentBlocks:
+			var b strings.Builder
+			for _, block := range content {
+				if text, ok := block.(ai.TextContent); ok {
+					if b.Len() > 0 {
+						b.WriteByte('\n')
+					}
+					b.WriteString(text.Text)
+				}
+			}
+			return b.String()
+		}
+	}
+	return ""
+}
+
+func appendUserText(message ai.UserMessage, extra string) ai.UserMessage {
+	blocks, ok := message.Content.(ai.UserContentBlocks)
+	if !ok {
+		message.Content = ai.UserText(textOf(message) + extra)
+		return message
+	}
+	copied := append(ai.UserContentBlocks{}, blocks...)
+	if n := len(copied); n > 0 {
+		if text, ok := copied[n-1].(ai.TextContent); ok {
+			text.Text += extra
+			copied[n-1] = text
+			message.Content = copied
+			return message
+		}
+	}
+	message.Content = append(copied, ai.TextContent{Text: extra})
+	return message
 }
 
 func modelID(d Definition, fallback string) string {
@@ -271,8 +436,17 @@ func (s *durableSession) report(delta Delta) {
 // runs tools on its own line, so the gate must be reinstalled here or an unattended turn
 // would bypass budgets, the automatic-turn tool gate and effect receipts.
 func (s *durableSession) hooks() []durable.HookRegistration {
+	generation := &harness.GenerationHooks{BeforeRequest: s.prepareRequest}
 	if s.definition.BeforeTool == nil {
-		return nil
+		return []durable.HookRegistration{harness.Hook(harness.GenerationTask, generation)}
+	}
+	// Abort marks the generation so the scheduler ends it as unanswered.
+	generation.AfterTools = func(ctx context.Context, _ durable.EntryId, _ []durable.EntryId, _ harness.HookApi) error {
+		if !s.park.Load() {
+			return nil
+		}
+		_ = s.conversation.Abort(ctx, nil)
+		return errApprovalPause
 	}
 	return []durable.HookRegistration{
 		{Task: "pi.tool", Handlers: &harness.ToolHooks{
@@ -301,7 +475,7 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 					}
 					return &harness.BeforeToolResult{Block: &reason}, nil
 				}
-				s.report(Delta{Kind: "tool.start", ToolID: call.ID, Tool: call.Name})
+				s.report(Delta{Kind: "tool.start", ToolID: call.ID, Tool: call.Name, Brief: toolSummary(call.Name, raw)})
 				if len(decision.Args) == 0 {
 					return nil, nil
 				}
@@ -315,22 +489,11 @@ func (s *durableSession) hooks() []durable.HookRegistration {
 				if _, ok := s.turnContext(api.ConversationId(), ctx); !ok {
 					return nil, nil
 				}
-				s.report(Delta{Kind: "tool.done", ToolID: call.ID, Tool: call.Name, Failed: result.IsError != nil && *result.IsError})
+				s.report(Delta{Kind: "tool.done", ToolID: call.ID, Tool: call.Name, Failed: result.IsError != nil && *result.IsError, Output: toolExcerpt(result.Content)})
 				return nil, nil
 			},
 		}},
-		harness.Hook(harness.GenerationTask, &harness.GenerationHooks{
-			BeforeRequest: s.steerRequest,
-			// Abort marks the generation so the scheduler ends it as unanswered. The error
-			// stops finishToolRound from starting a successor request in the same turn.
-			AfterTools: func(ctx context.Context, _ durable.EntryId, _ []durable.EntryId, _ harness.HookApi) error {
-				if !s.park.Load() {
-					return nil
-				}
-				_ = s.conversation.Abort(ctx, nil)
-				return errApprovalPause
-			},
-		}),
+		harness.Hook(harness.GenerationTask, generation),
 	}
 }
 
@@ -371,6 +534,66 @@ func (s *durableSession) steerRequest(ctx context.Context, request harness.Gener
 		return err
 	})
 	return &request, err
+}
+
+func (s *durableSession) prepareRequest(ctx context.Context, request harness.GenerationRequest, api harness.HookApi) (*harness.GenerationRequest, error) {
+	steered, err := s.steerRequest(ctx, request, api)
+	if err != nil {
+		return nil, err
+	}
+	if steered != nil {
+		request = *steered
+	}
+	return s.markRequest(ctx, request, api)
+}
+
+// markRequest stamps the conversation id onto this attempt so a retry notice
+// reaches the session that is waiting. The transport removes the stamp.
+func (s *durableSession) markRequest(_ context.Context, request harness.GenerationRequest, api harness.HookApi) (*harness.GenerationRequest, error) {
+	marker := "\n" + conversationMarker(strconv.FormatInt(int64(api.ConversationId()), 10))
+	messages := append([]ai.Message(nil), request.Messages...)
+	for i, message := range messages {
+		system, ok := message.(ai.SystemMessage)
+		if !ok {
+			continue
+		}
+		switch content := system.Content.(type) {
+		case ai.SystemText:
+			system.Content = content + ai.SystemText(marker)
+			messages[i] = system
+			return &harness.GenerationRequest{Messages: messages}, nil
+		case ai.SystemTextBlocks:
+			blocks := append(ai.SystemTextBlocks(nil), content...)
+			if len(blocks) == 0 {
+				blocks = ai.SystemTextBlocks{{Text: strings.TrimPrefix(marker, "\n")}}
+			} else {
+				blocks[len(blocks)-1].Text += marker
+			}
+			system.Content = blocks
+			messages[i] = system
+			return &harness.GenerationRequest{Messages: messages}, nil
+		}
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		user, ok := messages[i].(ai.UserMessage)
+		if !ok {
+			continue
+		}
+		switch content := user.Content.(type) {
+		case ai.UserText:
+			user.Content = content + ai.UserText(marker)
+			messages[i] = user
+			return &harness.GenerationRequest{Messages: messages}, nil
+		case ai.UserContentBlocks:
+			blocks := append(ai.UserContentBlocks(nil), content...)
+			blocks = append(blocks, ai.TextContent{Text: strings.TrimPrefix(marker, "\n")})
+			user.Content = blocks
+			messages[i] = user
+			return &harness.GenerationRequest{Messages: messages}, nil
+		}
+	}
+	messages = append([]ai.Message{ai.SystemMessage{Content: ai.SystemText(strings.TrimPrefix(marker, "\n"))}}, messages...)
+	return &harness.GenerationRequest{Messages: messages}, nil
 }
 
 var errApprovalPause = errors.New("waiting for approval")
@@ -440,10 +663,17 @@ func parseDurablePath(path string) (durable.ConversationId, bool) {
 func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func(Delta) error) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	conversationID := strconv.FormatInt(int64(s.conversation.Id()), 10)
+	sink := bindRetry(conversationID, emit)
+	streamEmit := emit
+	if sink != nil {
+		streamEmit = sink.send
+	}
 	s.emitMu.Lock()
-	s.emit = emit
+	s.emit = streamEmit
 	s.emitMu.Unlock()
 	defer func() {
+		unbindRetry(conversationID, sink)
 		s.emitMu.Lock()
 		s.emit = nil
 		s.emitMu.Unlock()
@@ -452,14 +682,14 @@ func (s *durableSession) Send(ctx context.Context, m contract.Message, emit func
 	if err != nil {
 		return Result{}, err
 	}
-	stop := s.stream(ctx, emit)
+	stop := s.stream(ctx, streamEmit)
 	defer stop()
 	submission, err := s.conversation.Submit(ctx, durable.SubmissionDraft{Type: durable.SubmissionTypeInput, Content: content})
 	if err != nil {
 		return Result{}, err
 	}
-	if emit != nil {
-		if err := emit(Delta{Kind: "submission", ToolID: strconv.FormatInt(int64(submission.Id()), 10)}); err != nil {
+	if streamEmit != nil {
+		if err := streamEmit(Delta{Kind: "submission", ToolID: strconv.FormatInt(int64(submission.Id()), 10)}); err != nil {
 			return Result{}, err
 		}
 	}
@@ -574,10 +804,10 @@ func (s *durableSession) outcome(ctx context.Context, settled durable.SettledSub
 	result := Result{}
 	if settled.Answer != nil {
 		text, usage, err := s.answer(ctx, *settled.Answer)
+		result.Text, result.Usage = text, usage
 		if err != nil {
 			return result, err
 		}
-		result.Text, result.Usage = text, usage
 	}
 	parked := s.park.Swap(false)
 	switch settled.Status {

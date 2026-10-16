@@ -52,10 +52,18 @@ var builtinClass = map[string]ToolClass{
 	"manage_integrations": ToolConsequential,
 	"manage_triggers":     ToolConsequential,
 	"manage_tasks":        ToolReversible,
-	"control_device":       ToolConsequential,
+	"control_device":      ToolConsequential,
 	"run_device":          ToolConsequential,
 	"finish_review":       ToolReversible,
 	"send_to_user":        ToolReversible,
+	"list_sections":       ToolRead,
+	"create_section":      ToolReversible,
+	"rename_section":      ToolReversible,
+	"delete_section":      ToolReversible,
+	"pin_chat":            ToolReversible,
+	"unpin_chat":          ToolReversible,
+	"move_chat":           ToolReversible,
+	"reorder":             ToolReversible,
 }
 
 var consequentialHints = []string{

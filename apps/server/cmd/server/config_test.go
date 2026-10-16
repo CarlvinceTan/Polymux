@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -113,4 +116,65 @@ func writeModel(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func TestLoadModelModelsList(t *testing.T) {
+	t.Setenv("POLYMUX_MODEL", "local/opencode")
+	t.Setenv("POLYMUX_MODEL_URL", "")
+	dir := writeModel(t, `{"models":["local/opencode","local/codex","local/codex"]}`)
+	for _, tc := range []struct {
+		name, override string
+		want           []string
+	}{
+		{"file", "", []string{"local/opencode", "local/codex"}},
+		{"environment", "local/cursor-agent,local/codex", []string{"local/opencode", "local/cursor-agent", "local/codex"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("POLYMUX_MODELS", tc.override)
+			if tc.override == "" {
+				os.Unsetenv("POLYMUX_MODELS")
+			}
+			config, err := loadModel(dir)
+			if err != nil || !reflect.DeepEqual(config.Models, tc.want) {
+				t.Fatalf("models = %v, error = %v", config.Models, err)
+			}
+		})
+	}
+}
+
+func TestLoadModelRejectsBadModels(t *testing.T) {
+	t.Setenv("POLYMUX_MODEL", "local/opencode")
+	for _, tc := range []struct {
+		name   string
+		models []string
+	}{
+		{"empty", []string{""}}, {"characters", []string{"local/bad model"}},
+		{"long", []string{strings.Repeat("a", 129)}}, {"too many", strings.Split(strings.Repeat("m,", 32)+"m", ",")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"models": tc.models})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("POLYMUX_MODELS", "valid")
+			os.Unsetenv("POLYMUX_MODELS")
+			if _, err := loadModel(writeModel(t, string(body))); err == nil || err.Error() != "invalid model configuration" {
+				t.Fatalf("file error = %v", err)
+			}
+			t.Setenv("POLYMUX_MODELS", strings.Join(tc.models, ","))
+			if _, err := loadModel(t.TempDir()); err == nil || err.Error() != "invalid model configuration" {
+				t.Fatalf("env error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadModelDefaultOnly(t *testing.T) {
+	t.Setenv("POLYMUX_MODEL", "")
+	t.Setenv("POLYMUX_MODELS", "")
+	os.Unsetenv("POLYMUX_MODELS")
+	config, err := loadModel(t.TempDir())
+	if err != nil || config.Model != "openai/gpt-5.5" || !reflect.DeepEqual(config.Models, []string{config.Model}) {
+		t.Fatalf("default config = %+v, error = %v", config, err)
+	}
 }

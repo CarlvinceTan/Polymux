@@ -3,6 +3,16 @@
 Follow these rules when adding or changing UI. Reuse the app's shared components
 and native controls rather than adding screen-specific interaction patterns.
 
+## Core principle #1: every interaction responds immediately (2026-10-12, Carlvince via Chief)
+Every Polymux interaction (buttons, toggles, send, menus, sidebar, settings, approvals, new chat) responds immediately and intuitively. Each press shows visible feedback and its state change on the same frame, optimistically. Backend work runs in the background; on failure the change rolls back with a clear message.
+Budgets (enforced by Argus perf checks, unit argus/PERF, run by Cody):
+- Feedback in the same frame (under 16 ms).
+- State change visible in under 50 ms.
+- No network or disk calls on the main thread (LocalCache/SQLite, file I/O, APIClient).
+- No blocking spinners; background progress indicators are fine.
+- Rollback on failure: restore the previous state and show a clear, specific message (with retry where it makes sense).
+This principle overrides any older section of this spec that waits on the server before updating the UI.
+
 ## Text inputs
 
 - On macOS, clicking outside an editable input clears its focus. Apply this to

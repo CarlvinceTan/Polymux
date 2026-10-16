@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -208,26 +210,29 @@ func TestIntroQueuesUserTask(t *testing.T) {
 	}
 }
 
+// TestToolsAreRedacted also covers the chat rows a relaunch replays: tool.start carries the
+// summary, tool.done the excerpt, and the finished run keeps both.
 func TestToolsAreRedacted(t *testing.T) {
-	api, _ := startTest(t, &testFactory{})
-	a := api.actors["assistant"]
-	a.mu.Lock()
-	a.session = &cycleSession{}
-	a.mu.Unlock()
+	api, _ := startTest(t, &cycleFactory{})
 	request := contract.SendRequest{ID: "cycle", Text: "Use tools", AttachmentIDs: []string{}}
 	if _, _, err := api.Store.Send(t.Context(), "assistant", request, []contract.Part{{Kind: "text", Text: &request.Text}}, "assistant"); err != nil {
 		t.Fatal(err)
 	}
 	runID := store.NewRun("cycle", "assistant", "assistant", "message").ID
-	awaitRun(t, api.Store, runID, "completed")
+	run := awaitRun(t, api.Store, runID, "completed")
+	if len(run.Tools) != 1 || value(run.Tools[0].Summary) != "go test ./..." || value(run.Tools[0].Output) != "ok\tpolymux\t0.2s" {
+		t.Fatalf("run rows %+v", run.Tools)
+	}
 	events, err := api.Store.Events(t.Context(), "assistant", 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var kinds []string
+	rows := map[string]contract.ToolActivity{}
 	for _, event := range events {
 		if event.Tool != nil {
 			kinds = append(kinds, event.Type)
+			rows[event.Type] = *event.Tool
 			if event.Tool.ID != "call" || event.Tool.RunID != runID {
 				t.Fatal("tool correlation lost")
 			}
@@ -240,12 +245,38 @@ func TestToolsAreRedacted(t *testing.T) {
 	if strings.Join(kinds, ",") != "tool.start,tool.done" {
 		t.Fatalf("events %v", kinds)
 	}
+	if start := rows["tool.start"]; value(start.Summary) != "go test ./..." || start.Status != "running" {
+		t.Fatalf("tool.start %+v", start)
+	}
+	if done := rows["tool.done"]; value(done.Output) != "ok\tpolymux\t0.2s" || done.Status != "completed" {
+		t.Fatalf("tool.done %+v", done)
+	}
 }
 
-type cycleSession struct{}
+type cycleSession struct{ calls int }
 
-func (*cycleSession) Send(_ context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
-	for _, d := range []agentruntime.Delta{{Kind: "generating"}, {Kind: "tool.start", ToolID: "call", Tool: "read", Args: "secret"}, {Kind: "tool.done", ToolID: "call", Tool: "read"}, {Text: "Done"}} {
+type cycleFactory struct{}
+
+func (*cycleFactory) Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error) {
+	return &cycleSession{}, nil
+}
+
+func (s *cycleSession) Send(_ context.Context, _ contract.Message, emit func(agentruntime.Delta) error) (agentruntime.Result, error) {
+	for i := 0; i < s.calls; i++ {
+		id := fmt.Sprint(i)
+		if err := emit(agentruntime.Delta{Kind: "tool.start", ToolID: id, Tool: "bash", Brief: "false"}); err != nil {
+			return agentruntime.Result{}, err
+		}
+		if err := emit(agentruntime.Delta{Kind: "tool.done", ToolID: id, Tool: "bash", Failed: true, Output: "failed"}); err != nil {
+			return agentruntime.Result{}, err
+		}
+	}
+	for _, d := range []agentruntime.Delta{
+		{Kind: "generating"},
+		{Kind: "tool.start", ToolID: "call", Tool: "read", Args: "secret", Brief: "go test ./..."},
+		{Kind: "tool.done", ToolID: "call", Tool: "read", Output: "ok\tpolymux\t0.2s"},
+		{Text: "Done"},
+	} {
 		if err := emit(d); err != nil {
 			return agentruntime.Result{}, err
 		}
@@ -564,5 +595,24 @@ func TestPersistenceCleanup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestToolHistoryRetainsEveryCall(t *testing.T) {
+	api, _ := startTest(t, &testFactory{})
+	a := api.actors["assistant"]
+	a.session = &cycleSession{calls: 40}
+	a.sessionMCP = sha256.Sum256([]byte("[]"))
+	w := httptest.NewRecorder()
+	api.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/threads/assistant/messages", strings.NewReader(`{"id":"history","text":"Run"}`)))
+	if w.Code != http.StatusAccepted {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	run := awaitRun(t, api.Store, store.NewRun("history", "assistant", "assistant", "message").ID, "completed")
+	if len(run.Tools) != 41 {
+		t.Fatalf("retained %d calls", len(run.Tools))
+	}
+	if run.Tools[0].Status != "failed" || value(run.Tools[0].Output) != "failed" || value(run.Tools[0].Summary) != "false" {
+		t.Fatal("first failed call lost its details")
 	}
 }

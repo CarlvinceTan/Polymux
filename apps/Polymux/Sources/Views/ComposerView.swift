@@ -1,12 +1,16 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#endif
 import PolymuxKit
 
 struct DraftFile: Identifiable {
     let id = UUID()
     let url: URL
     let kind: UTType
+    var ready = true
 }
 
 struct ComposerView: View {
@@ -68,6 +72,9 @@ struct ComposerView: View {
                     .hidden().accessibilityHidden(true)
             }
         }
+        #if os(macOS)
+        .background { PasteImages(focused: focused) { pasteImage() } }
+        #endif
         .onChange(of: isVoiceActive) { _, active in
             focused = !active
             if active {
@@ -163,6 +170,12 @@ struct ComposerView: View {
                         #if os(iOS)
                         .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
                         #endif
+                    #if os(iOS)
+                    PasteButton(supportedContentTypes: [.image]) { providers in
+                        attachments = false
+                        paste(providers)
+                    }
+                    #endif
                 }
                 .padding(6).frame(minWidth: 190)
                 .presentationCompactAdaptation(.popover)
@@ -245,7 +258,7 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: Circle())
                 .accessibilityLabel("Send message")
-                .disabled(sending || loadingPhotos)
+                .disabled(sending || loadingPhotos || files.contains { !$0.ready })
             }
         }
     }
@@ -386,6 +399,70 @@ struct ComposerView: View {
         .buttonStyle(.plain)
     }
 
+    private func pastedFile() -> DraftFile {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "Pasted-\(UUID().uuidString.prefix(8)).png")
+        let file = DraftFile(url: url, kind: .png, ready: false)
+        files.append(file)
+        error = nil
+        return file
+    }
+
+    private func finishPaste(_ file: DraftFile, data: Data?) async {
+        do {
+            guard let data else { throw CocoaError(.fileReadCorruptFile) }
+            try await Task.detached(priority: .userInitiated) {
+                try data.write(to: file.url, options: .atomic)
+            }.value
+            guard let index = files.firstIndex(where: { $0.id == file.id }) else {
+                try? FileManager.default.removeItem(at: file.url)
+                return
+            }
+            files[index].ready = true
+        } catch {
+            files.removeAll { $0.id == file.id }
+            self.error = error.localizedDescription
+        }
+    }
+
+    #if os(macOS)
+    private func pasteImage() {
+        let board = NSPasteboard.general
+        let png = board.data(forType: .png)
+        let tiff = png == nil ? board.data(forType: .tiff) : nil
+        guard png != nil || tiff != nil else { return }
+        let file = pastedFile()
+        Task {
+            let data = await Task.detached(priority: .userInitiated) { () -> Data? in
+                if let png { return png }
+                guard let tiff, let rep = NSBitmapImageRep(data: tiff) else { return nil as Data? }
+                return rep.representation(using: .png, properties: [:])
+            }.value
+            await finishPaste(file, data: data)
+        }
+    }
+    #endif
+
+    #if os(iOS)
+    private func paste(_ providers: [NSItemProvider]) {
+        for provider in providers {
+            let file = pastedFile()
+            Task {
+                let data = await Self.pasteData(provider)
+                await finishPaste(file, data: data)
+            }
+        }
+    }
+
+    private static func pasteData(_ provider: NSItemProvider) async -> Data? {
+        await withCheckedContinuation { continuation in
+            provider.loadObject(ofClass: UIImage.self) { object, _ in
+                continuation.resume(returning: (object as? UIImage)?.pngData())
+            }
+        }
+    }
+    #endif
+
     private var hasContent: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !files.isEmpty }
     private var isExpanded: Bool { !files.isEmpty || reply != nil }
     private var controlInk: Color { colorScheme == .dark ? .white : .black }
@@ -468,7 +545,7 @@ struct ComposerView: View {
 
     /// Clears the composer in the same frame, then hands the files to `send` to upload behind the bubble.
     private func sendDraft(at tap: ContinuousClock.Instant) {
-        guard hasContent, !loadingPhotos else { sending = false; return }
+        guard hasContent, !loadingPhotos, files.allSatisfy(\.ready) else { sending = false; return }
         let draft = text
         let pending = files
         let quote = reply
@@ -589,6 +666,58 @@ private enum MentionRank {
         return candidate.contains(query) ? 2 : nil
     }
 }
+
+#if os(macOS)
+/// Reads ⌘V while the composer is focused, before the field editor consumes the image.
+private struct PasteImages: NSViewRepresentable {
+    let focused: Bool
+    let paste: () -> Void
+
+    func makeNSView(context: Context) -> PasteAnchor { PasteAnchor() }
+
+    func updateNSView(_ anchor: PasteAnchor, context: Context) {
+        anchor.focused = focused
+        anchor.paste = paste
+    }
+
+    static func dismantleNSView(_ anchor: PasteAnchor, coordinator: ()) { anchor.detach() }
+}
+
+private final class PasteAnchor: NSView {
+    var focused = false
+    var paste: (() -> Void)?
+    private var monitor: Any?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        detach()
+        guard window != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard self?.intercept(event) == true else { return event }
+            return nil
+        }
+    }
+
+    func detach() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    /// True when ⌘V belongs to the focused composer and the pasteboard holds an image.
+    private func intercept(_ event: NSEvent) -> Bool {
+        let board = NSPasteboard.general
+        guard focused, event.window === window,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+              event.charactersIgnoringModifiers?.lowercased() == "v",
+              board.string(forType: .string) == nil,
+              board.availableType(from: [.png, .tiff]) != nil else { return false }
+        paste?()
+        return true
+    }
+}
+#endif
 
 private struct MentionToken {
     let id: String

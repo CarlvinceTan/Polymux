@@ -96,7 +96,7 @@ func (s *Sender) Send(ctx context.Context, push store.Push) store.PushResult {
 	if err != nil {
 		return store.PushResult{State: "failed"}
 	}
-	data, _ := json.Marshal(map[string]any{"aps": map[string]any{"alert": map[string]string{"title": push.Notice.Title, "body": "New message in Polymux"}, "sound": "default", "thread-id": push.Notice.ConversationID}, "server": push.Device.Server, "conversationID": push.Notice.ConversationID, "messageID": push.Notice.MessageID})
+	data, _ := json.Marshal(map[string]any{"aps": map[string]any{"alert": map[string]string{"title": push.Notice.Title, "body": push.Notice.Body}, "sound": "default", "thread-id": push.Notice.ConversationID}, "server": push.Device.Server, "conversationID": push.Notice.ConversationID, "messageID": push.Notice.MessageID})
 	if len(data) > 4096 {
 		return store.PushResult{State: "failed"}
 	}
@@ -116,7 +116,7 @@ func (s *Sender) Send(ctx context.Context, push store.Push) store.PushResult {
 	request.Header.Set("apns-push-type", "alert")
 	request.Header.Set("apns-priority", "10")
 	request.Header.Set("apns-expiration", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
-	hash := sha256.Sum256([]byte(push.Notice.MessageID))
+	hash := sha256.Sum256([]byte(strconv.FormatInt(push.Notice.Seq, 10)))
 	request.Header.Set("apns-collapse-id", base64.RawURLEncoding.EncodeToString(hash[:]))
 	response, err := s.client.Do(request)
 	if err != nil {

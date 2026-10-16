@@ -90,20 +90,32 @@ PRAGMA user_version=2;`)
 	if err := s.migrateNotices(ctx); err != nil {
 		return err
 	}
-	return s.migrateApprovals(ctx)
+	if err := s.migrateApprovals(ctx); err != nil {
+		return err
+	}
+	if err := s.migratePins(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateSections(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateMCP(ctx); err != nil {
+		return err
+	}
+	return s.migrateSidebar(ctx)
 }
 
 func Now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 func (s *Store) SaveDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage) error {
-	return s.saveDefinition(ctx, a, definition, false, nil)
+	return s.saveDefinition(ctx, a, definition, false, nil, nil)
 }
 
-func (s *Store) CreateDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage, task *string) error {
-	return s.saveDefinition(ctx, a, definition, true, task)
+func (s *Store) CreateDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage, task, section *string) error {
+	return s.saveDefinition(ctx, a, definition, true, task, section)
 }
 
-func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage, intro bool, task *string) error {
+func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition json.RawMessage, intro bool, task, section *string) error {
 	if !json.Valid(definition) {
 		return fmt.Errorf("invalid agent definition")
 	}
@@ -122,6 +134,20 @@ func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition
 		return err
 	}
 	defer tx.Rollback()
+	var before contract.SidebarSnapshot
+	if intro {
+		before, err = sidebarSnapshot(ctx, tx)
+		if err != nil {
+			return err
+		}
+	}
+	if section != nil {
+		if _, err := sectionScan(tx.QueryRowContext(ctx, sectionSelect+` WHERE s.id=?`, *section)); errors.Is(err, sql.ErrNoRows) {
+			return ErrSectionMissing
+		} else if err != nil {
+			return err
+		}
+	}
 	var deleted int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM deleted_agents WHERE id=?`, a.ID).Scan(&deleted); err != nil {
 		return err
@@ -142,6 +168,9 @@ func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition
 		return err
 	}
 	if intro {
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET section_id=?,section_order=(SELECT COALESCE(max(section_order)+1,0) FROM threads WHERE section_id IS ?) WHERE id=?`, section, section, a.ID); err != nil {
+			return err
+		}
 		text := "You were just created. In one reply, say what you understood your role to be from your role and instructions, and ask for anything you need to get started. Do not perform work or use tools."
 		work := Work{Trigger: "created", Message: contract.Message{ID: "created:" + a.ID, ThreadID: a.ID, Role: "user", Parts: []contract.Part{{Kind: "text", Text: &text}}, CreatedAt: Now()}}
 		if err := queueTx(ctx, tx, work, a.ID); err != nil {
@@ -160,6 +189,9 @@ func (s *Store) saveDefinition(ctx context.Context, a contract.Agent, definition
 			}
 		}
 	}
+	if intro {
+		return sidebarCommit(ctx, tx, before, "Created "+a.Name, nil, nil)
+	}
 	return tx.Commit()
 }
 
@@ -175,6 +207,10 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) ([]string, bool, err
 		return nil, false, err
 	}
 	defer tx.Rollback()
+	before, err := sidebarSnapshot(ctx, tx)
+	if err != nil {
+		return nil, false, err
+	}
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM agents WHERE id=?`, id).Scan(&exists); err != nil {
 		return nil, false, err
@@ -245,7 +281,7 @@ AND NOT EXISTS(SELECT 1 FROM messages m, json_each(m.data,'$.parts') p WHERE m.t
 			return nil, false, err
 		}
 	}
-	return files, exists != 0, tx.Commit()
+	return files, exists != 0, sidebarCommit(ctx, tx, before, "Deleted agent", nil, nil)
 }
 
 func (s *Store) Definitions(ctx context.Context) ([]json.RawMessage, error) {
@@ -411,7 +447,19 @@ func (s *Store) Agents(ctx context.Context) ([]contract.Agent, error) {
 }
 
 func (s *Store) Threads(ctx context.Context) ([]contract.Thread, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,(SELECT count(*) FROM messages m WHERE m.thread_id=t.id AND m.role='assistant' AND m.seq>t.last_read_seq),(SELECT data FROM messages m WHERE m.thread_id=t.id ORDER BY seq DESC LIMIT 1),COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),(SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position)) FROM threads t JOIN agents a ON a.id=t.agent_id ORDER BY CASE t.id WHEN 'assistant' THEN 0 ELSE 1 END,t.id`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,
+ (SELECT count(*) FROM messages m WHERE m.thread_id=t.id AND m.role='assistant' AND m.seq>t.last_read_seq
+  AND NOT EXISTS(SELECT 1 FROM events e,json_each(e.data,'$.payload.messageIDs') hidden
+   WHERE e.thread_id=t.id AND json_extract(e.data,'$.type')='activity' AND hidden.value=m.id))
+ + (SELECT count(*) FROM events e WHERE e.thread_id=t.id AND e.seq>t.last_read_seq
+    AND json_extract(e.data,'$.type')='activity'
+    AND json_extract(e.data,'$.payload.kind') IN ('agent.messaged','subagent.finished')),
+ (SELECT data FROM messages m WHERE m.thread_id=t.id ORDER BY seq DESC LIMIT 1),
+	 COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),
+	 (SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position)),
+	 t.pinned,t.pin_order,t.section_id,t.section_order
+	 FROM threads t JOIN agents a ON a.id=t.agent_id
+	 ORDER BY t.pinned DESC,t.pin_order,CASE t.id WHEN 'assistant' THEN 0 ELSE 1 END,t.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +469,7 @@ func (s *Store) Threads(ctx context.Context) ([]contract.Thread, error) {
 		var t contract.Thread
 		var last sql.NullString
 		var members string
-		if err := rows.Scan(&t.ID, &t.AgentID, &t.LastReadSeq, &t.LastSeq, &t.UnreadCount, &last, &t.Title, &members); err != nil {
+		if err := rows.Scan(&t.ID, &t.AgentID, &t.LastReadSeq, &t.LastSeq, &t.UnreadCount, &last, &t.Title, &members, &t.Pinned, &t.PinOrder, &t.SectionID, &t.SectionOrder); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(members), &t.AgentIDs); err != nil {
@@ -461,7 +509,7 @@ func (s *Store) Threads(ctx context.Context) ([]contract.Thread, error) {
 func (s *Store) Thread(ctx context.Context, id string) (contract.Thread, error) {
 	var t contract.Thread
 	var members string
-	err := s.DB.QueryRowContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),(SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position)) FROM threads t JOIN agents a ON a.id=t.agent_id WHERE t.id=?`, id).Scan(&t.ID, &t.AgentID, &t.LastReadSeq, &t.LastSeq, &t.Title, &members)
+	err := s.DB.QueryRowContext(ctx, `SELECT t.id,t.agent_id,t.last_read_seq,t.last_seq,COALESCE(NULLIF(t.title,''),json_extract(a.data,'$.name')),(SELECT json_group_array(agent_id) FROM (SELECT agent_id FROM thread_members WHERE thread_id=t.id ORDER BY position)),t.pinned,t.pin_order,t.section_id,t.section_order FROM threads t JOIN agents a ON a.id=t.agent_id WHERE t.id=?`, id).Scan(&t.ID, &t.AgentID, &t.LastReadSeq, &t.LastSeq, &t.Title, &members, &t.Pinned, &t.PinOrder, &t.SectionID, &t.SectionOrder)
 	if err == nil {
 		err = json.Unmarshal([]byte(members), &t.AgentIDs)
 	}
@@ -485,6 +533,7 @@ func (s *Store) Read(ctx context.Context, id string, seq int64) error {
 }
 
 func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *contract.Message) (contract.Event, error) {
+	newRun := false
 	if message != nil && message.Status == "streaming" && event.RunID != nil {
 		var status string
 		err := tx.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, *event.RunID).Scan(&status)
@@ -501,6 +550,7 @@ func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *co
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return event, err
 		}
+		newRun = errors.Is(err, sql.ErrNoRows)
 		if err == nil {
 			var previous contract.Run
 			if err := json.Unmarshal([]byte(data), &previous); err != nil {
@@ -574,6 +624,9 @@ func appendTx(ctx context.Context, tx *sql.Tx, event contract.Event, message *co
 	_, err = tx.ExecContext(ctx, `INSERT INTO events(thread_id,seq,data) VALUES(?,?,?)`, event.ConversationID, event.Seq, string(data))
 	if err == nil {
 		err = noticeTx(ctx, tx, message, event)
+	}
+	if err == nil && event.Run != nil && event.Run.ParentRunID != nil && (event.Type == "run.start" && newRun || event.Type == "run.done") {
+		err = childActivity(ctx, tx, event)
 	}
 	if err == nil && event.Run != nil && endsChildren(event.Run.Status) {
 		err = cancelDescendants(ctx, tx, event.Run.ID)

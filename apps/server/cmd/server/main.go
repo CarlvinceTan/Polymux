@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -97,7 +98,12 @@ func run() error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logFile, err := serverLog(*dir)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	log := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, logFile), nil))
 	lock, err := lockData(*dir, ".server.lock")
 	if err != nil {
 		return err
@@ -117,11 +123,7 @@ func run() error {
 		if err != nil || n > 65533 {
 			return errors.New("backend port must allow two adjacent ports")
 		}
-		address := "0.0.0.0"
-		if *tailscale {
-			address = defaultIP
-		}
-		*deviceListen = net.JoinHostPort(address, strconv.Itoa(n+2))
+		*deviceListen = deviceDefault(*tailscale, defaultIP, n)
 	}
 	if err := validateDevice(*deviceListen); err != nil {
 		return err
@@ -145,7 +147,7 @@ func run() error {
 		return err
 	}
 	defer deviceSocket.Close()
-	deviceServer := &http.Server{Handler: devices, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8 << 10}
+	deviceServer := &http.Server{Handler: devices, ReadTimeout: 10 * time.Second, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8 << 10}
 	defer deviceServer.Close()
 	config, err := loadModel(*dir)
 	if err != nil {
@@ -161,7 +163,7 @@ func run() error {
 		return err
 	}
 	defer closeStorage()
-	runtime, err := agentruntime.NewDurable(ctx, *dir, baseURL, model, key, agentruntime.Client{Headers: config.Headers, Session: config.Session}, storage)
+	runtime, err := agentruntime.NewDurable(ctx, *dir, baseURL, model, key, agentruntime.Client{Headers: config.Headers, Session: config.Session}, storage, config.Models...)
 	if err != nil {
 		return err
 	}
@@ -190,15 +192,28 @@ func run() error {
 	if bin := os.Getenv("POLYMUX_EXTRACTOR"); bin != "" {
 		index.Extractor = &search.SubprocessExtractor{Bin: bin, Timeout: extractTimeout}
 	}
+	var embedder *search.HTTPEmbedder
 	if bin := os.Getenv("POLYMUX_LLAMA"); bin != "" {
-		process, err := embedproc.Start(ctx, embedproc.Config{Bin: bin, Model: os.Getenv("POLYMUX_EMBED_MODEL"), Log: log})
+		process, err := embedproc.Start(ctx, embedproc.Config{Bin: bin, Model: os.Getenv("POLYMUX_EMBED_MODEL"),
+			Mmproj: os.Getenv("POLYMUX_EMBED_MMPROJ"), Log: log})
 		if err != nil {
 			return err
 		}
 		defer process.Close()
-		index.Embedder = &search.HTTPEmbedder{URL: process.URL(), Model: embedModel, Dims: embedDims, Client: client}
+		embedder = &search.HTTPEmbedder{URL: process.URL(), Model: embedModel, Dims: embedDims, Client: client,
+			Media: os.Getenv("POLYMUX_EMBED_MMPROJ") != ""}
 	} else if url := os.Getenv("POLYMUX_EMBED_URL"); url != "" {
-		index.Embedder = &search.HTTPEmbedder{URL: url, Model: embedModel, Dims: embedDims, Client: client}
+		// An external endpoint's capabilities are unknown here, so it embeds text only.
+		embedder = &search.HTTPEmbedder{URL: url, Model: embedModel, Dims: embedDims, Client: client}
+	}
+	if embedder != nil {
+		index.Embedder = embedder
+		if embedder.Media {
+			if err := embedder.CheckMedia(ctx); err != nil {
+				log.Error("media embedding disabled", "error", err)
+				embedder.Media = false
+			}
+		}
 	}
 	if index.Embedder != nil {
 		if _, err := s.DB.ExecContext(ctx, `UPDATE messages SET indexing_state='pending' WHERE indexing_state='error'`); err != nil {
@@ -213,7 +228,19 @@ func run() error {
 			return err
 		}
 	}
-	api, err := server.New(ctx, s, server.Config{BuildSHA: buildSHA, MergeLane: strings.TrimSpace(os.Getenv("POLYMUX_MERGE_LANE")), DataDir: *dir, Model: model, Definitions: definitions, Factory: runtime, Index: index, Log: log, Push: sender, Devices: devices})
+	api, err := server.New(ctx, s, server.Config{
+		BuildSHA:    buildSHA,
+		MergeRoot:   strings.TrimSpace(os.Getenv("POLYMUX_MERGE_LANE")),
+		MergeQueue:  strings.EqualFold(strings.TrimSpace(os.Getenv("POLYMUX_MERGE_QUEUE")), "true"),
+		DataDir:     *dir,
+		Model:       model,
+		Definitions: definitions,
+		Factory:     runtime,
+		Index:       index,
+		Log:         log,
+		Push:        sender,
+		Devices:     devices,
+	})
 	if err != nil {
 		return err
 	}
@@ -223,7 +250,20 @@ func run() error {
 			return err
 		}
 	}
-	httpServer := &http.Server{Addr: *listen, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	apiHandler := api.Handler()
+	httpServer := &http.Server{Addr: *listen, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/device/events" {
+			devices.Paired(w, r)
+			return
+		}
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			device.Reject(w)
+			return
+		}
+		apiHandler.ServeHTTP(w, r)
+	}), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
@@ -319,4 +359,16 @@ func defaults(model string) []agentruntime.Definition {
 		{Agent: contract.Agent{ID: "research", Name: "Research", Role: "Research assistant", Model: model}, Prompt: "You are a careful research assistant. Distinguish verified facts from uncertainty and provide sources when available. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "bash", "find", "ls"}},
 		coding,
 	}
+}
+
+// Production default: all interfaces, or the tailnet IP with -tailscale.
+func deviceDefault(tailscale bool, tailnet string, port int) string {
+	host := "0.0.0.0"
+	if tailscale {
+		host = tailnet
+	}
+	if port == 0 {
+		return net.JoinHostPort("127.0.0.1", "0")
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port+2))
 }

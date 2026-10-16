@@ -78,9 +78,12 @@ func TestAPNsSignsBoundedPrivateAlert(t *testing.T) {
 		if len(body) > 4096 || json.Unmarshal(body, &payload) != nil || payload["server"] != "http://server.test:7337" || payload["conversationID"] != "chat" {
 			t.Fatal("invalid routing payload")
 		}
+		if payload["aps"].(map[string]any)["alert"].(map[string]any)["body"] != "Tests pass" {
+			t.Fatal("notice body missing")
+		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
 	})}
-	item := store.Push{Device: contract.PushDevice{Token: strings.Repeat("ab", 32), Environment: "sandbox", Server: "http://server.test:7337"}, Notice: contract.Notice{Title: "Agent", ConversationID: "chat", MessageID: "message"}}
+	item := store.Push{Device: contract.PushDevice{Token: strings.Repeat("ab", 32), Environment: "sandbox", Server: "http://server.test:7337"}, Notice: contract.Notice{Body: "Tests pass", Title: "Agent", ConversationID: "chat", MessageID: "message"}}
 	if status := sender.Send(context.Background(), item); status.State != "sent" {
 		t.Fatal(status)
 	}

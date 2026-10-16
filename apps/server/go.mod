@@ -7,7 +7,6 @@ require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/flynn/noise v1.1.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/grandcat/zeroconf v1.0.0
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/miekg/dns v1.1.27
 	golang.org/x/crypto v0.55.0

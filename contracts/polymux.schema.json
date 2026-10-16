@@ -23,6 +23,12 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "body": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        },
         "seq": {
           "type": "integer"
         },
@@ -40,6 +46,8 @@
         }
       },
       "required": [
+        "body",
+        "outcome",
         "seq",
         "conversationID",
         "messageID",
@@ -305,6 +313,19 @@
             "type": "string"
           },
           "minItems": 1
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "pinOrder": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sectionID": {
+          "type": "string"
+        },
+        "sectionOrder": {
+          "type": "number"
         }
       },
       "required": [
@@ -542,6 +563,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "detail": {
+          "type": "string"
+        },
         "code": {
           "type": "string"
         },
@@ -1034,6 +1058,12 @@
             "cancelled",
             "interrupted"
           ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
         }
       },
       "required": [
@@ -1169,6 +1199,9 @@
         },
         "avatar": {
           "$ref": "#/$defs/AvatarDesign"
+        },
+        "sectionID": {
+          "type": "string"
         }
       },
       "required": [
@@ -1371,6 +1404,9 @@
         "title": {
           "type": "string",
           "maxLength": 128
+        },
+        "sectionID": {
+          "type": "string"
         }
       },
       "required": [
@@ -1429,10 +1465,217 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "pinOrder": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "minProperties": 1,
+      "required": []
+    },
+    "Section": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "order": {
+          "type": "number"
+        },
+        "collapsed": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "chatCount": {
+          "type": "integer"
         }
       },
       "required": [
-        "title"
+        "id",
+        "name",
+        "order",
+        "collapsed",
+        "createdAt",
+        "updatedAt",
+        "chatCount"
+      ]
+    },
+    "AgentConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspace": {
+          "type": "string"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "workspace",
+        "tools",
+        "skills"
+      ]
+    },
+    "ConfigurationPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspace": {
+          "type": "string"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [],
+      "minProperties": 1
+    },
+    "MCPConnection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "shared": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "enabled",
+        "hidden",
+        "shared"
+      ]
+    },
+    "SidebarPlacement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadID": {
+          "type": "string"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "pinOrder": {
+          "type": "number"
+        },
+        "sectionID": {
+          "type": "string"
+        },
+        "sectionOrder": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "threadID",
+        "pinned"
+      ]
+    },
+    "SidebarSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "integer"
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Section"
+          }
+        },
+        "placements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SidebarPlacement"
+          }
+        }
+      },
+      "required": [
+        "cursor",
+        "sections",
+        "placements"
+      ]
+    },
+    "SidebarEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "type": "integer"
+        },
+        "type": {
+          "type": "string"
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Section"
+          }
+        },
+        "changedThreadIDs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "placements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SidebarPlacement"
+          }
+        },
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "type",
+        "sections",
+        "changedThreadIDs",
+        "placements",
+        "createdAt"
       ]
     }
   },

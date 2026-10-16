@@ -1,5 +1,6 @@
 import SwiftUI
 import PolymuxKit
+import AvatarKit
 #if os(macOS)
 import AppKit
 #else
@@ -18,14 +19,17 @@ struct ChatPane: View {
     @State private var showSearch = false
     @State private var searchQuery = ""
     @State private var paneWidth: CGFloat = 720
-    @State private var headerHeight: CGFloat = 88
-    @State private var toolbarInset: CGFloat = 44
     @FocusState private var searchFocused: Bool
     @State private var showVoice = false
     @State private var voiceStore: (any VoiceSession)?
     @State private var openingVoice = false
     @State private var voiceIssue: String?
     @State private var showProfile = false
+    @State private var historyPeer: Agent?
+    @State private var activityObject: PolymuxKit.ActivityRow?
+    @State private var routineRow: PolymuxKit.ActivityRow?
+    @State private var headerBudget = ""
+    @State private var headerTrace = SignpostTrace()
     @State private var target: ReplyTarget?
     @State private var highlight: ReplyTarget?
     @State private var jumpID = UUID()
@@ -84,9 +88,6 @@ struct ChatPane: View {
         .simultaneousGesture(TapGesture().onEnded { searchFocused = false }, isEnabled: showSearch)
         #endif
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { paneWidth = $0 }
-        #if os(macOS)
-        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { toolbarInset = $0 }
-        #endif
         .overlay(alignment: .bottom) {
             composer
                 .opacity(showSearch ? 0 : 1)
@@ -111,55 +112,80 @@ struct ChatPane: View {
             }
         }
         .navigationTitle("")
-        .overlay(alignment: .top) {
-            if showHeader && !showSearch {
-                ZStack(alignment: .top) {
-                    ChatHeader(title: chatTitle, subtitle: headerRole, members: members,
-                               conversationID: thread.id, runs: store.runs, activity: store.activity,
-                                connected: store.isConnected, speakingID: showVoice && voiceStore?.phase == .speaking ? voiceStore?.agentID : nil,
-                               edit: { showProfile = true })
-                        .padding(.top, 8)
-                        .offset(y: -toolbarInset)
-                        .accessibilityLabel(thread.isGroup ? "Edit chat" : "Edit \(agent.name)’s profile")
-                        .help(thread.isGroup ? "Edit chat" : "Edit agent profile")
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
-                }
-                #if os(iOS)
-                .background {
-                    ToolbarAnchor { top, safeTop in alignHeader(top: top, safeTop: safeTop) }
-                }
-                #endif
-            }
-        }
         .toolbar {
             if showHeader {
             ToolbarItem(placement: .principal) {
                 if showSearch {
                     searchField
-                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { headerHeight = $0 }
                 } else {
-                    // The overlapping avatar occupies the native toolbar's hit region.
-                    Button { showProfile = true } label: {
-                        Color.clear.frame(width: 80, height: 44).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain).accessibilityHidden(true)
+                    HeaderCapsule(title: chatTitle, members: members,
+                                  conversationID: thread.id, runs: store.runs,
+                                  activity: store.activity, connected: store.isConnected,
+                                  speakingID: showVoice && voiceStore?.phase == .speaking ? voiceStore?.agentID : nil,
+                                  edit: openProfile)
+                        .opacity(showProfile ? 0.6 : 1)
+                        .accessibilityHint(thread.isGroup ? "Edit chat" : "Edit \(agent.name)’s profile")
                 }
             }
             .sharedBackgroundVisibility(.hidden)
+            #if DEBUG && os(macOS)
+            if CommandLine.arguments.contains("--verify-header-reference") {
+                ToolbarItem(placement: .automatic) {
+                    Button("Native glass") {}
+                        .buttonStyle(.glass)
+                }
+                .sharedBackgroundVisibility(.hidden)
+            }
+            #endif
             ToolbarItem(placement: .primaryAction) {
                 if showSearch {
                     Button("Close search", systemImage: "xmark", action: closeSearch)
                         .keyboardShortcut(.escape, modifiers: [])
                 } else {
-                    Button("Search conversation", systemImage: "magnifyingglass") { showSearch = true }
+                    Button { showSearch = true } label: {
+                        Image(systemName: "magnifyingglass")
+                    }
+                        .accessibilityLabel("Search conversation")
                         .keyboardShortcut("f", modifiers: .command)
+                        .accessibilityIdentifier("header.search")
                 }
             }
             }
         }
         .panel(isPresented: $showProfile) {
-            if thread.isGroup { GroupEditor(thread: thread, session: session) }
-            else { AgentEditor(agent: agent, session: session) }
+            Group {
+                if thread.isGroup { GroupEditor(thread: thread, session: session) }
+                else { AgentEditor(agent: agent, session: session) }
+            }
+            .overlay(alignment: .bottom) {
+                #if DEBUG
+                if CommandLine.arguments.contains("--verify-fixture") {
+                    Text("Profile timing")
+                        .font(.caption2)
+                        .accessibilityIdentifier("header.profile")
+                        .accessibilityValue(headerBudget)
+                }
+                #endif
+            }
+        }
+        #if os(iOS)
+        .sheet(item: $historyPeer) { peer in
+            AgentHistory(current: agent, peer: peer, client: session.client)
+        }
+        #else
+        .overlay {
+            if let peer = historyPeer {
+                HistoryOverlay(close: { historyPeer = nil }) {
+                    AgentHistory(current: agent, peer: peer, client: session.client, close: { historyPeer = nil })
+                }
+            }
+        }
+        #endif
+        .panel(item: $activityObject) { row in
+            ActivityObject(row: row, client: session.client)
+        }
+        .panel(item: $routineRow) { row in
+            RoutinePanel(agentID: agent.id, row: row, client: session.client)
         }
         .task {
             store.isVisible = scenePhase == .active
@@ -175,23 +201,35 @@ struct ChatPane: View {
         }
     }
 
-    private var members: [Agent] {
-        thread.participantIDs.compactMap { id in session.sidebar.agents.first { $0.id == id } }
+    private func openProfile() {
+        let tap = ContinuousClock().now
+        let publish = {
+            InstantUI.interval("HeaderState", budget: InstantUI.stateBudget,
+                               trace: headerTrace, from: tap) {
+                InstantUI.interval("HeaderFeedback", budget: InstantUI.feedbackBudget,
+                                   trace: headerTrace, from: tap) { showProfile = true }
+            }
+            headerBudget = headerTrace.meetsBudgets ? "met" : "miss"
+        }
+        #if DEBUG
+        if CommandLine.arguments.contains("--verify-header-stall") {
+            Task { try? await Task.sleep(for: .milliseconds(100)); publish() }
+            return
+        }
+        #endif
+        publish()
     }
 
-    #if os(iOS)
-    private func alignHeader(top: CGFloat, safeTop: CGFloat) {
-        let inset = max(0, top + 8 - safeTop)
-        guard abs(toolbarInset - inset) > 0.5 else { return }
-        toolbarInset = inset
+    private var members: [Agent] {
+        #if DEBUG
+        if thread.isGroup && CommandLine.arguments.contains("--verify-header-five") {
+            return Array(session.sidebar.agents.prefix(5))
+        }
+        #endif
+        return thread.participantIDs.compactMap { id in session.sidebar.agents.first { $0.id == id } }
     }
-    #endif
 
     private var chatTitle: String { thread.isGroup ? thread.title : agent.name }
-
-    private var headerRole: String {
-        thread.isGroup ? "" : agent.role.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     private func author(_ message: Message) -> String {
         session.sidebar.agents.first { $0.id == message.agentID }?.name ?? agent.name
@@ -236,7 +274,7 @@ struct ChatPane: View {
     private var edgeFades: some View {
         VStack(spacing: 0) {
             Rectangle().fill(.background)
-                .frame(height: max(headerHeight + 24, 72))
+                .frame(height: 72)
                 .mask {
                     LinearGradient(stops: [.init(color: .black, location: 0),
                                            .init(color: .black.opacity(0.9), location: 0.35),
@@ -258,7 +296,7 @@ struct ChatPane: View {
         .accessibilityHidden(true)
     }
 
-    private var topInset: CGFloat { showHeader ? (showSearch ? 8 : max(0, headerHeight - toolbarInset) + 8) : 0 }
+    private var topInset: CGFloat { showHeader ? 8 : 0 }
 
     private var composer: some View {
         VStack(spacing: 4) {
@@ -310,6 +348,7 @@ struct ChatPane: View {
 
     private var transcript: some View {
         ScrollViewReader { proxy in
+            let rows = store.transcript
             ScrollView {
                 LazyVStack(spacing: 12) {
                     if !store.messages.isEmpty && store.hasEarlier {
@@ -317,12 +356,27 @@ struct ChatPane: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .buttonStyle(.plain).padding(.top, 12)
                     }
-                    ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
-                        if startsGroup(index) {
-                            ChatStatus(date: message.date)
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                        if ChatTime.startsGroup(row.date, after: index == 0 ? nil : rows[index - 1].lastDate) {
+                            ChatStatus(date: row.date)
                         }
+                        switch row {
+                        case .activity(let activity):
+                            ActivityLine(row: activity,
+                                         names: Dictionary(uniqueKeysWithValues: session.sidebar.agents.map { ($0.id, $0.name) }),
+                                         currentAgent: agent.id,
+                                         avatar: { id in AgentAvatar(agentID: id) },
+                                         open: { id in
+                                             let peer = id == agent.id ? activity.agents.first { $0 != agent.id } : id
+                                             historyPeer = session.sidebar.agents.first { $0.id == peer }
+                                         },
+                                         openObject: objectAction(activity))
+                                .id(activity.id)
+                        case .message(let message):
+                        toolRows(for: message)
                         MessageBubble(message: message, client: session.client, agentName: author(message),
-                                      showAuthor: thread.isGroup && message.role == "assistant",
+                                       showAuthor: thread.isGroup && message.startsRun(after: index > 0 ? store.messages[index - 1] : nil),
+                                       authorColor: session.avatars.options(for: message.agentID ?? agent.id).color,
                                       replyName: message.reply.flatMap { quote in session.sidebar.agents.first { $0.id == quote.agentID }?.name } ?? agent.name,
                                       sending: store.isSending, retry: { await store.retry(messageID: message.id) },
                                       respond: { reply = $0 }, jump: { jump(to: $0.messageID, part: $0.partIndex) },
@@ -339,6 +393,7 @@ struct ChatPane: View {
                                                         frame: geometry.frame(in: .named(scrollSpace)))])
                             }
                             .allowsHitTesting(false)
+                        }
                         }
                     }
                     ForEach(members, id: \.id) { member in
@@ -389,6 +444,9 @@ struct ChatPane: View {
             .onChange(of: store.messages.count) { _, _ in
                 if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
             }
+            .onChange(of: store.activityEvents.last?.seq) { _, _ in
+                if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
             .onChange(of: composerHeight) { _, _ in
                 updateDate()
                 if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
@@ -436,8 +494,19 @@ struct ChatPane: View {
         return ActivityStore.present(runs: [run], conversationID: thread.id, agentID: run.agentID, connected: store.isConnected)
     }
 
+    /// Tool call rows for an assistant turn, drawn between the user's message and the reply.
+    @ViewBuilder private func toolRows(for message: Message) -> some View {
+        if message.role != "user", let runID = message.runID,
+           store.messages.first(where: { $0.role != "user" && $0.runID == runID })?.id == message.id,
+           !store.activity.toolRows(for: runID).isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(store.activity.toolRows(for: runID)) { ToolRowView(row: $0) }
+            }
+        }
+    }
+
     private func updateDate() {
-        let top = showHeader ? max(0, headerHeight - toolbarInset) : 0
+        let top = topInset
         let height = max(0, scrollHeight - composerHeight)
         let first = dateFrames.values
             .filter { $0.frame.maxY > top && $0.frame.minY < height }
@@ -477,11 +546,12 @@ struct ChatPane: View {
         dateVisible = false
     }
 
-    private func startsGroup(_ index: Int) -> Bool {
-        if index == 0 { return true }
-        let previous = store.messages[index - 1].date
-        let current = store.messages[index].date
-        return !Calendar.current.isDate(previous, inSameDayAs: current) || current.timeIntervalSince(previous) > 1800
+    private func objectAction(_ row: PolymuxKit.ActivityRow) -> (() -> Void)? {
+        if row.payload.kind.hasPrefix("routine.") { return { routineRow = row } }
+        if ["memory", "skill", "subagent"].contains(String(row.payload.kind.split(separator: ".").first ?? "")) {
+            return { activityObject = row }
+        }
+        return nil
     }
 
     private func jump(to id: String, part: Int64? = nil) {
@@ -513,10 +583,11 @@ private struct JumpGlow: ViewModifier {
 
 struct ChatStatus: View {
     let date: Date
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         Text(date, format: ProgressiveTime(separator: true))
-            .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            .font(.caption2.weight(.medium)).foregroundStyle(ActivityInk.color(scheme))
             .frame(maxWidth: .infinity).padding(.vertical, 14)
     }
 }
@@ -528,6 +599,7 @@ struct MessageBubble: View {
     let client: APIClient
     let agentName: String
     var showAuthor = false
+    var authorColor: ColorID = .ink
     var replyName = ""
     var sending = false
     let retry: () async -> Void
@@ -545,7 +617,8 @@ struct MessageBubble: View {
             if message.role == "user" { Spacer(minLength: 0) }
             VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 6) {
                 if showAuthor {
-                    Text(agentName).font(.caption.weight(.medium)).foregroundStyle(.secondary).padding(.horizontal, 12)
+                    Text(agentName).font(.caption.weight(.medium))
+                        .foregroundStyle(authorColor.nameColor(colorScheme)).padding(.horizontal, 12)
                 }
                 VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 12) {
                     ForEach(displayParts, id: \.offset) { index, part in
@@ -677,51 +750,3 @@ private struct ThinkingDots: View {
         .onDisappear { visible = false }
     }
 }
-
-#if os(iOS)
-private struct ToolbarAnchor: UIViewRepresentable {
-    let changed: (CGFloat, CGFloat) -> Void
-
-    func makeUIView(context: Context) -> ToolbarView {
-        let view = ToolbarView()
-        view.isUserInteractionEnabled = false
-        view.isAccessibilityElement = false
-        return view
-    }
-
-    func updateUIView(_ view: ToolbarView, context: Context) {
-        view.changed = changed
-        view.measure()
-    }
-}
-
-private final class ToolbarView: UIView {
-    var changed: (CGFloat, CGFloat) -> Void = { _, _ in }
-    private var pending = false
-    private var lastTop: CGFloat?
-    private var lastSafeTop: CGFloat?
-
-    override func layoutSubviews() { super.layoutSubviews(); measure() }
-    override func didMoveToWindow() { super.didMoveToWindow(); measure() }
-    override func didMoveToSuperview() { super.didMoveToSuperview(); measure() }
-    override func safeAreaInsetsDidChange() { super.safeAreaInsetsDidChange(); measure() }
-
-    func measure() {
-        guard !pending else { return }
-        pending = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            pending = false
-            guard let window else { return }
-            let top = convert(bounds, to: window).minY
-            let safeTop = window.safeAreaInsets.top
-            guard top.isFinite, safeTop.isFinite,
-                  (lastTop.map { abs($0 - top) > 0.5 } ?? true) ||
-                  (lastSafeTop.map { abs($0 - safeTop) > 0.5 } ?? true) else { return }
-            lastTop = top
-            lastSafeTop = safeTop
-            changed(top, safeTop)
-        }
-    }
-}
-#endif

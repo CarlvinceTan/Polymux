@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -146,9 +147,31 @@ WHEN 'queued' THEN 1 ELSE 2 END,json_extract(r.data,'$.createdAt') DESC`
 		if err := json.Unmarshal([]byte(data), &run); err != nil {
 			return nil, err
 		}
+		run.Tools = []contract.ToolActivity{}
 		out = append(out, run)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) PageRuns(ctx context.Context, thread string, before int64, limit int) ([]contract.Run, error) {
+	page, err := s.Messages(ctx, thread, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := []contract.Run{}
+	seen := map[string]bool{}
+	for _, message := range page {
+		if message.RunID == nil || seen[*message.RunID] {
+			continue
+		}
+		seen[*message.RunID] = true
+		run, err := s.Run(ctx, *message.RunID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, run)
+	}
+	return out, nil
 }
 
 func (s *Store) RunEvent(ctx context.Context, kind string, run *contract.Run, tool *contract.ToolActivity) error {
@@ -394,15 +417,17 @@ func (s *Store) recoverRuns(ctx context.Context) error {
 		run.Status, run.Activity, run.Summary, run.FinishedAt = "interrupted", "", "Execution interrupted", &now
 		run.Error = &contract.Error{Code: "interrupted", Message: message}
 		if len(run.Tools) == 0 && run.ToolID != nil {
-			run.Tools = []contract.ToolActivity{{ID: *run.ToolID, RunID: run.ID, Name: "tool"}}
+			run.Tools = []contract.ToolActivity{{ID: *run.ToolID, RunID: run.ID, Name: "tool", Status: "running"}}
 		}
-		for _, tool := range run.Tools {
-			tool.Status = "interrupted"
-			if _, err := s.Append(ctx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &tool}, nil); err != nil {
-				return err
+		for i := range run.Tools {
+			if run.Tools[i].Status == "running" {
+				run.Tools[i].Status = "interrupted"
+				if _, err := s.Append(ctx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &run.Tools[i]}, nil); err != nil {
+					return err
+				}
 			}
 		}
-		run.Tools, run.ToolID = []contract.ToolActivity{}, nil
+		run.ToolID = nil
 		if err := s.RunEvent(ctx, "run.done", &run, nil); err != nil {
 			return err
 		}
@@ -552,6 +577,28 @@ func (s *Store) Deliver(ctx context.Context, delivery contract.PeerDelivery, wor
 	if _, err := appendTx(ctx, tx, contract.Event{ConversationID: delivery.ConversationID, Type: kind, AgentID: &delivery.SourceAgentID, RunID: &delivery.ParentRunID, Delivery: &delivery}, nil); err != nil {
 		return delivery, err
 	}
+	if delivery.Intent == "handoff" {
+		return delivery, tx.Commit()
+	}
+	payload, err := NewActivity("agent.messaged", delivery.ID, "")
+	if err != nil {
+		return delivery, err
+	}
+	payload.AgentIDs = []string{delivery.SourceAgentID, delivery.TargetAgentID}
+	payload.MessageIDs = []string{work.Message.ID, "receipt:" + delivery.ID}
+	if delivery.RunID != nil {
+		payload.MessageIDs = append(payload.MessageIDs, "reply:"+*delivery.RunID)
+	}
+	payload.IconOrAgentID = delivery.TargetAgentID
+	if err := activityTx(ctx, tx, delivery.ConversationID, delivery.SourceAgentID, payload); err != nil {
+		return delivery, err
+	}
+	if delivery.TargetAgentID != delivery.ConversationID {
+		payload.IconOrAgentID = delivery.SourceAgentID
+		if err := activityTx(ctx, tx, delivery.TargetAgentID, delivery.SourceAgentID, payload); err != nil {
+			return delivery, err
+		}
+	}
 	return delivery, tx.Commit()
 }
 
@@ -615,6 +662,22 @@ func receiptTx(ctx context.Context, tx *sql.Tx, id string, run contract.Run, res
 		m.ReplyToID = origin.SourceMessageID
 		if _, err := appendTx(ctx, tx, contract.Event{ConversationID: m.ThreadID, Type: "message.start", MessageID: &m.ID, AgentID: m.AgentID}, &m); err != nil {
 			return err
+		}
+		payload, err := NewActivity("agent.messaged", id, "")
+		if err != nil {
+			return err
+		}
+		payload.AgentIDs = []string{delivery.SourceAgentID, delivery.TargetAgentID}
+		payload.MessageIDs = []string{m.ID, "reply:" + run.ID}
+		payload.IconOrAgentID = delivery.TargetAgentID
+		if err := activityTx(ctx, tx, delivery.ConversationID, delivery.TargetAgentID, payload); err != nil {
+			return err
+		}
+		if delivery.TargetAgentID != delivery.ConversationID {
+			payload.IconOrAgentID = delivery.SourceAgentID
+			if err := activityTx(ctx, tx, delivery.TargetAgentID, delivery.TargetAgentID, payload); err != nil {
+				return err
+			}
 		}
 	}
 	encoded, err := json.Marshal(delivery)
@@ -867,8 +930,14 @@ func (s *Store) ResumeReady(ctx context.Context, run contract.Run) bool {
 	return resumeReady(ctx, s.DB, run)
 }
 
+// runningTool reports an in-flight call. Finished rows stay on the run, so history alone
+// must not block a resume.
+func runningTool(tools []contract.ToolActivity) bool {
+	return slices.ContainsFunc(tools, func(tool contract.ToolActivity) bool { return tool.Status == "running" })
+}
+
 func resumeReady(ctx context.Context, q rowQuery, run contract.Run) bool {
-	if run.Attempt > 1 || len(run.Tools) > 0 || run.ToolID != nil {
+	if run.Attempt > 1 || run.ToolID != nil || runningTool(run.Tools) {
 		return false
 	}
 	db, ok := openDurable(ctx, q)

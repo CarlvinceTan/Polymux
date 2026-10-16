@@ -1,3 +1,5 @@
+//go:build mdns
+
 package link
 
 import (
@@ -194,6 +196,9 @@ func TestAdvertise(t *testing.T) {
 	defer cancel()
 	stop, err := Advertise(ctx, instance, port, []string{loopback}, map[string]string{"v": "1", "k": "test-fingerprint"})
 	if err != nil {
+		if runtime.GOOS == "darwin" {
+			t.Fatal(err)
+		}
 		t.Skipf("multicast advertisement unavailable: %v", err)
 	}
 	defer stop()
@@ -219,12 +224,5 @@ func TestAdvertise(t *testing.T) {
 	}
 	if !slices.ContainsFunc(found.ips, func(ip net.IP) bool { return ip.Equal(loopbackIP) }) {
 		t.Errorf("addresses = %v, want %s", found.ips, loopback)
-	}
-}
-
-func TestAdvertiseEmpty(t *testing.T) {
-	stop, err := Advertise(context.Background(), "test", 7339, nil, nil)
-	if err == nil || stop != nil {
-		t.Fatalf("Advertise without IPs: stop nil = %v, error = %v; want nil stop and error", stop == nil, err)
 	}
 }

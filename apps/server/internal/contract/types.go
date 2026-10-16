@@ -7,6 +7,8 @@ type PushStatus struct {
 }
 
 type Notice struct {
+	Body           string `json:"body"`
+	Outcome        string `json:"outcome"`
 	Seq            int64  `json:"seq"`
 	ConversationID string `json:"conversationID"`
 	MessageID      string `json:"messageID"`
@@ -78,16 +80,20 @@ type Agent struct {
 }
 
 type Thread struct {
-	LeadAgentID *string  `json:"leadAgentID,omitempty"`
-	Runs        []Run    `json:"runs"`
-	ID          string   `json:"id"`
-	AgentID     string   `json:"agentID"`
-	LastReadSeq int64    `json:"lastReadSeq"`
-	LastSeq     int64    `json:"lastSeq"`
-	UnreadCount int64    `json:"unreadCount"`
-	LastMessage *Message `json:"lastMessage,omitempty"`
-	Title       string   `json:"title"`
-	AgentIDs    []string `json:"agentIDs"`
+	LeadAgentID  *string  `json:"leadAgentID,omitempty"`
+	Runs         []Run    `json:"runs"`
+	ID           string   `json:"id"`
+	AgentID      string   `json:"agentID"`
+	LastReadSeq  int64    `json:"lastReadSeq"`
+	LastSeq      int64    `json:"lastSeq"`
+	UnreadCount  int64    `json:"unreadCount"`
+	LastMessage  *Message `json:"lastMessage,omitempty"`
+	Title        string   `json:"title"`
+	AgentIDs     []string `json:"agentIDs"`
+	Pinned       *bool    `json:"pinned,omitempty"`
+	PinOrder     *float64 `json:"pinOrder,omitempty"`
+	SectionID    *string  `json:"sectionID,omitempty"`
+	SectionOrder *float64 `json:"sectionOrder,omitempty"`
 }
 
 type Attachment struct {
@@ -140,11 +146,24 @@ type Message struct {
 }
 
 type Error struct {
+	Detail  string `json:"detail,omitempty"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
+type Activity struct {
+	MessageIDs    []string `json:"messageIDs,omitempty"`
+	Kind          string   `json:"kind"`
+	Verb          string   `json:"verb"`
+	ObjectID      string   `json:"objectID"`
+	ObjectLabel   string   `json:"objectLabel"`
+	IconOrAgentID string   `json:"iconOrAgentID"`
+	At            string   `json:"at"`
+	AgentIDs      []string `json:"agentIDs,omitempty"`
+}
+
 type Event struct {
+	Payload        *Activity        `json:"payload,omitempty"`
 	Seq            int64            `json:"seq"`
 	ConversationID string           `json:"conversationID"`
 	Type           string           `json:"type"`
@@ -252,10 +271,12 @@ type Run struct {
 }
 
 type ToolActivity struct {
-	ID     string `json:"id"`
-	RunID  string `json:"runID"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID      string  `json:"id"`
+	RunID   string  `json:"runID"`
+	Name    string  `json:"name"`
+	Status  string  `json:"status"`
+	Summary *string `json:"summary,omitempty"`
+	Output  *string `json:"output,omitempty"`
 }
 
 type PeerDelivery struct {
@@ -290,6 +311,7 @@ type CreateAgentRequest struct {
 	Prompt      string        `json:"prompt"`
 	Model       *string       `json:"model,omitempty"`
 	Avatar      *AvatarDesign `json:"avatar,omitempty"`
+	SectionID   *string       `json:"sectionID,omitempty"`
 }
 
 type AgentProfile struct {
@@ -327,6 +349,7 @@ type CreateThreadRequest struct {
 	LeadAgentID *string  `json:"leadAgentID,omitempty"`
 	AgentIDs    []string `json:"agentIDs"`
 	Title       *string  `json:"title,omitempty"`
+	SectionID   *string  `json:"sectionID,omitempty"`
 }
 
 type VoiceRequest struct {
@@ -341,5 +364,59 @@ type VoiceResponse struct {
 type UpdateThreadRequest struct {
 	LeadAgentID *string  `json:"leadAgentID,omitempty"`
 	AgentIDs    []string `json:"agentIDs,omitempty"`
-	Title       string   `json:"title"`
+	Title       *string  `json:"title,omitempty"`
+	Pinned      *bool    `json:"pinned,omitempty"`
+	PinOrder    *float64 `json:"pinOrder,omitempty"`
+}
+
+type Section struct {
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	Order     float64 `json:"order"`
+	Collapsed bool    `json:"collapsed"`
+	CreatedAt string  `json:"createdAt"`
+	UpdatedAt string  `json:"updatedAt"`
+	ChatCount int64   `json:"chatCount"`
+}
+
+type AgentConfiguration struct {
+	Workspace string   `json:"workspace"`
+	Tools     []string `json:"tools"`
+	Skills    []string `json:"skills"`
+}
+
+type ConfigurationPatch struct {
+	Workspace *string  `json:"workspace,omitempty"`
+	Tools     []string `json:"tools,omitempty"`
+	Skills    []string `json:"skills,omitempty"`
+}
+
+type MCPConnection struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	Hidden  bool   `json:"hidden"`
+	Shared  bool   `json:"shared"`
+}
+
+type SidebarPlacement struct {
+	ThreadID     string   `json:"threadID"`
+	Pinned       bool     `json:"pinned"`
+	PinOrder     *float64 `json:"pinOrder,omitempty"`
+	SectionID    *string  `json:"sectionID,omitempty"`
+	SectionOrder *float64 `json:"sectionOrder,omitempty"`
+}
+
+type SidebarSnapshot struct {
+	Cursor     int64              `json:"cursor"`
+	Sections   []Section          `json:"sections"`
+	Placements []SidebarPlacement `json:"placements"`
+}
+
+type SidebarEvent struct {
+	Seq              int64              `json:"seq"`
+	Type             string             `json:"type"`
+	Sections         []Section          `json:"sections"`
+	ChangedThreadIDs []string           `json:"changedThreadIDs"`
+	Placements       []SidebarPlacement `json:"placements"`
+	CreatedAt        string             `json:"createdAt"`
 }

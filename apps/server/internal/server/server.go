@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,7 +38,8 @@ type Factory interface {
 }
 type Config struct {
 	BuildSHA    string
-	MergeLane   string
+	MergeRoot   string
+	MergeQueue  bool
 	DataDir     string
 	Model       string
 	Definitions []agentruntime.Definition
@@ -83,6 +85,7 @@ type actor struct {
 	definition agentruntime.Definition
 	revision   uint64
 	sessionRev uint64
+	sessionMCP [32]byte
 	mu         sync.Mutex
 	sessionMu  sync.Mutex
 	session    agentruntime.Session
@@ -160,7 +163,7 @@ func New(ctx context.Context, s *store.Store, c Config) (*Server, error) {
 			d.ExtraTools = current.ExtraTools
 			// The configured default (for example POLYMUX_CODING_REPO) applies
 			// until a stored workspace replaces it.
-			if d.Workspace == "" {
+			if d.Workspace == "" && !d.WorkspaceSet {
 				d.Workspace = current.Workspace
 			}
 		}
@@ -263,6 +266,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routes() {
 	s.mountProviders()
+	s.mux.HandleFunc("GET /agents/{id}/history/{peerID}", s.peerHistory)
+	s.mux.HandleFunc("GET /threads/{id}/activity/{seq}", s.activityObject)
+	s.mux.HandleFunc("PATCH /agents/{id}/routines/{routineID}", s.patchRoutine)
+	s.mcpRoutes()
 	s.mux.HandleFunc("POST /triggers/{id}/events", s.ingestEvent)
 	s.mux.HandleFunc("GET /notifications", s.notices)
 	s.mux.HandleFunc("PUT /notifications/device", s.registerPush)
@@ -281,6 +288,8 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("POST /agents", s.createAgent)
 	s.mux.HandleFunc("GET /agents/{id}", s.agentProfile)
+	s.mux.HandleFunc("GET /agents/{id}/configuration", s.agentConfiguration)
+	s.mux.HandleFunc("PATCH /agents/{id}/configuration", s.configureAgent)
 	s.mux.HandleFunc("PATCH /agents/{id}", s.updateAgent)
 	s.mux.HandleFunc("PATCH /agents/{id}/avatar", s.updateAvatar)
 	s.mux.HandleFunc("DELETE /agents/{id}", s.deleteAgent)
@@ -291,6 +300,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /agents/{id}/focus/answer", s.answerFocus)
 	s.mux.HandleFunc("GET /agents/{id}/proactivity", s.getProactivity)
 	s.mux.HandleFunc("PATCH /agents/{id}/proactivity", s.setProactivity)
+	s.sidebarRoutes()
 	s.mux.HandleFunc("GET /threads", func(w http.ResponseWriter, r *http.Request) {
 		v, err := s.Store.Threads(r.Context())
 		s.respond(w, v, err)
@@ -298,6 +308,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /threads", s.createThread)
 	s.mux.HandleFunc("PATCH /threads/{id}", s.updateThread)
 	s.mux.HandleFunc("GET /threads/{id}/messages", s.messages)
+	s.mux.HandleFunc("GET /threads/{id}/tool-runs", s.toolRuns)
 	s.mux.HandleFunc("POST /threads/{id}/messages", s.send)
 	s.mux.HandleFunc("POST /threads/{id}/voice", s.voice)
 	s.mux.HandleFunc("GET /threads/{id}/events", s.events)
@@ -361,9 +372,11 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "closing", "The server is restarting. Try again shortly.")
 		return
 	}
-	if err := s.Store.CreateDefinition(r.Context(), d.Agent, data, request.InitialTask); err != nil {
+	if err := s.Store.CreateDefinition(r.Context(), d.Agent, data, request.InitialTask, request.SectionID); err != nil {
 		s.actorsMu.Unlock()
-		s.respond(w, nil, err)
+		if !s.sidebarError(w, err) {
+			s.respond(w, nil, err)
+		}
 		return
 	}
 	actorCtx, stop := context.WithCancel(s.ctx)
@@ -446,7 +459,18 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if a.definition.Prompt != d.Prompt || a.definition.Agent.Name != d.Agent.Name || a.definition.Agent.Role != d.Agent.Role || a.definition.Workspace != d.Workspace {
 		a.revision++
 	}
+	changedPrompt := a.definition.Prompt != d.Prompt
 	a.definition = d
+	if changedPrompt {
+		payload, err := store.NewActivity("instructions.updated", d.Agent.ID, "")
+		if err == nil {
+			err = s.Store.Activity(r.Context(), d.Agent.ID, d.Agent.ID, payload)
+		}
+		if err != nil {
+			s.respond(w, nil, err)
+			return
+		}
+	}
 	write(w, 200, contract.AgentProfile{Agent: agent, Prompt: d.Prompt})
 }
 
@@ -524,6 +548,19 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	v, err := s.Store.Messages(r.Context(), t.ID, before, limit(r))
 	s.respond(w, v, err)
 }
+func (s *Server) toolRuns(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.thread(w, r)
+	if !ok {
+		return
+	}
+	before, ok := cursor(w, r, "before")
+	if !ok {
+		return
+	}
+	v, err := s.Store.PageRuns(r.Context(), t.ID, before, limit(r))
+	s.respond(w, v, err)
+}
+
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.thread(w, r)
 	if !ok {
@@ -943,7 +980,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if work.Trigger != "review" {
 		run.MessageID = pointer("reply:" + run.ID)
 	}
-	state := &turnState{run: run, work: work, store: s.Store, mergeLane: s.config.MergeLane, cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{}}
+	state := &turnState{
+		run: run, work: work, store: s.Store,
+		mergeRoot: s.config.MergeRoot, mergeQueue: s.config.MergeQueue,
+		cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{},
+	}
 	runCtx = agentruntime.WithSteers(context.WithValue(runCtx, turnKey{}, state), func(ctx context.Context, persist func([]contract.Message) error) error {
 		return s.Store.DrainSteers(ctx, run.ID, persist)
 	})
@@ -1008,13 +1049,24 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	}
 	a.mu.Lock()
 	d, revision := a.definition, a.revision
+	effective, scopeErr := s.effectiveMCP(runCtx, a.id, d.MCP)
+	if scopeErr != nil {
+		err = errors.Join(err, scopeErr)
+	} else {
+		d.MCP = effective
+	}
+	configJSON, scopeErr := json.Marshal(d.MCP)
+	if scopeErr != nil {
+		err = errors.Join(err, scopeErr)
+	}
+	scopeHash := sha256.Sum256(configJSON)
 	sess := a.session
 	isolated := delegated || automatic(work.Trigger)
 	if isolated {
 		sess = nil
 	}
 	var stale agentruntime.Session
-	reopen := a.sessionRev != revision || work.Trigger == "created"
+	reopen := a.sessionRev != revision || a.sessionMCP != scopeHash || work.Trigger == "created"
 	if health, ok := sess.(interface{ Reusable() bool }); ok {
 		reopen = reopen || !health.Reusable()
 	}
@@ -1093,6 +1145,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				d.ExtraTools = nil
 			} else {
 				d.ExtraTools = slices.Clone(d.ExtraTools)
+				if work.Trigger != "review" {
+					d.ExtraTools = append(d.ExtraTools, s.sidebarTools()...)
+				}
 				if s.config.Devices != nil && a.threadID == "" && !delegated {
 					d.ExtraTools = append(d.ExtraTools, &controlTool{broker: s.config.Devices, agent: a.id})
 				}
@@ -1148,6 +1203,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				a.mu.Lock()
 				a.session = sess
 				a.sessionRev = revision
+				a.sessionMCP = scopeHash
 				a.mu.Unlock()
 			}
 		}
@@ -1167,8 +1223,19 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	var pending strings.Builder
 	var lastFlush time.Time
 	tools := map[string]contract.ToolActivity{}
+	fileActivities := map[string]contract.Activity{}
+	history := slices.Clone(run.Tools)
+	keep := func(tool contract.ToolActivity) {
+		for i := range history {
+			if history[i].ID == tool.ID {
+				history[i] = tool
+				return
+			}
+		}
+		history = append(history, tool)
+	}
 	syncTools := func() {
-		run.Tools = []contract.ToolActivity{}
+		run.Tools = slices.Clone(history)
 		run.ToolID = nil
 		ids := []string{}
 		for id := range tools {
@@ -1176,7 +1243,6 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		}
 		slices.Sort(ids)
 		for _, id := range ids {
-			run.Tools = append(run.Tools, tools[id])
 			run.ToolID = pointer(id)
 		}
 	}
@@ -1300,6 +1366,15 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				}, nil)
 				return e
 			}
+			if delta.Kind == "run.retrying" {
+				text := "Retrying…"
+				if _, e := s.Store.Append(writeCtx, contract.Event{
+					Type: delta.Kind, ConversationID: m.ThreadID, RunID: &run.ID, AgentID: &a.id, Text: &text,
+				}, nil); e != nil {
+					return e
+				}
+				return setActivity("generating", text)
+			}
 			if delta.Kind == "generating" {
 				if len(tools) > 0 {
 					return nil
@@ -1335,7 +1410,21 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				if delta.Failed {
 					status = "failed"
 				}
+				if payload, ok := fileActivities[delta.ToolID]; ok {
+					delete(fileActivities, delta.ToolID)
+					if !delta.Failed {
+						if err := s.Store.Activity(writeCtx, run.ConversationID, run.AgentID, payload); err != nil {
+							return err
+						}
+					}
+				}
+				finished := contract.ToolActivity{ID: delta.ToolID, RunID: run.ID, Name: bounded(delta.Tool, 128), Status: status}
+				if tracked, ok := tools[delta.ToolID]; ok {
+					finished.Summary = tracked.Summary
+				}
 				delete(tools, delta.ToolID)
+				finished.Output = pointer(bounded(delta.Output, 2048))
+				keep(finished)
 				syncTools()
 				run.Activity, run.Summary = "generating", "Composing reply"
 				if len(tools) > 0 {
@@ -1347,7 +1436,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				if handing {
 					run.Activity, run.Summary = "handoff", "Handing off to peer"
 				}
-				return s.Store.RunEvent(writeCtx, "tool.done", &run, &contract.ToolActivity{ID: delta.ToolID, RunID: run.ID, Name: bounded(delta.Tool, 128), Status: status})
+				return s.Store.RunEvent(writeCtx, "tool.done", &run, &finished)
 			}
 			if delta.Tool != "" {
 				toolID := delta.ToolID
@@ -1358,7 +1447,30 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 					return errors.New("tool metadata budget exhausted")
 				}
 				tool := contract.ToolActivity{ID: toolID, RunID: run.ID, Name: bounded(delta.Tool, 128), Status: "running"}
+				if delta.Tool == "write" || delta.Tool == "edit" {
+					var input struct {
+						Path string `json:"path"`
+					}
+					if json.Unmarshal([]byte(delta.Args), &input) == nil {
+						kind, label := "", filepath.Base(input.Path)
+						switch label {
+						case "SKILL.md":
+							kind, label = "skill.saved", filepath.Base(filepath.Dir(input.Path))
+						case "AGENTS.md", "CLAUDE.md", "GEMINI.md":
+							kind = "instructions.updated"
+						}
+						if kind != "" {
+							payload, err := store.NewActivity(kind, input.Path, label)
+							if err != nil {
+								return err
+							}
+							fileActivities[toolID] = payload
+						}
+					}
+				}
+				tool.Summary = pointer(bounded(delta.Brief, 200))
 				tools[toolID] = tool
+				keep(tool)
 				syncTools()
 				run.Activity, run.Summary = "tool", "Using "+bounded(delta.Tool, 128)
 				if delta.Tool == "show_html" {
@@ -1491,20 +1603,20 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		messageMu.Unlock()
 		return contract.Message{}
 	}
-	if err == nil {
-		if result.Text != "" && result.Text != content.String() {
-			found := false
-			for n := range m.Parts {
-				if m.Parts[n].Kind == "text" {
-					m.Parts[n].Text = &result.Text
-					found = true
-					break
-				}
-			}
-			if !found {
-				m.Parts = append(m.Parts, contract.Part{Kind: "text", Text: &result.Text})
+	if result.Text != "" && result.Text != content.String() {
+		found := false
+		for n := range m.Parts {
+			if m.Parts[n].Kind == "text" {
+				m.Parts[n].Text = &result.Text
+				found = true
+				break
 			}
 		}
+		if !found {
+			m.Parts = append(m.Parts, contract.Part{Kind: "text", Text: &result.Text})
+		}
+	}
+	if err == nil {
 		if handed {
 			state.mu.Lock()
 			target := state.target
@@ -1584,7 +1696,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 				run.Summary = "Background work timed out"
 			}
 		}
-		run.Error = &contract.Error{Code: code, Message: message}
+		detail := redactError(err.Error())
+		run.Error = &contract.Error{Code: code, Message: message, Detail: detail}
+		s.config.Log.Error("reply failed", "run_id", run.ID, "agent", run.AgentID, "code", code, "detail", detail)
 	}
 	now = store.Now()
 	run.Activity, run.FinishedAt = "", &now
@@ -1593,6 +1707,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		if _, e := s.Store.Append(writeCtx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &tool}, nil); e != nil {
 			err = errors.Join(err, e)
 		}
+		keep(tool)
 	}
 	tools = map[string]contract.ToolActivity{}
 	syncTools()
@@ -1625,7 +1740,7 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		s.cancelTree(writeCtx, run.ID)
 	}
 	if err != nil {
-		s.config.Log.Warn("agent reply", "id", user.ID, "error", err)
+		s.config.Log.Warn("agent reply", "id", user.ID, "error", redactError(err.Error()))
 	}
 	a.mu.Lock()
 	a.cancel = nil
@@ -1767,4 +1882,14 @@ func (s *Server) thumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeFile(w, r, path+".jpg")
+}
+
+var errorSecrets = regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer\s+|basic\s+)?|bearer\s+|(?:api_key|apikey|key|token)["']?\s*[:=]\s*["']?)[^\s"',;&}]+|sk-[a-z0-9_-]+`)
+
+func redactError(detail string) string {
+	detail = errorSecrets.ReplaceAllString(detail, "[redacted]")
+	if len(detail) > 1024 {
+		detail = strings.ToValidUTF8(detail[:1024], "")
+	}
+	return detail
 }

@@ -41,7 +41,7 @@ func TestOffer(t *testing.T) {
 	if !bytes.Equal(o.Issuer, p.Issuer) || o.Secret != p.Secret || !reflect.DeepEqual(o.LAN, p.LAN) || o.Code != p.Code {
 		t.Fatal("wire fields did not round trip")
 	}
-	if !o.Expires.Equal(now.Add(10*time.Minute)) || !p.Expires.IsZero() {
+	if !o.Expires.Equal(now.Add(3*time.Minute)) || !p.Expires.IsZero() {
 		t.Fatal("wrong expiry semantics")
 	}
 	if p.URI() != o.URI() {

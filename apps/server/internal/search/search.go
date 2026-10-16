@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log/slog"
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -36,20 +41,156 @@ type Embedder interface {
 	Embed(context.Context, Input) ([]float32, string, error)
 }
 
+// EmbeddingGemma steers retrieval with a task prefix on text. Omitting it still
+// embeds, but the model card reports lower retrieval precision, so queries and
+// documents are kept apart. Media input is never prefixed.
+const (
+	queryPrefix    = "task: search result | query: "
+	documentPrefix = "title: none | text: "
+)
+
+// taskText is the text an EmbeddingGemma input is embedded as.
+func taskText(in Input) string {
+	if in.Query {
+		return queryPrefix + in.Text
+	}
+	return documentPrefix + in.Text
+}
+
+// mediaPart encodes one attachment as a content part llama-server can embed.
+// It reports false for anything it cannot carry, because a non-media
+// attachment's text already reached the input through extraction.
+func mediaPart(asset Asset) (map[string]any, bool) {
+	data, err := os.ReadFile(asset.Path)
+	if err != nil {
+		return nil, false
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	switch {
+	case strings.HasPrefix(asset.MimeType, "image/"):
+		return map[string]any{"type": "image_url", "image_url": map[string]any{
+			"url": "data:" + asset.MimeType + ";base64," + encoded,
+		}}, true
+	case strings.HasPrefix(asset.MimeType, "audio/"):
+		return map[string]any{"type": "input_audio", "input_audio": map[string]any{
+			"data": encoded, "format": strings.TrimPrefix(asset.MimeType, "audio/"),
+		}}, true
+	}
+	return nil, false
+}
+
 type HTTPEmbedder struct {
 	URL    string
 	Model  string
 	Dims   int
 	Client *http.Client
+	// Media sends attachments to the endpoint as media rather than text alone.
+	// It stays off unless a multimodal projector was loaded and CheckMedia
+	// proved the endpoint honours media input.
+	Media bool
+}
+
+// embedInput is what llama-server is asked to embed: a plain string for text,
+// or typed content parts when media has to travel with the text. It reports
+// whether media is carried, since that form is the one worth retrying without.
+// The two framings produce identical embeddings, so text alone keeps the
+// simpler one.
+func (e *HTTPEmbedder) embedInput(in Input) (any, bool) {
+	if !e.Media {
+		return in.Text, false
+	}
+	parts := []any{map[string]any{"type": "text", "text": in.Text}}
+	for _, asset := range in.Attachments {
+		if part, ok := mediaPart(asset); ok {
+			parts = append(parts, part)
+		}
+	}
+	if len(parts) == 1 {
+		return in.Text, false
+	}
+	return []any{map[string]any{"content": parts}}, true
+}
+
+// CheckMedia proves the endpoint embeds images instead of accepting them and
+// returning a text-only vector. Distinct images collapsing onto the same
+// vector is the failure mode the server cannot report, since it answers HTTP
+// 200 with a plausible embedding either way.
+func (e *HTTPEmbedder) CheckMedia(ctx context.Context) error {
+	if !e.Media {
+		return fmt.Errorf("media embedding is not enabled")
+	}
+	dir, err := os.MkdirTemp("", "polymux-media-check")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	var vectors [][]float32
+	for _, c := range []struct {
+		name string
+		fill color.RGBA
+	}{{"red.png", color.RGBA{R: 220, A: 255}}, {"blue.png", color.RGBA{B: 220, A: 255}}} {
+		path := filepath.Join(dir, c.name)
+		if err := writeSolidPNG(path, c.fill); err != nil {
+			return err
+		}
+		v, _, err := e.Embed(ctx, Input{Attachments: []Asset{{Path: path, MimeType: "image/png"}}})
+		if err != nil {
+			return err
+		}
+		vectors = append(vectors, v)
+	}
+	if got := cosine(vectors[0], vectors[1]); got > 0.99 {
+		return fmt.Errorf("distinct images embed identically (cosine %.4f), so image input is being ignored", got)
+	}
+	return nil
+}
+
+func writeSolidPNG(path string, fill color.RGBA) error {
+	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	for x := range 16 {
+		for y := range 16 {
+			img.SetRGBA(x, y, fill)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return err
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o600)
+}
+
+func cosine(a, b []float32) float64 {
+	var dot, na, nb float64
+	for n := range a {
+		dot += float64(a[n]) * float64(b[n])
+		na += float64(a[n]) * float64(a[n])
+		nb += float64(b[n]) * float64(b[n])
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 func (e *HTTPEmbedder) Embed(ctx context.Context, input Input) ([]float32, string, error) {
 	if e.URL == "" {
 		return nil, "", fmt.Errorf("semantic search provider is not configured")
 	}
+	input.Text = taskText(input)
+	payload, media := e.embedInput(input)
+	v, model, err := e.ask(ctx, input, payload)
+	if err != nil && media {
+		// One attachment the server cannot decode must not cost the message its
+		// text embedding, so the text-only form is the fallback.
+		return e.ask(ctx, input, input.Text)
+	}
+	return v, model, err
+}
+
+func (e *HTTPEmbedder) ask(ctx context.Context, input Input, payload any) ([]float32, string, error) {
 	var request any = input
 	if strings.HasSuffix(e.URL, "/embeddings") {
-		request = map[string]any{"input": input.Text, "model": e.Model, "dimensions": e.Dims}
+		request = map[string]any{"input": payload, "model": e.Model, "dimensions": e.Dims}
 	}
 	var response struct {
 		Embedding []float32 `json:"embedding"`
@@ -83,9 +224,11 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, input Input) ([]float32, strin
 	for i := range v {
 		v[i] /= float32(norm)
 	}
-	model := e.Model
+	// The server names the model it actually ran, which is what stored vectors
+	// are keyed on, so a swapped GGUF cannot be scored against older vectors.
+	model := response.Model
 	if model == "" {
-		model = response.Model
+		model = e.Model
 	}
 	return v, model, nil
 }

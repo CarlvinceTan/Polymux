@@ -112,12 +112,12 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
                       abs(date.timeIntervalSinceNow) < 600 else { continue }
                 let content = UNMutableNotificationContent()
                 content.title = notice.title
-                content.body = "New message in Polymux"
+                content.body = notice.body ?? "New message in Polymux"
                 content.sound = .default
                 content.threadIdentifier = notice.conversationID
                 content.userInfo = ["server": client.baseURL.absoluteString, "conversationID": notice.conversationID,
                                     "messageID": notice.messageID]
-                let id = "\(client.baseURL.absoluteString):\(notice.messageID)"
+                let id = "\(client.baseURL.absoluteString):\(notice.seq)"
                 try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
             }
             defaults.set(page.cursor, forKey: key)

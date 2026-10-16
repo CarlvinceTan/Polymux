@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
+  <key>PolymuxVerifyProtocol</key><integer>1</integer>
   <key>NSMicrophoneUsageDescription</key><string>Polymux listens while you use voice conversation.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Polymux turns your speech into messages for your agent.</string>
   <key>NSCameraUsageDescription</key><string>Polymux uses the camera when you attach a photo.</string>

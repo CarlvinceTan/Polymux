@@ -3,7 +3,7 @@ name: Pull request release notes
 
 on:
   pull_request:
-    branches: [main, dev, release/0.3.x]
+    branches: [main]
     types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:

@@ -37,11 +37,16 @@ Never update it unless explicitly asked; report conflicts instead.
 ## Repository safety
 
 - Preserve unrelated worktree changes. Never run `git stash`.
-- Work on a feature branch off the latest `main`.
-- Commit each verified unit on that branch: imperative mood, subject of at
+- Work directly on `dev`, based on the latest `origin/dev`. Do not create
+  another local or remote branch; temporary worktrees must stay detached.
+- Commit each verified unit on `dev`: imperative mood, subject of at
   most 72 characters, no AI attribution.
-- Push the branch and open one pull request for Carlvince's review.
-- Never commit to or merge into `main`; merging waits for Carlvince's OK.
+- Push only `dev` and open or update the single `dev` to `main` promotion pull
+  request for Carlvince's review. Honour any task-specific hold on pushing.
+- Never commit or push directly to `main`. The promotion queue squash-merges
+  reviewed `dev` and then realigns `dev` to the promoted `main`; merging waits
+  for Carlvince's OK.
+- Keep visual evidence local. Never create or publish `proof-media` branches.
 - Polymux is pre-release with no external users. Do not add compatibility for
   obsolete formats; reset disposable state or use a bounded one-time migration
   for valuable local data.

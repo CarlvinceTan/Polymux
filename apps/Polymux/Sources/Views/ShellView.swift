@@ -9,6 +9,7 @@ struct ShellView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var windowID = UUID()
     @State private var visibility = NavigationSplitViewVisibility.all
+    @State private var compactColumn = NavigationSplitViewColumn.sidebar
     @State private var query = ""
     @State private var searching = false
     @State private var columnWidth: CGFloat = 360
@@ -42,14 +43,31 @@ struct ShellView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $visibility) {
+        NavigationSplitView(columnVisibility: $visibility, preferredCompactColumn: $compactColumn) {
             List(selection: $selection) {
-                ForEach(conversations) { thread in
+                if let notice = session.sidebar.commits.notice {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(notice)
+                        Button("Try again") { session.sidebar.commits.tryAgain() }
+                    }
+                    .accessibilityIdentifier("profile.failure")
+                }
+                if !pinnedChats.isEmpty {
+                    pinGrid
+                }
+                ForEach(listChats) { thread in
                     chatLink(thread)
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                if let notice = session.sidebar.notice {
+                if let issue = session.sidebar.pinIssue {
+                    HStack {
+                        Text(issue).frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Retry") { session.sidebar.retryPins() }
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                } else if let notice = session.sidebar.notice {
                     Text(notice)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -360,6 +378,50 @@ struct ShellView: View {
         }
     }
 
+    private var pinnedChats: [PolymuxKit.Thread] {
+        conversations.filter { $0.pinned == true }.sorted {
+            if $0.pinOrder != $1.pinOrder { return ($0.pinOrder ?? .greatestFiniteMagnitude) < ($1.pinOrder ?? .greatestFiniteMagnitude) }
+            return $0.id < $1.id
+        }
+    }
+
+    private var listChats: [PolymuxKit.Thread] { conversations.filter { $0.pinned != true } }
+    private var canPin: Bool { session.sidebar.threads.filter { $0.pinned == true }.count < 12 }
+
+    private func togglePin(_ thread: PolymuxKit.Thread) {
+        Task { await session.sidebar.setPin(thread.id, pinned: thread.pinned != true) }
+    }
+
+    private var pinGrid: some View {
+        #if os(macOS)
+        let width = max(1, min(3, Int((sidebarWidth - 32) / 95)))
+        #else
+        let width = max(1, min(3, Int((Double(columnWidth) - 32) / 95)))
+        #endif
+        return LazyVGrid(columns: Array(repeating: GridItem(.fixed(95), spacing: 8), count: width), spacing: 8) {
+            ForEach(pinnedChats) { thread in
+                PinnedChat(thread: thread, members: participants(thread), title: title(thread),
+                           selected: selection == thread.id, activity: session.sidebar.activity,
+                           connected: session.sidebar.isConnected) {
+                    selection = thread.id
+                    compactColumn = .detail
+                }
+                    .contextMenu {
+                        Button("Unpin", systemImage: "pin.slash") { togglePin(thread) }
+                        Button(thread.isGroup ? "Edit chat" : "Edit profile", systemImage: "pencil") { edit(thread) }
+                    }
+                    .accessibilityAction(named: "Unpin") { togglePin(thread) }
+                    .accessibilityIdentifier("sidebar.pin.\(thread.id)")
+            }
+        }
+        .padding(.vertical, 8)
+        .selectionDisabled()
+        .accessibilityElement(children: .contain)
+        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+        .listRowBackground(sidebarSurface)
+        .listRowSeparator(.hidden)
+    }
+
     private var filterMenu: some View {
         Menu {
             Picker("Show", selection: $filter) {
@@ -390,19 +452,24 @@ struct ShellView: View {
         }
         .accessibilityIdentifier("sidebar.row.\(thread.id)")
         #if os(macOS)
-        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10))
+        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 12))
         .overlay {
             if thread.isGroup {
-                RowMenu(profile: { grouping = thread }, title: "Edit chat")
+                RowMenu(profile: { grouping = thread }, pin: { togglePin(thread) },
+                        pinned: thread.pinned == true, canPin: canPin, title: "Edit chat")
                     .accessibilityHidden(true)
             } else if let agent = participants(thread).first {
                 RowMenu(profile: { profiling = AvatarContact(agent: agent) },
                         avatar: { editing = AvatarContact(agent: agent) },
-                        delete: { requestDelete(agent) })
+                        delete: { requestDelete(agent) }, pin: { togglePin(thread) },
+                        pinned: thread.pinned == true, canPin: canPin)
                     .accessibilityHidden(true)
             }
         }
         .accessibilityActions {
+            if thread.pinned == true || canPin {
+                Button(thread.pinned == true ? "Unpin" : "Pin") { togglePin(thread) }
+            }
             Button(thread.isGroup ? "Edit chat" : "Edit profile") { edit(thread) }
             if !thread.isGroup, let agent = participants(thread).first {
                 Button("Customise avatar") { editing = AvatarContact(agent: agent) }
@@ -411,9 +478,12 @@ struct ShellView: View {
         }
         #else
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-        .listRowSeparator(thread.id == conversations.first?.id ? .hidden : .automatic, edges: .top)
-        .listRowSeparator(thread.id == conversations.last?.id ? .hidden : .automatic, edges: .bottom)
+        .listRowSeparator(thread.id == listChats.first?.id ? .hidden : .automatic, edges: .top)
+        .listRowSeparator(thread.id == listChats.last?.id ? .hidden : .automatic, edges: .bottom)
         .contextMenu {
+            Button(thread.pinned == true ? "Unpin" : "Pin", systemImage: thread.pinned == true ? "pin.slash" : "pin") { togglePin(thread) }
+                .disabled(thread.pinned != true && !canPin)
+            Divider()
             if thread.isGroup {
                 Button("Edit chat", systemImage: "pencil") { grouping = thread }
             } else if let agent = participants(thread).first {
@@ -455,6 +525,57 @@ struct ShellView: View {
     }
 }
 
+private func rowLabel(_ label: String, value: String) -> String {
+    #if os(macOS)
+    // Native navigation links discard AXValue; include the announcement in AXLabel.
+    return value.isEmpty ? label : "\(label), \(value)"
+    #else
+    return label
+    #endif
+}
+
+private struct PinnedChat: View {
+    let thread: PolymuxKit.Thread
+    let members: [Agent]
+    let title: String
+    let selected: Bool
+    let activity: ActivityStore
+    let connected: Bool
+    let select: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: select) {
+            VStack(spacing: 4) {
+                if thread.isGroup {
+                    AvatarStack(members: members, conversationID: thread.id, runs: thread.runs,
+                                activity: activity, connected: connected).frame(width: 52, height: 52)
+                } else if let agent = members.first {
+                    AgentAvatar(agentID: agent.id, conversationID: thread.id, runs: thread.runs,
+                                activity: activity, connected: connected, unread: thread.unreadCount > 0)
+                        .frame(width: 52, height: 52)
+                }
+                Text(title).font(.caption).foregroundStyle(.primary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 92)
+            .background(Color.primary.opacity(selected ? 0.11 : hovered ? 0.06 : 0.03), in: RoundedRectangle(cornerRadius: 12))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(alignment: .topTrailing) {
+                if thread.unreadCount > 0 {
+                    Circle().fill(Color("AccentColor")).frame(width: 7, height: 7)
+                        .padding(8).accessibilityHidden(true)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .accessibilityLabel(title)
+        .accessibilityValue(thread.unreadCount > 0 ? "Pinned, unread" : "Pinned")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
 struct AgentRow: View {
     let agent: Agent
     let thread: PolymuxKit.Thread?
@@ -479,8 +600,12 @@ struct AgentRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(agent.name), \(agent.role), \(preview)")
-        .accessibilityValue("\(thread?.unreadCount ?? 0) unread messages, \(ActivityStore.present(runs: thread?.runs ?? [], conversationID: thread?.id ?? agent.id, agentID: agent.id, connected: connected).label)")
+        .accessibilityLabel(rowLabel("\(agent.name), \(agent.role), \(preview)", value: announcement))
+        .accessibilityValue(announcement)
+    }
+
+    private var announcement: String {
+        UnreadAccess.value(count: thread?.unreadCount ?? 0, activity: presentation.label)
     }
 
     private var rowGap: CGFloat {
@@ -532,8 +657,9 @@ struct GroupRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(thread.title), \(members.map(\.name).joined(separator: ", ")), \(preview)")
-        .accessibilityValue("\(thread.unreadCount) unread messages")
+        .accessibilityLabel(rowLabel("\(thread.title), \(members.map(\.name).joined(separator: ", ")), \(preview)",
+                                     value: UnreadAccess.value(count: thread.unreadCount)))
+        .accessibilityValue(UnreadAccess.value(count: thread.unreadCount))
     }
 
     private var gap: CGFloat {
@@ -572,47 +698,70 @@ private struct RowDetails: View {
         #endif
     }
 
+    private var unread: Bool { (thread?.unreadCount ?? 0) > 0 }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Text(name)
-                    #if os(iOS)
-                    .font(.headline)
-                    #else
-                    .font(.body.weight(.medium))
-                    #endif
-                    .foregroundStyle(foreground).lineLimit(1)
-                Spacer(minLength: 4)
-                if active {
-                    Circle().fill(.green).frame(width: 6, height: 6).accessibilityLabel("Active")
-                }
-                if let date = thread?.lastMessage?.date {
-                    Text(date, format: ProgressiveTime())
-                        .font(.caption2).foregroundStyle(secondary).lineLimit(1).fixedSize()
-                }
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 5) {
+                titleRow
+                previewRow
             }
-            if !preview.isEmpty || (thread?.unreadCount ?? 0) > 0 {
-                HStack(spacing: 6) {
-                    Text(preview)
-                        #if os(iOS)
-                        .font(.subheadline)
-                        #else
-                        .font(.caption)
-                        #endif
-                        .lineLimit(1).foregroundStyle(secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if let count = thread?.unreadCount, count > 0 {
-                        Text(count > 9 ? "9+" : "\(count)")
-                            .font(.caption2.weight(.semibold))
-                            .monospacedDigit()
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .foregroundStyle(Color("OnAccent")).background(Color("AccentColor"), in: Capsule())
-                            .fixedSize()
-                            .accessibilityHidden(true)
-                    }
-                }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            #if os(macOS)
+            if unread { UnreadDot(points: 7) }
+            #endif
+        }
+    }
+
+    private var titleRow: some View {
+        HStack(spacing: 6) {
+            Text(name)
+                #if os(iOS)
+                .font(.headline)
+                #else
+                .font(.body.weight(.medium))
+                #endif
+                .foregroundStyle(foreground)
+                .lineLimit(1)
+                .layoutPriority(0)
+            #if os(iOS)
+            Spacer(minLength: 4)
+            if active {
+                Circle().fill(.green).frame(width: 6, height: 6).accessibilityLabel("Active")
+            }
+            if let date = thread?.lastMessage?.date {
+                Text(date, format: ProgressiveTime())
+                    .font(.caption2).foregroundStyle(secondary).lineLimit(1)
+                    .fixedSize()
+                    .layoutPriority(1)
+            }
+            #else
+            if active {
+                Spacer(minLength: 4)
+                Circle().fill(.green).frame(width: 6, height: 6).accessibilityLabel("Active")
+            }
+            #endif
+        }
+    }
+
+    @ViewBuilder private var previewRow: some View {
+        #if os(iOS)
+        if !preview.isEmpty || unread {
+            HStack(spacing: 6) {
+                Text(preview)
+                    .font(.subheadline)
+                    .lineLimit(1).foregroundStyle(secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if unread { UnreadDot(points: 8) }
             }
         }
+        #else
+        if !preview.isEmpty {
+            Text(preview)
+                .font(.caption)
+                .lineLimit(1).foregroundStyle(secondary)
+        }
+        #endif
     }
 }
 

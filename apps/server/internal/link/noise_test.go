@@ -486,3 +486,38 @@ func TestNoiseReset(t *testing.T) {
 		t.Fatalf("published permissions: %v, %v", stat, err)
 	}
 }
+
+type fastDeadline struct {
+	net.Conn
+	deadline time.Time
+}
+
+func (c *fastDeadline) SetDeadline(d time.Time) error {
+	c.deadline = d
+	if !d.IsZero() {
+		if delta := time.Until(d); delta < 9*time.Second || delta > 10*time.Second {
+			return errors.New("wrong handshake timeout")
+		}
+		d = time.Now().Add(20 * time.Millisecond)
+	}
+	return c.Conn.SetDeadline(d)
+}
+func TestHandshakeTimeout(t *testing.T) {
+	for _, pairing := range []bool{true, false} {
+		a, b := net.Pipe()
+		c := &fastDeadline{Conn: a}
+		watchdog := time.AfterFunc(time.Second, func() { a.Close() })
+		defer watchdog.Stop()
+		var err error
+		if pairing {
+			_, _, err = PairServer(c, noiseKey(t), bytes.Repeat([]byte{1}, 32))
+		} else {
+			_, err = Accept(c, noiseKey(t), func([]byte) bool { return true })
+		}
+		b.Close()
+		var timeout net.Error
+		if !errors.As(err, &timeout) || !timeout.Timeout() || !c.deadline.IsZero() {
+			t.Fatalf("pairing=%v: %v", pairing, err)
+		}
+	}
+}

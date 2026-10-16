@@ -3,11 +3,13 @@ import Observation
 
 @MainActor @Observable
 public final class ChatStore {
+    public private(set) var activityEvents: [Event] = [] { didSet { refreshTranscript() } }
+    public private(set) var transcript: [TranscriptRow] = []
     public let activity: ActivityStore
     public let trace = SignpostTrace()
     public private(set) var runs: [Run] = []
     public private(set) var threadID: String
-    public private(set) var messages: [Message] = []
+    public private(set) var messages: [Message] = [] { didSet { refreshTranscript() } }
     public private(set) var isConnected = false
     public var isVisible = true
     /// Per-file progress for sends still uploading, keyed by the local attachment id.
@@ -56,6 +58,7 @@ public final class ChatStore {
         runs = stored
         activity.restore(stored)
         messages = (try? await cacheActor.call { try $0.messages(threadID: threadID, limit: 100) }) ?? []
+        activityEvents = (try? await cacheActor.call { try $0.activityEvents(threadID: threadID) }) ?? []
         for message in queued.values { update(message) }
     }
 
@@ -221,6 +224,12 @@ public final class ChatStore {
                 try await cacheActor.call { try $0.merge(fetched) }
                 earlier = try await cacheActor.call { try $0.messages(threadID: threadID, before: first, limit: 100) }
             }
+            let history = try await client.toolRuns(threadID: threadID, before: first)
+            for run in history {
+                runs.removeAll { $0.id == run.id }
+                runs.append(run)
+            }
+            activity.restore(runs)
             for message in earlier { update(message) }
             hasEarlier = earlier.count == 100
         } catch { self.error = error.localizedDescription }
@@ -304,7 +313,13 @@ public final class ChatStore {
                 messages = try await cacheActor.call { try $0.messages(threadID: threadID, limit: visibleCount) }
                 for message in queued.values { update(message) }
                 runs = try await cacheActor.call { try $0.runs(threadID: threadID) }
+                let history = try await client.toolRuns(threadID: threadID)
+                for run in history {
+                    runs.removeAll { $0.id == run.id }
+                    runs.append(run)
+                }
                 activity.restore(runs)
+                activityEvents = try await cacheActor.call { try $0.activityEvents(threadID: threadID) }
                 isConnected = true
                 error = nil
                 delay = 1
@@ -314,7 +329,7 @@ public final class ChatStore {
                 for try await event in client.stream(threadID: threadID, after: cursor) {
                     try Task.checkCancellation()
                     try await receive(event)
-                    if event.type == "message.start" || event.type == "message.done" {
+                    if event.type == "message.start" || event.type == "message.done" || event.type == "activity" {
                         await markRead()
                     }
                 }
@@ -355,11 +370,25 @@ public final class ChatStore {
         onUpdate?(event, tap)
         let before = try await cacheActor.call { try $0.cursor(threadID: threadID) }
         guard event.seq > before else { return }
-        if let message = try await cacheActor.call({ try $0.apply(event, touchThreads: false) }) { update(message) }
+        let touchThreads = sidebar == nil
+        if let message = try await cacheActor.call({ cache in
+            let message = try cache.apply(event, touchThreads: touchThreads)
+            return try message.flatMap { try cache.isHidden($0.id, threadID: threadID) ? nil : $0 }
+        }) { update(message) }
+        if event.type == "activity" {
+            activityEvents.append(event)
+            if activityEvents.count > 1000 { activityEvents.removeFirst(activityEvents.count - 1000) }
+            let hidden = Set(event.payload?.messageIDs ?? [])
+            messages.removeAll { hidden.contains($0.id) }
+        }
         activity.receive(event, live: live)
         if event.run != nil { runs = try await cacheActor.call({ try $0.runs(threadID: threadID) }) }
         if live { isConnected = true }
         forwardVoice(event)
+    }
+
+    private func refreshTranscript() {
+        transcript = TranscriptRow.ordered(messages: messages, events: activityEvents)
     }
 
     private func update(_ message: Message) {

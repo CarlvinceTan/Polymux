@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -236,5 +237,46 @@ func TestBonjourTXT(t *testing.T) {
 	want := base64.RawURLEncoding.EncodeToString(fingerprint[:])[:16]
 	if len(txt) != 2 || txt["v"] != "1" || len(txt["k"]) != 16 || txt["k"] != want {
 		t.Fatalf("TXT = %v, want only v=1 and k=%s", txt, want)
+	}
+}
+
+func TestDeviceDefault(t *testing.T) {
+	// An explicit tailnet -listen with no -device-listen must not drag the device listener to loopback.
+	_, port, err := net.SplitHostPort("100.64.0.7:8787")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name      string
+		tailscale bool
+		tailnet   string
+		port      int
+		want      string
+	}{
+		{name: "all interfaces", port: n, want: "0.0.0.0:8789"},
+		{name: "tailnet IP", tailscale: true, tailnet: "100.64.0.7", port: n, want: "100.64.0.7:8789"},
+		{name: "verify", port: 0, want: "127.0.0.1:0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deviceDefault(tt.tailscale, tt.tailnet, tt.port)
+			if got != tt.want {
+				t.Fatalf("device listener = %q, want %q", got, tt.want)
+			}
+			host, _, err := net.SplitHostPort(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ip := net.ParseIP(host)
+			if ip == nil || ip.IsLoopback() != (tt.port == 0) {
+				t.Fatalf("device listener %q has unexpected loopback status", got)
+			}
+			if got := shouldAdvertise(ip, false); got != (tt.port != 0) {
+				t.Fatalf("Bonjour advertisement = %v, want %v", got, tt.port != 0)
+			}
+		})
 	}
 }

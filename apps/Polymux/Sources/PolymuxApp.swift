@@ -1,10 +1,22 @@
 import SwiftUI
 import PolymuxKit
+#if os(macOS)
+import PolymuxControl
+#endif
 
 @main
 enum PolymuxMain {
     @MainActor static func main() {
         #if os(macOS)
+        if let index = CommandLine.arguments.firstIndex(of: "--verify-accessibility") {
+            guard CommandLine.arguments.indices.contains(index + 1),
+                  let nonce = UUID(uuidString: CommandLine.arguments[index + 1]) else { return }
+            let result = FileManager.default.temporaryDirectory
+                .appending(path: "polymux-ui-accessibility-\(nonce.uuidString).json")
+            let value = ["accessibility": ControlPermissions.accessibility]
+            if let data = try? JSONEncoder().encode(value) { try? data.write(to: result, options: .atomic) }
+            return
+        }
         if CommandLine.arguments.contains("--companion") {
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory)
@@ -27,6 +39,7 @@ struct PolymuxApp: App {
 
     init() {
         _ = Notifications.shared
+        FrameLog.install()
         #if os(macOS)
         #if DEBUG
         if !VerifyFixture.enabled && !CommandLine.arguments.contains("--verify-approval") {
@@ -74,17 +87,12 @@ final class AppSession {
         #else
         client = APIClient(baseURL: url)
         #endif
-        let key = address.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
         cache = try await Task.detached {
-            let support = try FileManager.default.url(
-                for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-            )
-            let directory = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"].map {
-                URL(fileURLWithPath: $0, isDirectory: true)
-                    .appending(path: "app-\(key)", directoryHint: .isDirectory)
-            } ?? support.appending(path: "Polymux/\(key)", directoryHint: .isDirectory)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            return try LocalCache(url: directory.appending(path: "cache.sqlite"))
+            let file = ClientPaths.cache(address)
+            let directory = file.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            return try LocalCache(url: file)
         }.value
         sidebar = SidebarStore(client: client, cache: cache)
         await sidebar.load()
@@ -153,6 +161,7 @@ struct AppRoot: View {
 
     private var appearance: String {
         #if DEBUG
+        if VerifyFixture.enabled { return UserDefaults.standard.string(forKey: "AppleInterfaceStyle")?.lowercased() ?? "system" }
         if CommandLine.arguments.contains("--verify-approval") {
             return CommandLine.arguments.contains("--approval-dark") ? "dark" : "light"
         }
@@ -183,6 +192,7 @@ struct ConnectionView: View {
     let settings: SettingsStore?
     let onClose: () -> Void
     @State private var draft = ""
+    @State private var notificationToggle = OptimisticToggle(isOn: Notifications.shared.enabled)
     @FocusState private var serverFocused: Bool
 
     var body: some View {
@@ -228,13 +238,21 @@ struct ConnectionView: View {
                     }
                 }
                 Section("Notifications") {
-                    Toggle("Allow notifications", isOn: Binding(get: { Notifications.shared.enabled },
-                        set: { enabled in Task { await Notifications.shared.allow(enabled) } }))
-                    if let issue = Notifications.shared.issue {
+                    let choice = notificationToggle.binding { enabled in
+                        await Notifications.shared.allow(enabled)
+                        guard Notifications.shared.enabled == enabled else {
+                            throw ToggleFailure(Notifications.shared.issue ?? "Couldn’t update notification permission.")
+                        }
+                    }
+                    Toggle("Allow notifications", isOn: choice.isOn)
+                    if let issue = toggleIssue(notificationToggle.message, Notifications.shared.issue) {
                         Text(issue).font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 .panelRow()
+                .onChange(of: Notifications.shared.enabled, initial: true) { _, enabled in
+                    notificationToggle.adopt(enabled)
+                }
                 #if os(macOS)
                 ControlSettings(server: ServerAddress.parse(address))
                 #endif

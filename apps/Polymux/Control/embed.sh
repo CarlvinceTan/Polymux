@@ -4,7 +4,7 @@ set -eu
 root="$SRCROOT/../.."
 source="$root/.vendor/cua"
 if [ ! -x "$source/cua-driver" ]; then
-  echo 'error: Missing bundled runtime. Run python3 scripts/fetch_cua.py before building macOS.' >&2
+  echo 'error: Missing bundled runtime. Run python3 scripts/control/fetch_cua.py before building macOS.' >&2
   exit 1
 fi
 expected=$(cat "$source/SHA256")

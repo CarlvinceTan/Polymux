@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,6 +59,22 @@ func TestRunRecovery(t *testing.T) {
 	if err != nil || len(thread.Runs) != 1 || thread.Runs[0].JobID != "next" {
 		t.Fatalf("snapshot %+v %v", thread, err)
 	}
+	if len(run.Tools) != 1 || run.Tools[0].Status != "interrupted" {
+		t.Fatal("recovery lost the interrupted call")
+	}
+	events, err := s.Events(t.Context(), "a", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interrupted bool
+	for _, event := range events {
+		if event.Type == "tool.done" && event.Tool != nil && event.Tool.ID == "call" && event.Tool.Status == "interrupted" {
+			interrupted = true
+		}
+	}
+	if !interrupted {
+		t.Fatal("interrupted tool.done was not replayable")
+	}
 	seq := run.Seq
 	if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil || run.Seq != seq {
 		t.Fatalf("terminal replay duplicated %v", err)
@@ -73,7 +90,7 @@ func TestCreationQueue(t *testing.T) {
 	a := contract.Agent{ID: "new", Name: "New"}
 	data := json.RawMessage(`{"agent":{"id":"new"},"prompt":"Help"}`)
 	task := "Do this only after introducing yourself"
-	if err := s.CreateDefinition(t.Context(), a, data, &task); err != nil {
+	if err := s.CreateDefinition(t.Context(), a, data, &task, nil); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.Job(t.Context(), a.ID)
@@ -157,17 +174,17 @@ func TestLeadPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: "Changed", AgentIDs: []string{"a", "b"}}); err != nil {
+	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: new("Changed"), AgentIDs: []string{"a", "b"}}); err != nil {
 		t.Fatal(err)
 	}
 	group, err = s.Thread(t.Context(), group.ID)
 	if err != nil || group.LeadAgentID == nil || *group.LeadAgentID != "b" {
 		t.Fatalf("lead changed %+v %v", group, err)
 	}
-	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: "Bad", LeadAgentID: ptr("missing")}); !errors.Is(err, ErrMembers) {
+	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: new("Bad"), LeadAgentID: ptr("missing")}); !errors.Is(err, ErrMembers) {
 		t.Fatal("invalid lead accepted", err)
 	}
-	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: "Solo", AgentIDs: []string{"a"}}); err != nil {
+	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: new("Solo"), AgentIDs: []string{"a"}}); err != nil {
 		t.Fatal(err)
 	}
 	group, _ = s.Thread(t.Context(), group.ID)
@@ -298,5 +315,187 @@ func TestWithdrawAtomic(t *testing.T) {
 	run, err := s.Run(t.Context(), NewRun("queued", "a", "a", "message").ID)
 	if err != nil || run.Status != "cancelled" {
 		t.Fatalf("withdrawn work %+v %v", run, err)
+	}
+}
+
+func TestToolRunsSurviveNewerTurns(t *testing.T) {
+	s := runStore(t)
+	for _, id := range []string{"first", "second"} {
+		req := contract.SendRequest{ID: id, Text: "Hello", AttachmentIDs: []string{}}
+		if _, _, err := s.Send(t.Context(), "a", req, []contract.Part{{Kind: "text", Text: &req.Text}}, "a"); err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.Run(t.Context(), NewRun(id, "a", "a", "message").ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.Status = "completed"
+		run.Tools = []contract.ToolActivity{{ID: id, RunID: run.ID, Name: "bash", Status: "failed", Summary: ptr("false"), Output: ptr("failed")}}
+		if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil {
+			t.Fatal(err)
+		}
+		message := contract.Message{ID: id + "-reply", ThreadID: "a", AgentID: ptr("a"), Role: "assistant", RunID: &run.ID, Status: "done", CreatedAt: Now()}
+		if _, err := s.Append(t.Context(), contract.Event{ConversationID: "a", Type: "message.done", Message: &message}, &message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs, err := s.PageRuns(t.Context(), "a", 0, 100)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("relaunch rows: %d runs, %v", len(runs), err)
+	}
+	for _, run := range runs {
+		if len(run.Tools) != 1 || run.Tools[0].Status != "failed" || *run.Tools[0].Output != "failed" {
+			t.Fatal("failed tool row lost on replay")
+		}
+	}
+	latest, err := s.PageRuns(t.Context(), "a", 0, 1)
+	if err != nil || len(latest) != 1 || latest[0].ID != NewRun("second", "a", "a", "message").ID {
+		t.Fatalf("latest page runs: %+v, %v", latest, err)
+	}
+	page, err := s.Messages(t.Context(), "a", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	earlier, err := s.PageRuns(t.Context(), "a", page[0].Seq, 2)
+	if err != nil || len(earlier) != 1 || earlier[0].ID != NewRun("first", "a", "a", "message").ID {
+		t.Fatalf("earlier page runs: %+v, %v", earlier, err)
+	}
+}
+
+func TestCancelledToolHistory(t *testing.T) {
+	s := runStore(t)
+	run := NewRun("cancel", "a", "a", "message")
+	run.Status = "running"
+	run.Tools = []contract.ToolActivity{
+		{ID: "done", RunID: run.ID, Name: "read", Status: "completed"},
+		{ID: "failed", RunID: run.ID, Name: "bash", Status: "failed", Output: ptr("failure excerpt")},
+		{ID: "active", RunID: run.ID, Name: "bash", Status: "running"},
+	}
+	if err := s.RunEvent(t.Context(), "run.start", &run, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StopRuns(t.Context(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.Run(t.Context(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Tools) != 3 {
+		t.Fatalf("cancel snapshot: %d rows, want 3", len(stored.Tools))
+	}
+	for i, status := range []string{"completed", "failed", "cancelled"} {
+		if stored.Tools[i].Status != status {
+			t.Errorf("row %d: %s, want %s", i, stored.Tools[i].Status, status)
+		}
+	}
+	if stored.Tools[1].Output == nil || *stored.Tools[1].Output != "failure excerpt" {
+		t.Fatal("failed excerpt lost")
+	}
+	events, err := s.Events(t.Context(), "a", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := 0
+	for _, event := range events {
+		if event.Type == "tool.done" {
+			done++
+			if event.Tool.ID != "active" || event.Tool.Status != "cancelled" {
+				t.Errorf("finished row rewritten: %+v", event.Tool)
+			}
+		}
+		if event.Type == "run.done" && len(event.Run.Tools) != 3 {
+			t.Errorf("cancel replay: %d rows, want 3", len(event.Run.Tools))
+		}
+	}
+	if done != 1 {
+		t.Errorf("tool.done events: %d, want 1", done)
+	}
+}
+
+func TestToolHistoryListBound(t *testing.T) {
+	s := runStore(t)
+	latest := NewRun("latest", "a", "a", "message")
+	latest.Status = "completed"
+	if err := s.RunEvent(t.Context(), "run.done", &latest, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.Threads(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, _ := json.Marshal(before)
+	for i := 0; i < 50; i++ {
+		run := NewRun(fmt.Sprint("old-", i), "a", "a", "message")
+		run.Status, run.CreatedAt = "completed", "2020-01-01T00:00:00Z"
+		run.Tools = []contract.ToolActivity{{ID: run.ID, RunID: run.ID, Name: "bash", Status: "completed", Output: ptr(strings.Repeat("x", 2000))}}
+		if err := s.RunEvent(t.Context(), "run.done", &run, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	threads, err := s.Threads(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(threads)
+	if len(data) > len(baseline)+100 {
+		t.Errorf("list payload grew: %d -> %d bytes", len(baseline), len(data))
+	}
+	for _, thread := range threads {
+		if thread.ID == "a" && len(thread.Runs) != 1 {
+			t.Errorf("list runs grew: 1 -> %d", len(thread.Runs))
+		}
+		for _, run := range thread.Runs {
+			if len(run.Tools) != 0 {
+				t.Error("list contains tool history")
+			}
+		}
+	}
+}
+
+func TestRoutineToolHistory(t *testing.T) {
+	s := runStore(t)
+	run := NewRun("routine-history", "a", "a", "routine")
+	run.Status = "running"
+	run.Tools = []contract.ToolActivity{
+		{ID: "done", RunID: run.ID, Status: "completed"},
+		{ID: "failed", RunID: run.ID, Status: "failed", Output: ptr("failure excerpt")},
+		{ID: "active", RunID: run.ID, Status: "running"},
+		{ID: "active-2", RunID: run.ID, Status: "running"},
+	}
+	if err := s.RunEvent(t.Context(), "run.start", &run, nil); err != nil {
+		t.Fatal(err)
+	}
+	message := contract.Message{ID: routineNoticeID(run.ID), ThreadID: "a", Role: "system", Status: "done", CreatedAt: Now()}
+	if _, err := s.Append(t.Context(), contract.Event{ConversationID: "a", Type: "message.start"}, &message); err != nil {
+		t.Fatal(err)
+	}
+	if sealed, err := s.sealRoutineFailure(t.Context(), &run); err != nil || !sealed {
+		t.Fatalf("seal: %v, %v", sealed, err)
+	}
+	stored, err := s.Run(t.Context(), run.ID)
+	if err != nil || len(stored.Tools) != 4 {
+		t.Fatalf("routine rows: %+v, %v", stored, err)
+	}
+	for i, status := range []string{"completed", "failed", "failed", "failed"} {
+		if stored.Tools[i].Status != status {
+			t.Errorf("row %d: %s, want %s", i, stored.Tools[i].Status, status)
+		}
+	}
+	if stored.Tools[1].Output == nil || *stored.Tools[1].Output != "failure excerpt" {
+		t.Fatal("failed excerpt lost")
+	}
+	events, err := s.Events(t.Context(), "a", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := 0
+	for _, event := range events {
+		if event.Type == "tool.done" {
+			done++
+		}
+	}
+	if done != 2 {
+		t.Fatalf("routine tool.done events: %d, want 2", done)
 	}
 }

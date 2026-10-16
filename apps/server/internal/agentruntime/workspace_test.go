@@ -24,8 +24,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-// gitRepo seeds a repository whose origin carries main, so a worktree can be
-// created from origin/main the way a conversation creates it.
+// gitRepo seeds a repository whose origin carries main and dev.
 func gitRepo(t *testing.T, push bool) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -45,12 +44,13 @@ func gitRepo(t *testing.T, push bool) string {
 	runGit(t, repo, "remote", "add", "origin", origin)
 	if push {
 		runGit(t, repo, "push", "origin", "main")
+		runGit(t, repo, "branch", "dev")
+		runGit(t, repo, "push", "origin", "dev")
 	}
 	return repo
 }
 
-// seedFile commits a named file to the repository and its origin, so a worktree
-// created from origin/main contains it.
+// seedFile commits a named file to both permanent branches.
 func seedFile(t *testing.T, repo, name string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(repo, name), []byte(name+"\n"), 0600); err != nil {
@@ -58,7 +58,7 @@ func seedFile(t *testing.T, repo, name string) {
 	}
 	runGit(t, repo, "add", name)
 	runGit(t, repo, "commit", "-m", "Add "+name)
-	runGit(t, repo, "push", "origin", "main")
+	runGit(t, repo, "push", "origin", "HEAD:main", "HEAD:dev")
 }
 
 func testRuntime(t *testing.T, dir string) *Runtime {
@@ -90,12 +90,15 @@ func TestWorkspaceWorktreePerThread(t *testing.T) {
 		t.Fatalf("two threads share a checkout: %q", first)
 	}
 	for thread, path := range map[string]string{"chat-one": first, "chat-two": second} {
-		if branch := runGit(t, path, "rev-parse", "--abbrev-ref", "HEAD"); branch != "polymux/coding--"+thread {
-			t.Fatalf("thread %s is on branch %q", thread, branch)
+		if branch := runGit(t, path, "rev-parse", "--abbrev-ref", "HEAD"); branch != "HEAD" {
+			t.Fatalf("thread %s is not detached: %q", thread, branch)
 		}
-		if head, want := runGit(t, path, "rev-parse", "HEAD"), runGit(t, repo, "rev-parse", "origin/main"); head != want {
-			t.Fatalf("thread %s does not start from origin/main", thread)
+		if head, want := runGit(t, path, "rev-parse", "HEAD"), runGit(t, repo, "rev-parse", "origin/dev"); head != want {
+			t.Fatalf("thread %s does not start from origin/dev", thread)
 		}
+	}
+	if branches := runGit(t, repo, "for-each-ref", "--format=%(refname:short)", "refs/heads"); branches != "dev\nmain" {
+		t.Fatalf("conversation checkouts created branches: %s", branches)
 	}
 	if err := os.WriteFile(filepath.Join(first, "draft.txt"), []byte("chat-one only\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -159,8 +162,8 @@ func TestWorkspaceFirstReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prompt, "Working in ~/code/Polymux on branch polymux/coding--chat") {
-		t.Fatal("first reply does not identify the repository and branch")
+	if !strings.Contains(prompt, "Working in ~/code/Polymux in a detached conversation checkout") || !strings.Contains(prompt, "Do not create or push another branch") {
+		t.Fatal("first reply does not identify the repository and detached workflow")
 	}
 }
 
@@ -192,9 +195,66 @@ func TestWorkspaceRemovedOnDelete(t *testing.T) {
 	if list := runGit(t, repo, "worktree", "list"); strings.Contains(list, path) {
 		t.Fatalf("the repository still lists the deleted checkout: %s", list)
 	}
-	// Deleting a checkout keeps its branch, so the conversation can start again.
-	if again, err := worktrees.Ensure(t.Context(), repo, "coding", "chat"); err != nil || again != path {
+	again, err := worktrees.Ensure(t.Context(), repo, "coding", "chat")
+	if err != nil || again != path {
 		t.Fatalf("the conversation could not start again: %q %v", again, err)
+	}
+	if err := os.WriteFile(filepath.Join(again, "finished.txt"), []byte("work\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, again, "add", "finished.txt")
+	runGit(t, again, "commit", "-m", "Finish work")
+	head := runGit(t, again, "rev-parse", "HEAD")
+	if err := worktrees.Remove(t.Context(), repo, "coding", "chat"); err == nil || !strings.Contains(err.Error(), "not integrated") {
+		t.Fatalf("unintegrated commit was removed: %v", err)
+	}
+	runGit(t, repo, "update-ref", "refs/heads/dev", head)
+	if err := worktrees.Remove(t.Context(), repo, "coding", "chat"); err != nil {
+		t.Fatalf("integrated checkout was not removed: %v", err)
+	}
+}
+
+func TestWorkspaceRemovedAfterDevRealignment(t *testing.T) {
+	repo := gitRepo(t, true)
+	worktrees := NewWorktrees(t.TempDir())
+	path, err := worktrees.Ensure(t.Context(), repo, "coding", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "finished.txt"), []byte("work\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, path, "add", "finished.txt")
+	runGit(t, path, "commit", "-m", "Finish work")
+	head := runGit(t, path, "rev-parse", "HEAD")
+	runGit(t, repo, "update-ref", "-m", "integrate", "refs/remotes/origin/dev", head)
+	runGit(t, repo, "update-ref", "-m", "realign", "refs/remotes/origin/dev", "origin/main")
+	if err := worktrees.Remove(t.Context(), repo, "coding", "chat"); err != nil {
+		t.Fatalf("previously integrated checkout was not removed: %v", err)
+	}
+}
+
+func TestWorkspaceDetachesLegacyCheckout(t *testing.T) {
+	repo := gitRepo(t, true)
+	worktrees := NewWorktrees(t.TempDir())
+	path := worktrees.Path("coding", "chat")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "branch", "polymux/coding--chat", "origin/dev")
+	runGit(t, repo, "worktree", "add", path, "polymux/coding--chat")
+	if err := os.WriteFile(filepath.Join(path, "draft.txt"), []byte("unfinished\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := worktrees.Ensure(t.Context(), repo, "coding", "chat")
+	if err != nil || got != path {
+		t.Fatalf("legacy checkout was not reused: %q %v", got, err)
+	}
+	if branch := runGit(t, path, "branch", "--show-current"); branch != "" {
+		t.Fatalf("legacy checkout remains on %q", branch)
+	}
+	if content, err := os.ReadFile(filepath.Join(path, "draft.txt")); err != nil || string(content) != "unfinished\n" {
+		t.Fatalf("legacy work was not preserved: %q %v", content, err)
 	}
 }
 
@@ -206,7 +266,7 @@ func TestWorkspaceAddFailureExplained(t *testing.T) {
 	if !errors.As(err, &repoErr) {
 		t.Fatalf("a failed worktree add was not explained: %v", err)
 	}
-	if !strings.HasPrefix(err.Error(), "Can't open repo:") || !strings.Contains(err.Error(), "origin/main") {
+	if !strings.HasPrefix(err.Error(), "Can't open repo:") || !strings.Contains(err.Error(), "development branch") {
 		t.Fatalf("the failure does not name the repository problem: %q", err)
 	}
 }
@@ -248,7 +308,7 @@ func TestWorkspaceRejectsOtherRepoCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The conversation's directory already holds another repo's checkout.
-	runGit(t, second, "worktree", "add", path, "-b", "polymux/coding--chat", "origin/main")
+	runGit(t, second, "worktree", "add", "--detach", path, "origin/dev")
 	_, err := worktrees.Ensure(t.Context(), first, "coding", "chat")
 	var repoErr *RepoError
 	if !errors.As(err, &repoErr) || !strings.HasPrefix(err.Error(), "Can't open repo:") {
@@ -288,7 +348,7 @@ func TestWorkspaceSameRepoTwoAgents(t *testing.T) {
 		paths[agent] = path
 	}
 	for agent, path := range paths {
-		if branch := runGit(t, path, "branch", "--show-current"); branch != "polymux/"+agent+"--group1" {
+		if branch := runGit(t, path, "branch", "--show-current"); branch != "" {
 			t.Fatalf("agent %s is on branch %q", agent, branch)
 		}
 	}

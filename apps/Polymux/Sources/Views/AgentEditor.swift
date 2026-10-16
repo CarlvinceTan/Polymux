@@ -8,6 +8,7 @@ struct AgentEditor: View {
     @State private var name: String
     @State private var role: String
     @State private var prompt = ""
+    @State private var baseline = ""
     @State private var loaded = false
     @State private var loading = true
     @State private var saving = false
@@ -17,7 +18,8 @@ struct AgentEditor: View {
     @State private var promptHeight: CGFloat = 72
     @State private var reviews: Proactivity?
     @State private var routines: [Routine] = []
-    @State private var scheduleBusy = false
+    @State private var reviewToggle = OptimisticToggle(isOn: false)
+    @State private var routineRemoval = OptimisticRemoval()
 
     init(agent: Agent, session: AppSession) {
         self.agent = agent
@@ -37,7 +39,7 @@ struct AgentEditor: View {
     }
 
     var body: some View {
-        PanelView("Edit profile", enabled: !saving && !showAvatar, onClose: { dismiss() }) {
+        PanelView("Edit profile", enabled: !showAvatar, onClose: { dismiss() }) {
             Form {
                 Section("Avatar") {
                     HStack {
@@ -61,7 +63,6 @@ struct AgentEditor: View {
                         Spacer()
                     }
                     .padding(.vertical, 8)
-                    .disabled(saving)
                 }
                 .panelRow()
                 Section("Profile") {
@@ -78,7 +79,6 @@ struct AgentEditor: View {
                     }
                 }
                 .textFieldStyle(.roundedBorder)
-                .disabled(saving)
                 .panelRow()
                 Section {
                     roleEditor
@@ -88,12 +88,8 @@ struct AgentEditor: View {
                     Text("Describe what this agent should do and how it should respond.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                .disabled(!loaded || saving)
+                .disabled(!loaded)
                 .panelRow()
-                if loading {
-                    Section { ProgressView("Loading profile…") }
-                        .panelRow()
-                }
                 if let issue {
                     Section {
                         Text(issue).foregroundStyle(.secondary).textSelection(.enabled)
@@ -110,28 +106,39 @@ struct AgentEditor: View {
             }
             .formStyle(.grouped)
         } actions: {
-            Button { Task { await save() } } label: {
-                if saving { ProgressView().controlSize(.small) }
-                else { Text("Save") }
-            }
-            .disabled(!loaded || loading || saving || cleanName.isEmpty)
+            Button("Save") { Task { await save() } }
+                .disabled(!loaded || cleanName.isEmpty)
         }
         .panel(isPresented: $showAvatar) {
             AvatarEditor(agentID: agent.id, name: cleanName.isEmpty ? agent.name : cleanName,
                          client: session.client, store: session.avatars)
         }
-        .interactiveDismissDisabled(saving)
-        .panelDismiss(enabled: !saving && !showAvatar, onClose: { dismiss() })
+        .panelDismiss(enabled: !showAvatar, onClose: { dismiss() })
         .task { await load() }
     }
 
     // What this agent does on its own: its review cadence and the routines it scheduled.
     @ViewBuilder private var scheduleSection: some View {
+        let choice = reviewToggle.binding(
+            apply: { enabled in
+                reviews = Proactivity(enabled: enabled, intervalSeconds: reviews?.intervalSeconds ?? 14400,
+                                      nextAt: reviews?.nextAt)
+            },
+            commit: { enabled in
+                do {
+                    _ = try await session.client.setProactivity(
+                        agentID: agent.id,
+                        settings: Proactivity(enabled: enabled, intervalSeconds: reviews?.intervalSeconds ?? 14400))
+                } catch {
+                    throw ToggleFailure("Couldn’t update background reviews.")
+                }
+            })
         Section {
-            Toggle("Background reviews", isOn: Binding(
-                get: { reviews?.enabled ?? false },
-                set: { enabled in Task { await setReviews(enabled) } }))
-                .disabled(reviews == nil || scheduleBusy)
+            Toggle("Background reviews", isOn: choice.isOn)
+                .disabled(reviews == nil)
+            if let message = reviewToggle.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            }
             ForEach(routines, id: \.id) { routine in
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -140,13 +147,15 @@ struct AgentEditor: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
-                    Button("Cancel", role: .destructive) { Task { await cancel(routine) } }
+                    Button("Cancel", role: .destructive) { cancel(routine) }
                         .buttonStyle(.plain)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .disabled(scheduleBusy)
                         .accessibilityLabel("Cancel \(routine.prompt)")
                 }
+            }
+            if let message = routineRemoval.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
             }
             if routines.isEmpty && reviews == nil {
                 Text("Nothing scheduled yet.").foregroundStyle(.secondary)
@@ -155,6 +164,10 @@ struct AgentEditor: View {
             Text("Schedule")
         }
         .panelRow()
+        .onChange(of: reviews?.enabled, initial: true) { _, enabled in
+            guard let enabled else { return }
+            reviewToggle.adopt(enabled)
+        }
     }
 
     private func nextFire(_ routine: Routine) -> String {
@@ -162,22 +175,21 @@ struct AgentEditor: View {
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
-    private func setReviews(_ enabled: Bool) async {
-        guard !scheduleBusy else { return }
-        scheduleBusy = true
-        defer { scheduleBusy = false }
-        let current = reviews
-        reviews = try? await session.client.setProactivity(
-            agentID: agent.id,
-            settings: Proactivity(enabled: enabled, intervalSeconds: current?.intervalSeconds ?? 14400))
-    }
-
-    private func cancel(_ routine: Routine) async {
-        guard !scheduleBusy else { return }
-        scheduleBusy = true
-        defer { scheduleBusy = false }
-        _ = try? await session.client.deleteRoutine(agentID: agent.id, routineID: routine.id)
-        routines = (try? await session.client.routines(agentID: agent.id)) ?? routines
+    private func cancel(_ routine: Routine) {
+        guard let index = routines.firstIndex(where: { $0.id == routine.id }) else { return }
+        let removed = routines[index]
+        routineRemoval.remove(removed.id, apply: {
+            routines.removeAll { $0.id == removed.id }
+        }, restore: {
+            guard !routines.contains(where: { $0.id == removed.id }) else { return }
+            routines.insert(removed, at: min(index, routines.count))
+        }, commit: {
+            do {
+                _ = try await session.client.deleteRoutine(agentID: agent.id, routineID: removed.id)
+            } catch {
+                throw ToggleFailure("Couldn’t cancel this routine.")
+            }
+        })
     }
 
     private var roleEditor: some View {
@@ -226,6 +238,7 @@ struct AgentEditor: View {
             if name == agent.name { name = profile.agent.name }
             if role == agent.role { role = profile.agent.role }
             prompt = profile.prompt
+            baseline = profile.prompt
             loaded = true
             async let schedule = session.client.proactivity(agentID: agent.id)
             async let scheduled = session.client.routines(agentID: agent.id)
@@ -239,19 +252,12 @@ struct AgentEditor: View {
 
     private func save() async {
         guard loaded, !saving, !cleanName.isEmpty else { return }
-        saving = true
-        issue = nil
-        defer { saving = false }
-        do {
-            let update = UpdateAgentRequest(name: cleanName,
-                                            role: role.trimmingCharacters(in: .whitespacesAndNewlines),
-                                            prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
-            let profile = try await session.client.updateAgent(id: agent.id, request: update)
-            await session.sidebar.accept(profile.agent)
-            await session.sidebar.refresh()
-            dismiss()
-        } catch {
-            issue = "Couldn’t save this profile. \(error.localizedDescription)"
-        }
+        let tap = ContinuousClock().now
+        let update = UpdateAgentRequest(name: cleanName,
+                                       role: role.trimmingCharacters(in: .whitespacesAndNewlines),
+                                       prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+        session.sidebar.commits.save(AgentProfile(agent: agent, prompt: baseline), request: update,
+                                    sidebar: session.sidebar, client: session.client,
+                                    from: tap, close: { dismiss() })
     }
 }

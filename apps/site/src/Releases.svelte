@@ -1,7 +1,7 @@
 <script lang="ts">
   import {onMount} from 'svelte';
   import github from 'simple-icons/icons/github.svg?url';
-  import logo from '../../desktop/src/renderer/public/polymux.svg';
+  import logo from './assets/polymux.svg';
   import {
     ALL_PLATFORMS,
     filterReleaseChangelog,

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"html"
 	"os"
@@ -29,9 +28,12 @@ func repoOutput(ctx context.Context, dir, name string, args ...string) ([]byte, 
 }
 
 func diffHTML(ctx context.Context, dir string) (string, error) {
-	base, err := repoOutput(ctx, dir, "git", "merge-base", "origin/main", "HEAD")
+	base, err := repoOutput(ctx, dir, "git", "merge-base", "origin/dev", "HEAD")
 	if err != nil {
-		return "", err
+		base, err = repoOutput(ctx, dir, "git", "merge-base", "origin/main", "HEAD")
+		if err != nil {
+			return "", err
+		}
 	}
 	stat, err := repoOutput(ctx, dir, "git", "diff", "--numstat", "--no-renames", "-z", strings.TrimSpace(string(base)))
 	if err != nil {
@@ -70,53 +72,6 @@ func diffHTML(ctx context.Context, dir string) (string, error) {
 	return body.String(), nil
 }
 
-func prStatus(ctx context.Context, dir, agent, thread string) (string, bool) {
-	// gh pr view accepts a branch as its positional selector, not --head.
-	data, err := repoOutput(ctx, dir, "gh", "pr", "view", agentruntime.BranchName(agent, thread), "--json", "number,url,state,isDraft,statusCheckRollup,mergeable,headRefOid")
-	if err != nil {
-		if exit, ok := err.(*exec.ExitError); ok && strings.Contains(string(exit.Stderr), "no pull requests found") {
-			return "No PR yet", false
-		}
-		return "PR status unavailable: gh not signed in on cvmini", false
-	}
-	var pr struct {
-		Number                            int
-		URL, State, Mergeable, HeadRefOid string
-		IsDraft                           bool
-		StatusCheckRollup                 []struct{ Status, Conclusion, State string }
-	}
-	if json.Unmarshal(data, &pr) != nil || pr.Number == 0 {
-		return "PR status unavailable: gh not signed in on cvmini", false
-	}
-	checks, pending := "checks passing", false
-	if len(pr.StatusCheckRollup) == 0 {
-		checks = "no checks"
-	}
-	failed := false
-	for _, check := range pr.StatusCheckRollup {
-		if check.Status == "QUEUED" || check.Status == "IN_PROGRESS" || check.Status == "WAITING" || check.Status == "PENDING" || check.State == "PENDING" {
-			pending = true
-		}
-		if check.Conclusion != "" && check.Conclusion != "SUCCESS" && check.Conclusion != "NEUTRAL" && check.Conclusion != "SKIPPED" || check.State == "FAILURE" || check.State == "ERROR" {
-			failed = true
-		}
-	}
-	if pending {
-		checks = "checks pending"
-	}
-	if failed {
-		checks = "checks failing"
-	}
-	state := strings.ToLower(pr.State)
-	if pr.State == "MERGED" {
-		state = "Merged"
-	}
-	if pr.IsDraft {
-		state += " · draft"
-	}
-	return fmt.Sprintf("PR #%d · %s · %s · %s", pr.Number, state, checks, strings.ToLower(pr.Mergeable)), pending && pr.State == "OPEN"
-}
-
 func (s *Server) diffCard(d agentruntime.Definition, run contract.Run) {
 	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Minute)
 	defer cancel()
@@ -125,59 +80,21 @@ func (s *Server) diffCard(d agentruntime.Definition, run contract.Run) {
 		return
 	}
 	m := contract.Message{ID: ID(), ThreadID: run.ConversationID, Role: "assistant", AgentID: &run.AgentID, RunID: &run.ID, Status: "done", CreatedAt: store.Now()}
-	s.refreshCard(ctx, d, &m, body, time.Minute)
+	s.refreshCard(ctx, &m, body)
 }
 
-func (s *Server) refreshCard(ctx context.Context, d agentruntime.Definition, m *contract.Message, body string, interval time.Duration) {
-	dir := s.worktrees.Path(d.Agent.ID, agentruntime.WorkspaceThread(d))
-	action := mergeAction(ctx, dir, d.Agent.ID, agentruntime.WorkspaceThread(d))
-	for {
-		status, pending := prStatus(ctx, dir, d.Agent.ID, agentruntime.WorkspaceThread(d))
-		if !strings.Contains(status, " · open") {
-			action = ""
-		}
-		source := body + "<p>" + html.EscapeString(status) + "</p>" + action
-		id := ID()
-		path := filepath.Join(s.config.DataDir, "attachments", id)
-		if os.WriteFile(path, []byte(source), 0600) != nil {
-			return
-		}
-		text := htmlText(source)
-		a := contract.Attachment{ID: id, Kind: "html", Name: "Changes.html", MimeType: "text/html", Size: int64(len(source)), URL: "/attachments/" + id + "/content", IndexingState: "ready", ExtractedText: &text}
-		m.Parts = []contract.Part{{Kind: "attachment", Attachment: &a}}
-		event := contract.Event{ConversationID: m.ThreadID, Type: "message.done", MessageID: &m.ID, AgentID: m.AgentID, RunID: m.RunID, Message: m}
-		if _, err := s.Store.PublishAttachment(ctx, a, path, event, m); err != nil {
-			os.Remove(path)
-			return
-		}
-		if !pending && !strings.Contains(status, " · open") {
-			return
-		}
-		timer := time.NewTimer(interval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
+func (s *Server) refreshCard(ctx context.Context, m *contract.Message, body string) {
+	source := body + "<p>Committed changes stay in this detached checkout until integrated into dev.</p>"
+	id := ID()
+	path := filepath.Join(s.config.DataDir, "attachments", id)
+	if os.WriteFile(path, []byte(source), 0600) != nil {
+		return
 	}
-}
-
-func mergeAction(ctx context.Context, dir, agent, thread string) string {
-	data, err := repoOutput(ctx, dir, "gh", "pr", "list", "--head", agentruntime.BranchName(agent, thread), "--json", "number,state,isDraft,headRefOid")
-	var prs []struct {
-		Number            int
-		State, HeadRefOid string
-		IsDraft           bool
+	text := htmlText(source)
+	a := contract.Attachment{ID: id, Kind: "html", Name: "Changes.html", MimeType: "text/html", Size: int64(len(source)), URL: "/attachments/" + id + "/content", IndexingState: "ready", ExtractedText: &text}
+	m.Parts = []contract.Part{{Kind: "attachment", Attachment: &a}}
+	event := contract.Event{ConversationID: m.ThreadID, Type: "message.done", MessageID: &m.ID, AgentID: m.AgentID, RunID: m.RunID, Message: m}
+	if _, err := s.Store.PublishAttachment(ctx, a, path, event, m); err != nil {
+		os.Remove(path)
 	}
-	if err != nil || json.Unmarshal(data, &prs) != nil || len(prs) != 1 {
-		return ""
-	}
-	pr := prs[0]
-	if pr.Number < 1 || pr.State != "OPEN" || pr.IsDraft || !mergeSHA.MatchString(pr.HeadRefOid) {
-		return ""
-	}
-	intent, _ := json.Marshal(mergeArgs{PR: pr.Number, HeadSHA: pr.HeadRefOid})
-	message, _ := json.Marshal("merge #" + strconv.Itoa(pr.Number) + " using merge_pr with " + string(intent))
-	return `<lg-button onclick='polymuxSend(` + html.EscapeString(string(message)) + `)'>Merge</lg-button>`
 }

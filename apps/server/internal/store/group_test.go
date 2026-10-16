@@ -166,7 +166,7 @@ func TestGroupUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, members := range [][]string{{"c", "b"}, {"c"}} {
-		if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: "New name", AgentIDs: members}); err != nil {
+		if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: new("New name"), AgentIDs: members}); err != nil {
 			t.Fatal(err)
 		}
 		loaded, err := s.Thread(t.Context(), group.ID)
@@ -191,10 +191,10 @@ func TestGroupUpdate(t *testing.T) {
 			t.Fatalf("direct chat changed %+v %v", direct, err)
 		}
 	}
-	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: "Renamed only"}); err != nil {
+	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: new("Renamed only")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: "Rejoined", AgentIDs: []string{"b", "c", "a"}}); err != nil {
+	if err := s.UpdateThread(t.Context(), group.ID, contract.UpdateThreadRequest{Title: new("Rejoined"), AgentIDs: []string{"b", "c", "a"}}); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
@@ -235,7 +235,7 @@ func TestGroupUpdateValidation(t *testing.T) {
 		{"missing-chat", "missing", []string{"a"}, sql.ErrNoRows},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := s.UpdateThread(t.Context(), test.id, contract.UpdateThreadRequest{Title: "Changed", AgentIDs: test.members}); !errors.Is(err, test.want) {
+			if err := s.UpdateThread(t.Context(), test.id, contract.UpdateThreadRequest{Title: new("Changed"), AgentIDs: test.members}); !errors.Is(err, test.want) {
 				t.Fatalf("update error %v want %v", err, test.want)
 			}
 			loaded, err := s.Thread(t.Context(), "group")
@@ -247,14 +247,14 @@ func TestGroupUpdateValidation(t *testing.T) {
 	if _, err := s.DB.ExecContext(t.Context(), `CREATE TEMP TRIGGER fail_update BEFORE UPDATE ON threads WHEN NEW.title='Fail' BEGIN SELECT RAISE(ABORT,'probe'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateThread(t.Context(), "group", contract.UpdateThreadRequest{Title: "Fail", AgentIDs: ids[:16]}); err == nil {
+	if err := s.UpdateThread(t.Context(), "group", contract.UpdateThreadRequest{Title: new("Fail"), AgentIDs: ids[:16]}); err == nil {
 		t.Fatal("expected transactional write failure")
 	}
 	loaded, err := s.Thread(t.Context(), "group")
 	if err != nil || loaded.Title != "Keep" || !reflect.DeepEqual(loaded.AgentIDs, []string{"a", "b"}) {
 		t.Fatalf("failed transaction did not restore members %+v %v", loaded, err)
 	}
-	if err := s.UpdateThread(t.Context(), "group", contract.UpdateThreadRequest{Title: "Sixteen", AgentIDs: slices.Clone(ids[:16])}); err != nil {
+	if err := s.UpdateThread(t.Context(), "group", contract.UpdateThreadRequest{Title: new("Sixteen"), AgentIDs: slices.Clone(ids[:16])}); err != nil {
 		t.Fatalf("maximum valid roster rejected: %v", err)
 	}
 }

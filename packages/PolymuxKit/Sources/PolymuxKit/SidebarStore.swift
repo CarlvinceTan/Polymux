@@ -148,6 +148,7 @@ public final class SidebarStore {
     }
 
     public let activity = ActivityStore()
+    public let commits = ProfileCommit()
     public private(set) var agents: [Agent] = []
     public private(set) var threads: [Thread] = []
     public private(set) var isConnected = false
@@ -168,6 +169,8 @@ public final class SidebarStore {
     @ObservationIgnored private var committedThreads: [Thread] = []
     @ObservationIgnored private var committedPins: [String] = []
     @ObservationIgnored private var committedEdits: [String: Thread] = [:]
+    @ObservationIgnored private var committedPinEdits: Set<String> = []
+    @ObservationIgnored private var committedDirtyPins: Set<String> = []
     @ObservationIgnored private var staged: [SaveFault] = []
     @ObservationIgnored private var epoch: UInt64 = 0
     /// Coalesces disk writes. Tests set this to zero to prove the cap can fail.
@@ -177,6 +180,8 @@ public final class SidebarStore {
     @ObservationIgnored private var acceptedAgents: [String: Agent] = [:]
     @ObservationIgnored private var acceptedThreads: [String: Thread] = [:]
     @ObservationIgnored private var pendingThreads: [String: Thread] = [:]
+    @ObservationIgnored private var pinEdits: Set<String> = []
+    @ObservationIgnored private var dirtyPins: Set<String> = []
     @ObservationIgnored private var editTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var editDates: [String: Date] = [:]
     @ObservationIgnored private var editWorkers: [String: Task<Bool, Never>] = [:]
@@ -224,6 +229,11 @@ public final class SidebarStore {
     }
 
     public func accept(_ agent: Agent) async {
+        publish(agent)
+        await settled()
+    }
+
+    public func publish(_ agent: Agent) {
         revision &+= 1
         epoch &+= 1
         acceptedAgents[agent.id] = agent
@@ -237,15 +247,20 @@ public final class SidebarStore {
         error = nil
         staged.append(.agent)
         scheduleSave()
-        await settled()
     }
 
-    public func edit(_ thread: Thread, delay: Duration = .milliseconds(550)) async {
+    public func edit(_ thread: Thread, delay: Duration = .milliseconds(550), pinOnly: Bool = false, pinChanged: Bool = false) async {
         var thread = thread
+        if !pinChanged, dirtyPins.contains(thread.id), let pending = pendingThreads[thread.id] {
+            thread.pinned = pending.pinned
+            thread.pinOrder = pending.pinOrder
+        }
+        if pinChanged { dirtyPins.insert(thread.id) }
         thread.runs = []
         revision &+= 1
         epoch &+= 1
         pendingThreads[thread.id] = thread
+        if pinOnly { pinEdits.insert(thread.id) } else { pinEdits.remove(thread.id) }
         acceptedThreads[thread.id] = thread
         editIssues[thread.id] = nil
         merge(thread, into: &threads)
@@ -253,6 +268,24 @@ public final class SidebarStore {
         scheduleEdit(thread.id, delay: delay)
         scheduleSave()
         await settled()
+    }
+
+    public func setPin(_ id: String, pinned: Bool) async {
+        guard var thread = threads.first(where: { $0.id == id }), (thread.pinned == true) != pinned else { return }
+        guard !pinned || threads.filter({ $0.pinned == true }).count < 12 else {
+            editIssues[id] = "You can pin up to 12 chats."
+            return
+        }
+        thread.pinned = pinned
+        thread.pinOrder = pinned ? (threads.compactMap(\.pinOrder).max() ?? -1) + 1 : nil
+        let pinOnly = pendingThreads[id] == nil || pinEdits.contains(id)
+        await edit(thread, delay: .zero, pinOnly: pinOnly, pinChanged: true)
+    }
+
+    public var pinIssue: String? { dirtyPins.sorted().compactMap { editIssues[$0] }.first }
+
+    public func retryPins() {
+        for id in dirtyPins { retryEdit(id) }
     }
 
     public func retryEdit(_ id: String) { scheduleEdit(id, delay: .zero) }
@@ -294,10 +327,17 @@ public final class SidebarStore {
         while let pending = pendingThreads[id] {
             guard (editDates[id] ?? .distantPast) <= Date() else { return false }
             do {
-                let updated = try await client.updateThread(id: id, title: pending.title, agentIDs: pending.agentIDs, leadAgentID: pending.leadAgentID)
+                let onlyPin = pinEdits.contains(id)
+                let updated = try await client.updateThread(id: id, title: onlyPin ? nil : pending.title,
+                                                           agentIDs: onlyPin ? nil : pending.agentIDs,
+                                                           leadAgentID: onlyPin ? nil : pending.leadAgentID,
+                                                           pinned: dirtyPins.contains(id) ? pending.pinned : nil,
+                                                           pinOrder: dirtyPins.contains(id) ? pending.pinOrder : nil)
                 if pendingThreads[id] == pending {
                     revision &+= 1
                     pendingThreads[id] = nil
+                    pinEdits.remove(id)
+                    dirtyPins.remove(id)
                     editDates[id] = nil
                     editIssues[id] = nil
                     acceptedThreads[id] = updated
@@ -319,8 +359,8 @@ public final class SidebarStore {
         await settled()
     }
 
-    private func persist(agents: [Agent], threads: [Thread], pins: [String], edits: [Thread]) async throws {
-        try await cacheActor.save(agents: agents, threads: threads, pins: pins, edits: edits)
+    private func persist(agents: [Agent], threads: [Thread], pins: [String], edits: [Thread], pinEdits: [String], dirtyPins: [String]) async throws {
+        try await cacheActor.save(agents: agents, threads: threads, pins: pins, edits: edits, pinEdits: pinEdits, dirtyPins: dirtyPins)
     }
 
     private func merge(_ agent: Agent, into agents: inout [Agent]) {
@@ -364,7 +404,7 @@ public final class SidebarStore {
             activity.retain(Set(self.threads.map(\.id)))
             for thread in self.threads { activity.reconcile(thread) }
             do {
-                try await cacheActor.save(agents: savedAgents, threads: savedThreads, pins: pinned, edits: Array(pendingThreads.values))
+                try await cacheActor.save(agents: savedAgents, threads: savedThreads, pins: pinned, edits: Array(pendingThreads.values), pinEdits: Array(pinEdits), dirtyPins: Array(dirtyPins))
             } catch {
                 self.agents = committedAgents
                 self.threads = committedThreads
@@ -443,11 +483,15 @@ public final class SidebarStore {
             let nextThreads = try await cacheActor.call { try $0.threads() }
             let nextPins = try await cacheActor.call { try $0.pins() }
             let edits = try await cacheActor.call { try $0.threadEdits() }
+            let nextPinEdits = try await cacheActor.call { try $0.pinEdits() }
+            let nextDirtyPins = try await cacheActor.call { try $0.dirtyPins() }
             epoch &+= 1
             agents = nextAgents
             threads = nextThreads
             pinned = nextPins
             pendingThreads = Dictionary(uniqueKeysWithValues: edits.map { ($0.id, $0) })
+            pinEdits = Set(nextPinEdits).intersection(pendingThreads.keys)
+            dirtyPins = Set(nextDirtyPins).intersection(pendingThreads.keys)
             for thread in edits {
                 acceptedThreads[thread.id] = thread
                 merge(thread, into: &threads)
@@ -532,6 +576,10 @@ public final class SidebarStore {
         if incoming, event.type == "message.start", (event.message?.role == "assistant"), event.seq > thread.lastReadSeq {
             thread.unreadCount += 1
         }
+        if incoming, event.type == "activity", event.seq > thread.lastReadSeq,
+           event.payload?.countsUnread == true {
+            thread.unreadCount += 1
+        }
         threads[index] = thread
         orderThreads()
         return true
@@ -603,8 +651,10 @@ public final class SidebarStore {
             let faults = staged
             staged.removeAll()
             let edits = Array(pendingThreads.values)
+            let pinEdits = Array(self.pinEdits)
+            let dirtyPins = Array(self.dirtyPins)
             do {
-                try await persist(agents: agents, threads: threads, pins: pins, edits: edits)
+                try await persist(agents: agents, threads: threads, pins: pins, edits: edits, pinEdits: pinEdits, dirtyPins: dirtyPins)
                 lastSaveAt = ContinuousClock().now
                 if epoch == savedEpoch {
                     remember()
@@ -613,6 +663,8 @@ public final class SidebarStore {
                     committedThreads = threads
                     committedPins = pins
                     committedEdits = Dictionary(uniqueKeysWithValues: edits.map { ($0.id, $0) })
+                    committedPinEdits = Set(pinEdits)
+                    committedDirtyPins = Set(dirtyPins)
                 }
                 for (id, previous) in pending where renames[id] == previous {
                     if self.threads.first(where: { $0.id == id })?.title != previous {
@@ -647,6 +699,8 @@ public final class SidebarStore {
         committedThreads = threads
         committedPins = pinned
         committedEdits = pendingThreads
+        committedPinEdits = pinEdits
+        committedDirtyPins = dirtyPins
     }
 
     private func keepsRows(_ faults: [SaveFault]) -> Bool {
@@ -672,6 +726,8 @@ public final class SidebarStore {
         threads = committedThreads
         pinned = committedPins
         pendingThreads = committedEdits
+        pinEdits = committedPinEdits
+        dirtyPins = committedDirtyPins
         acceptedAgents = Dictionary(uniqueKeysWithValues: committedAgents.map { ($0.id, $0) })
         acceptedThreads = Dictionary(uniqueKeysWithValues: committedThreads.map { ($0.id, $0) })
         for edit in committedEdits.values { merge(edit, into: &threads) }

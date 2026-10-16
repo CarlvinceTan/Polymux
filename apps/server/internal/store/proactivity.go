@@ -223,6 +223,9 @@ WHERE agent_id=? AND json_extract(data,'$.status') IN('pending','active')`, r.Ag
 	); err != nil {
 		return r, err
 	}
+	if err := routineActivity(ctx, tx, r, "routine.created"); err != nil {
+		return r, err
+	}
 	return r, tx.Commit()
 }
 
@@ -309,6 +312,10 @@ func (s *Store) CancelRoutine(ctx context.Context, agent, id string) ([]string, 
 		return nil, err
 	}
 	defer tx.Rollback()
+	r, err := routineTx(ctx, tx, agent, id)
+	if err != nil {
+		return nil, err
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE routines SET next_at=NULL,
 data=json_set(data,'$.status','cancelled','$.nextAt',NULL) WHERE agent_id=? AND id=?`, agent, id)
 	if err != nil {
@@ -355,6 +362,11 @@ AND json_extract(data,'$.routineID')=? AND status IN('queued','running','waiting
 		}
 		run.Status, run.Summary = "cancelled", "Routine cancelled"
 		if err := endRun(ctx, tx, &run); err != nil {
+			return nil, err
+		}
+	}
+	if r.Status != "cancelled" {
+		if err := routineActivity(ctx, tx, r, "routine.deleted"); err != nil {
 			return nil, err
 		}
 	}
@@ -500,6 +512,9 @@ ORDER BY kind='routine' DESC,due,id LIMIT 32`, now.Unix(), now.Unix())
 		if item.kind == "routine" {
 			var r contract.Routine
 			if err := json.Unmarshal([]byte(item.data), &r); err != nil {
+				return err
+			}
+			if err := routineActivity(ctx, tx, r, "routine.fired"); err != nil {
 				return err
 			}
 			text, interval, work.RoutineID = r.Prompt, r.IntervalSeconds, &r.ID
@@ -711,7 +726,15 @@ func (s *Store) sealRoutineFailure(ctx context.Context, run *contract.Run) (bool
 		run.Error = &contract.Error{Code: "provider", Message: "The agent could not complete this reply."}
 	}
 	run.Status, run.Activity, run.Summary, run.FinishedAt = "failed", "", "Routine failed", &now
-	run.Tools, run.ToolID = nil, nil
+	for i := range run.Tools {
+		if run.Tools[i].Status == "running" {
+			run.Tools[i].Status = run.Status
+			if _, err := s.Append(ctx, contract.Event{ConversationID: run.ConversationID, Type: "tool.done", RunID: &run.ID, AgentID: &run.AgentID, Tool: &run.Tools[i]}, nil); err != nil {
+				return false, err
+			}
+		}
+	}
+	run.ToolID = nil
 	return true, s.RunEvent(ctx, "run.done", run, nil)
 }
 

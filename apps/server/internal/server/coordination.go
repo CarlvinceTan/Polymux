@@ -35,7 +35,8 @@ type handoffWork struct {
 }
 
 type turnState struct {
-	mergeLane    string
+	mergeRoot    string
+	mergeQueue   bool
 	run          contract.Run
 	work         store.Work
 	mu           sync.Mutex
@@ -99,6 +100,7 @@ func beforeTool(ctx context.Context, call, name string, args json.RawMessage) ag
 		allowed = allowed || name == "recall_history" || name == "save_memory" || name == "recall_memory" || name == "forget_memory"
 		allowed = allowed || name == "finish_review" && state.work.Trigger == "review"
 		allowed = allowed || name == "manage_tasks" && state.work.Trigger != "review"
+		allowed = allowed || sidebarToolName(name) && state.work.Trigger != "review"
 		allowed = allowed || state.external[name]
 		for _, prefix := range state.prefixes {
 			allowed = allowed || strings.HasPrefix(name, prefix)

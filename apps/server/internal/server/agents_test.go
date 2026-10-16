@@ -318,8 +318,11 @@ func TestWorkspaceChatGetsCheckout(t *testing.T) {
 	}
 	awaitReply(t, api, "assistant", "first")
 	checkout := filepath.Join(api.config.DataDir, "worktrees", "assistant--assistant")
-	if branch := git(t, checkout, "rev-parse", "--abbrev-ref", "HEAD"); branch != "polymux/assistant--assistant" {
-		t.Fatalf("chat checkout is on branch %q", branch)
+	if branch := git(t, checkout, "rev-parse", "--abbrev-ref", "HEAD"); branch != "HEAD" {
+		t.Fatalf("chat checkout is not detached: %q", branch)
+	}
+	if branches := git(t, repo, "for-each-ref", "--format=%(refname:short)", "refs/heads"); branches != "main" {
+		t.Fatalf("chat checkout created a branch: %s", branches)
 	}
 	request, err := http.NewRequest(http.MethodDelete, server.URL+"/agents/assistant", nil)
 	if err != nil {

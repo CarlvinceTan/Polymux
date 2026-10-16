@@ -26,6 +26,7 @@ func diffRepo(t *testing.T) string {
 	diffGit(t, dir, "add", ".")
 	diffGit(t, dir, "commit", "-m", "Initial")
 	diffGit(t, dir, "update-ref", "refs/remotes/origin/main", "HEAD")
+	diffGit(t, dir, "update-ref", "refs/remotes/origin/dev", "HEAD")
 	return dir
 }
 func diffGit(t *testing.T, dir string, args ...string) {
@@ -75,26 +76,8 @@ func TestDiffCardTruncates(t *testing.T) {
 		t.Fatalf("truncation: %d %v", len(body), err)
 	}
 }
-func TestPRStatusGhMissing(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	status, pending := prStatus(t.Context(), t.TempDir(), "assistant", "thread")
-	if status != "PR status unavailable: gh not signed in on cvmini" || pending {
-		t.Fatal(status, pending)
-	}
-}
-func TestPRStatusRefreshUpdatesSameMessage(t *testing.T) {
+func TestDiffCardExplainsDetachedCheckout(t *testing.T) {
 	dir := t.TempDir()
-	bin := t.TempDir()
-	script := `#!/bin/sh
-[ "$1" = pr ] && [ "$2" = view ] && [ "$3" = polymux/assistant--assistant ] || exit 1
-if [ ! -f seen ]; then touch seen; echo '{"number":84,"state":"OPEN","mergeable":"UNKNOWN","statusCheckRollup":[{"status":"IN_PROGRESS"}]}'
-else echo '{"number":84,"state":"OPEN","mergeable":"MERGEABLE","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}'
-fi
-`
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	db, err := store.Open(t.Context(), filepath.Join(dir, "db"))
 	if err != nil {
 		t.Fatal(err)
@@ -105,14 +88,13 @@ fi
 		t.Fatal(err)
 	}
 	defer api.Close()
-	d := agentruntime.Definition{Agent: contract.Agent{ID: "assistant"}}
 	if err := os.MkdirAll(api.worktrees.Path("assistant", "assistant"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	m := contract.Message{ID: ID(), ThreadID: "assistant", Role: "assistant", Status: "done", CreatedAt: store.Now()}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	api.refreshCard(ctx, d, &m, "<h3>Changes</h3>", time.Millisecond)
+	api.refreshCard(ctx, &m, "<h3>Changes</h3>")
 	messages, err := db.Messages(t.Context(), "assistant", 0, 100)
 	if err != nil || len(messages) != 1 || messages[0].ID != m.ID {
 		t.Fatalf("messages: %+v %v", messages, err)
@@ -122,7 +104,7 @@ fi
 		t.Fatal(err)
 	}
 	content, err := os.ReadFile(path)
-	if err != nil || !strings.Contains(string(content), "checks passing · mergeable") {
+	if err != nil || !strings.Contains(string(content), "until integrated into dev") {
 		t.Fatalf("status: %s %v", content, err)
 	}
 }

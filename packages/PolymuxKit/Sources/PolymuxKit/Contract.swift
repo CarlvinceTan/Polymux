@@ -15,6 +15,8 @@ public struct PushStatus: Codable, Hashable, Sendable {
 }
 
 public struct Notice: Codable, Hashable, Sendable {
+    public var body: String?
+    public var outcome: String?
     public var seq: Int64
     public var conversationID: String
     public var messageID: String
@@ -22,12 +24,16 @@ public struct Notice: Codable, Hashable, Sendable {
     public var createdAt: String
 
     public init(
+        body: String? = nil,
+        outcome: String? = nil,
         seq: Int64 = 0,
         conversationID: String = "",
         messageID: String = "",
         title: String = "",
         createdAt: String = ""
     ) {
+        self.body = body
+        self.outcome = outcome
         self.seq = seq
         self.conversationID = conversationID
         self.messageID = messageID
@@ -220,6 +226,10 @@ public struct Thread: Codable, Hashable, Sendable {
     public var lastMessage: Message?
     public var title: String
     public var agentIDs: [String]
+    public var pinned: Bool?
+    public var pinOrder: Double?
+    public var sectionID: String?
+    public var sectionOrder: Double?
 
     public init(
         leadAgentID: String? = nil,
@@ -231,7 +241,11 @@ public struct Thread: Codable, Hashable, Sendable {
         unreadCount: Int64 = 0,
         lastMessage: Message? = nil,
         title: String = "",
-        agentIDs: [String] = []
+        agentIDs: [String] = [],
+        pinned: Bool? = nil,
+        pinOrder: Double? = nil,
+        sectionID: String? = nil,
+        sectionOrder: Double? = nil
     ) {
         self.leadAgentID = leadAgentID
         self.runs = runs
@@ -243,6 +257,10 @@ public struct Thread: Codable, Hashable, Sendable {
         self.lastMessage = lastMessage
         self.title = title
         self.agentIDs = agentIDs
+        self.pinned = pinned
+        self.pinOrder = pinOrder
+        self.sectionID = sectionID
+        self.sectionOrder = sectionOrder
     }
 }
 
@@ -418,6 +436,7 @@ public struct Event: Codable, Hashable, Sendable {
     public var summary: String?
     public var usage: Usage?
     public var approval: ApprovalRequest?
+    public var payload: Activity?
 
     public init(
         seq: Int64 = 0,
@@ -438,7 +457,8 @@ public struct Event: Codable, Hashable, Sendable {
         routineID: String? = nil,
         summary: String? = nil,
         usage: Usage? = nil,
-        approval: ApprovalRequest? = nil
+        approval: ApprovalRequest? = nil,
+        payload: Activity? = nil
     ) {
         self.seq = seq
         self.conversationID = conversationID
@@ -459,6 +479,7 @@ public struct Event: Codable, Hashable, Sendable {
         self.summary = summary
         self.usage = usage
         self.approval = approval
+        self.payload = payload
     }
 }
 
@@ -704,17 +725,23 @@ public struct ToolActivity: Codable, Hashable, Sendable {
     public var runID: String
     public var name: String
     public var status: String
+    public var summary: String?
+    public var output: String?
 
     public init(
         id: String = "",
         runID: String = "",
         name: String = "",
-        status: String = ""
+        status: String = "",
+        summary: String? = nil,
+        output: String? = nil
     ) {
         self.id = id
         self.runID = runID
         self.name = name
         self.status = status
+        self.summary = summary
+        self.output = output
     }
 }
 
@@ -792,6 +819,7 @@ public struct CreateAgentRequest: Codable, Hashable, Sendable {
     public var prompt: String
     public var model: String?
     public var avatar: AvatarDesign?
+    public var sectionID: String?
 
     public init(
         initialTask: String? = nil,
@@ -799,7 +827,8 @@ public struct CreateAgentRequest: Codable, Hashable, Sendable {
         role: String = "",
         prompt: String = "",
         model: String? = nil,
-        avatar: AvatarDesign? = nil
+        avatar: AvatarDesign? = nil,
+        sectionID: String? = nil
     ) {
         self.initialTask = initialTask
         self.name = name
@@ -807,6 +836,7 @@ public struct CreateAgentRequest: Codable, Hashable, Sendable {
         self.prompt = prompt
         self.model = model
         self.avatar = avatar
+        self.sectionID = sectionID
     }
 }
 
@@ -897,15 +927,18 @@ public struct CreateThreadRequest: Codable, Hashable, Sendable {
     public var leadAgentID: String?
     public var agentIDs: [String]
     public var title: String?
+    public var sectionID: String?
 
     public init(
         leadAgentID: String? = nil,
         agentIDs: [String] = [],
-        title: String? = nil
+        title: String? = nil,
+        sectionID: String? = nil
     ) {
         self.leadAgentID = leadAgentID
         self.agentIDs = agentIDs
         self.title = title
+        self.sectionID = sectionID
     }
 }
 
@@ -935,15 +968,163 @@ public struct VoiceResponse: Codable, Hashable, Sendable {
 public struct UpdateThreadRequest: Codable, Hashable, Sendable {
     public var leadAgentID: String?
     public var agentIDs: [String]?
-    public var title: String
+    public var title: String?
+    public var pinned: Bool?
+    public var pinOrder: Double?
 
     public init(
         leadAgentID: String? = nil,
         agentIDs: [String]? = nil,
-        title: String = ""
+        title: String? = nil,
+        pinned: Bool? = nil,
+        pinOrder: Double? = nil
     ) {
         self.leadAgentID = leadAgentID
         self.agentIDs = agentIDs
         self.title = title
+        self.pinned = pinned
+        self.pinOrder = pinOrder
+    }
+}
+
+public struct Section: Codable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public var order: Double
+    public var collapsed: Bool
+    public var createdAt: String
+    public var updatedAt: String
+    public var chatCount: Int64
+
+    public init(
+        id: String = "",
+        name: String = "",
+        order: Double = 0,
+        collapsed: Bool = false,
+        createdAt: String = "",
+        updatedAt: String = "",
+        chatCount: Int64 = 0
+    ) {
+        self.id = id
+        self.name = name
+        self.order = order
+        self.collapsed = collapsed
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.chatCount = chatCount
+    }
+}
+
+public struct AgentConfiguration: Codable, Hashable, Sendable {
+    public var workspace: String
+    public var tools: [String]
+    public var skills: [String]
+
+    public init(
+        workspace: String = "",
+        tools: [String] = [],
+        skills: [String] = []
+    ) {
+        self.workspace = workspace
+        self.tools = tools
+        self.skills = skills
+    }
+}
+
+public struct ConfigurationPatch: Codable, Hashable, Sendable {
+    public var workspace: String?
+    public var tools: [String]?
+    public var skills: [String]?
+
+    public init(
+        workspace: String? = nil,
+        tools: [String]? = nil,
+        skills: [String]? = nil
+    ) {
+        self.workspace = workspace
+        self.tools = tools
+        self.skills = skills
+    }
+}
+
+public struct MCPConnection: Codable, Hashable, Sendable {
+    public var name: String
+    public var enabled: Bool
+    public var hidden: Bool
+    public var shared: Bool
+
+    public init(
+        name: String = "",
+        enabled: Bool = false,
+        hidden: Bool = false,
+        shared: Bool = false
+    ) {
+        self.name = name
+        self.enabled = enabled
+        self.hidden = hidden
+        self.shared = shared
+    }
+}
+
+public struct SidebarPlacement: Codable, Hashable, Sendable {
+    public var threadID: String
+    public var pinned: Bool
+    public var pinOrder: Double?
+    public var sectionID: String?
+    public var sectionOrder: Double?
+
+    public init(
+        threadID: String = "",
+        pinned: Bool = false,
+        pinOrder: Double? = nil,
+        sectionID: String? = nil,
+        sectionOrder: Double? = nil
+    ) {
+        self.threadID = threadID
+        self.pinned = pinned
+        self.pinOrder = pinOrder
+        self.sectionID = sectionID
+        self.sectionOrder = sectionOrder
+    }
+}
+
+public struct SidebarSnapshot: Codable, Hashable, Sendable {
+    public var cursor: Int64
+    public var sections: [Section]
+    public var placements: [SidebarPlacement]
+
+    public init(
+        cursor: Int64 = 0,
+        sections: [Section] = [],
+        placements: [SidebarPlacement] = []
+    ) {
+        self.cursor = cursor
+        self.sections = sections
+        self.placements = placements
+    }
+}
+
+public struct SidebarEvent: Codable, Hashable, Sendable {
+    public var seq: Int64
+    public var type: String
+    public var sections: [Section]
+    public var changedThreadIDs: [String]
+    public var placements: [SidebarPlacement]
+    public var createdAt: String
+
+    public init(
+        seq: Int64 = 0,
+        type: String = "",
+        sections: [Section] = [],
+        changedThreadIDs: [String] = [],
+        placements: [SidebarPlacement] = [],
+        createdAt: String = ""
+    ) {
+        self.seq = seq
+        self.type = type
+        self.sections = sections
+        self.changedThreadIDs = changedThreadIDs
+        self.placements = placements
+        self.createdAt = createdAt
     }
 }

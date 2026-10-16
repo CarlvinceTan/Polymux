@@ -108,6 +108,62 @@ private actor SendProbe {
     }
 }
 
+private actor ActivityProbe {
+    let kind: String
+    private(set) var reads: [Int64] = []
+    private var streamed = false
+
+    init(kind: String) { self.kind = kind }
+
+    func handle(_ request: URLRequest) async throws -> (Int, Data) {
+        let path = request.url?.path ?? ""
+        if path.hasSuffix("/events"), streamed {
+            try await Task.sleep(for: .seconds(5))
+        }
+        if path.hasSuffix("/read") {
+            reads.append(try JSONDecoder().decode(ReadRequest.self, from: requestBody(request)).seq)
+            return (204, Data())
+        }
+        if path.hasSuffix("/stream") {
+            streamed = true
+            let event = Event(seq: 1, conversationID: "one", type: "activity",
+                              payload: Activity(kind: kind, verb: "Finished", objectLabel: "Aria"))
+            let wire = "data: " + String(decoding: try JSONEncoder().encode(event), as: UTF8.self) + "\n\n"
+            return (200, Data(wire.utf8))
+        }
+        return (200, Data("[]".utf8))
+    }
+}
+
+@Suite @MainActor
+struct ActivityReadTests {
+    @Test(arguments: ["agent.messaged", "subagent.finished"], [true, false])
+    func readsVisibleRows(kind: String, visible: Bool) async throws {
+        let probe = ActivityProbe(kind: kind)
+        let host = ProbeProtocol.routes.add { try await probe.handle($0) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = try await CacheWork.open(directory.appendingPathComponent("cache.sqlite"))
+        try await cache.offMain { try $0.save(agents: [], threads: [Thread(id: "one", agentID: "aria")]) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ProbeProtocol.self]
+        let client = APIClient(baseURL: URL(string: "http://\(host)")!, session: URLSession(configuration: config))
+        let chat = ChatStore(client: client, actor: LocalCacheActor(cache), threadID: "one")
+        chat.isVisible = visible
+        defer { chat.stop() }
+        await chat.start()
+        for _ in 0..<100 {
+            let read = await probe.reads.contains(1)
+            if chat.activityEvents.count == 1, !visible || read { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(chat.activityEvents.count == 1)
+        #expect(try await cache.offMain { try $0.threads().first?.unreadCount } == (visible ? 0 : 1))
+        #expect((await probe.reads).contains(1) == visible)
+    }
+}
+
 private actor ReplyProbe {
     var requests: [SendRequest] = []
     private var online = false
@@ -198,7 +254,12 @@ private actor GroupProbe {
                 guard online else { throw URLError(.notConnectedToInternet) }
                 try await Task.sleep(for: .milliseconds(80))
             }
-            thread.title = update.title
+            if let title = update.title { thread.title = title }
+            if let pinned = update.pinned {
+                thread.pinned = pinned
+                if !pinned { thread.pinOrder = nil }
+            }
+            if let order = update.pinOrder { thread.pinOrder = order }
             if let members = update.agentIDs {
                 thread.agentIDs = members
                 thread.agentID = members[0]
@@ -332,6 +393,35 @@ private actor SettingsProbe {
         patch.apply(to: &value)
         value.revision += 1
         return (200, try JSONEncoder().encode(value))
+    }
+}
+
+private actor PinProbe {
+    var thread = PolymuxKit.Thread(id: "a", agentID: "a", lastReadSeq: 2, lastSeq: 5,
+                                  unreadCount: 3, title: "Current name", agentIDs: ["a"])
+    var updates: [UpdateThreadRequest] = []
+    var applied = 0
+    private var online = false
+
+    func reconnect() { online = true }
+    func remotePin() { thread.pinned = true; thread.pinOrder = 77 }
+
+    func handle(_ request: URLRequest) throws -> (Int, Data) {
+        if request.httpMethod == "GET" {
+            if request.url?.path == "/threads" { return (200, try JSONEncoder().encode([thread])) }
+            return (200, try JSONEncoder().encode([Agent(id: "a", name: "Current name")]))
+        }
+        let update = try JSONDecoder().decode(UpdateThreadRequest.self, from: requestBody(request))
+        updates.append(update)
+        guard online else { throw URLError(.notConnectedToInternet) }
+        if let title = update.title { thread.title = title }
+        if let pinned = update.pinned {
+            thread.pinned = pinned
+            if !pinned { thread.pinOrder = nil }
+        }
+        if let order = update.pinOrder { thread.pinOrder = order }
+        applied += 1
+        return (200, try JSONEncoder().encode(thread))
     }
 }
 
@@ -722,6 +812,78 @@ struct TransportTests {
         #expect(try await api.registerPush(device).available)
     }
 
+    @Test func profileCommitRestoresFailureAndProtectsNewerPrompt() async throws {
+        let host = ProbeProtocol.routes.add { _ in (500, Data()) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let api = client(host: host)
+        let sidebar = SidebarStore(client: api, cache: try await CacheWork.open(url))
+        let previous = AgentProfile(agent: Agent(id: "profile", name: "Old"), prompt: "Old prompt")
+        let update = UpdateAgentRequest(name: "New", role: "Role", prompt: "First prompt")
+        var closed = false
+        let first = sidebar.commits.save(previous, request: update, sidebar: sidebar, client: api) {
+            closed = true
+        }
+        #expect(closed)
+        #expect(sidebar.agents.first?.name == "New")
+        #expect(sidebar.commits.profiles["profile"]?.prompt == "First prompt")
+        await first.value
+        #expect(sidebar.agents.first?.name == "Old")
+        #expect(sidebar.commits.profiles["profile"] == previous)
+        #expect(sidebar.commits.notice != nil)
+        let older = sidebar.commits.save(previous, request: update, sidebar: sidebar, client: api, close: {})
+        var newer = update
+        newer.prompt = "Second prompt"
+        let latest = sidebar.commits.save(previous, request: newer, sidebar: sidebar, client: api, close: {})
+        await older.value
+        #expect(sidebar.commits.profiles["profile"]?.prompt != "Old prompt")
+        await latest.value
+        // The newer failure restores the state that existed when it was submitted.
+        #expect(sidebar.commits.profiles["profile"]?.prompt == "First prompt")
+        await sidebar.settled()
+    }
+
+    @Test func avatarCommitRestoresFailureAfterClosing() async throws {
+        let host = ProbeProtocol.routes.add { _ in (500, Data()) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let api = client(host: host)
+        let sidebar = SidebarStore(client: api, cache: try await CacheWork.open(url))
+        let previous = AvatarDesign()
+        var next = previous
+        next.shape = "square"
+        var visible = previous
+        var closed = false
+        let task = sidebar.commits.saveAvatar(id: "avatar", previous: previous, request: next,
+                                             sidebar: sidebar, client: api,
+                                             apply: { visible = $0 }, close: { closed = true })
+        #expect(closed && visible == next)
+        await task.value
+        #expect(visible == previous)
+        #expect(sidebar.commits.notice != nil)
+    }
+
+    @Test func profileCommitReportsAStalledClose() async throws {
+        let host = ProbeProtocol.routes.add { _ in (500, Data()) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let api = client(host: host)
+        let sidebar = SidebarStore(client: api, cache: try await CacheWork.open(url))
+        let task = sidebar.commits.save(AgentProfile(agent: Agent(id: "slow")),
+                                       request: UpdateAgentRequest(name: "Slow"),
+                                       sidebar: sidebar, client: api) {
+            let clock = ContinuousClock()
+            let start = clock.now
+            while start.duration(to: clock.now) < .milliseconds(70) {}
+        }
+        #expect(sidebar.commits.trace.meetsBudgets == false)
+        await task.value
+        await sidebar.settled()
+    }
+
     private func client(host: String) -> APIClient {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [ProbeProtocol.self]
@@ -1106,6 +1268,99 @@ struct TransportTests {
         #expect(try await cache.offMain { try $0.threadEdits() }.isEmpty)
     }
 
+    @Test func pinSurvivesOfflineRelaunchWithoutRenamingTheChat() async throws {
+        let probe = PinProbe()
+        let host = ProbeProtocol.routes.add { try await probe.handle($0) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let api = client(host: host)
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cache = try await CacheWork.open(url)
+        let initial = await probe.thread
+        try await cache.offMain { try $0.save(agents: [Agent(id: "a", name: "Current name")], threads: [initial]) }
+        let sidebar = SidebarStore(client: api, cache: cache)
+        await sidebar.load()
+        await sidebar.setPin("a", pinned: true)
+        try? await sidebar.syncEdit("a")
+        #expect(sidebar.threads.first?.pinned == true)
+        #expect(sidebar.pinIssue != nil)
+        #expect(try await cache.offMain { try $0.pinEdits() } == ["a"])
+
+        let reopened = try await CacheWork.open(url)
+        let relaunched = SidebarStore(client: api, cache: reopened)
+        await relaunched.load()
+        #expect(relaunched.threads.first?.pinned == true)
+        #expect(relaunched.threads.first?.unreadCount == 3)
+        await probe.reconnect()
+        await relaunched.refresh()
+        try await relaunched.syncEdit("a")
+        #expect(await probe.applied == 1)
+        #expect(await probe.updates.allSatisfy { $0.title == nil && $0.agentIDs == nil && $0.leadAgentID == nil })
+        #expect(relaunched.threads.first?.title == initial.title)
+        #expect(relaunched.threads.first?.lastReadSeq == 2)
+        #expect(relaunched.threads.first?.lastSeq == 5)
+        #expect(relaunched.pinIssue == nil)
+        #expect(try await reopened.offMain { try $0.threadEdits() }.isEmpty)
+        #expect(try await reopened.offMain { try $0.pinEdits() }.isEmpty)
+
+        await relaunched.setPin("a", pinned: false)
+        try await relaunched.syncEdit("a")
+        #expect(await probe.applied == 2)
+        #expect(relaunched.threads.first?.pinned == false)
+        #expect(relaunched.threads.first?.pinOrder == nil)
+    }
+
+    @Test(arguments: [false, true]) func renameKeepsRemotePinsAndPersistsExplicitPinChanges(combined: Bool) async throws {
+        let probe = PinProbe()
+        let host = ProbeProtocol.routes.add { try await probe.handle($0) }
+        defer { ProbeProtocol.routes.remove(host) }
+        let api = client(host: host)
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cache = try await CacheWork.open(url)
+        let initial = await probe.thread
+        try await cache.offMain { try $0.save(agents: [Agent(id: "a")], threads: [initial]) }
+        let sidebar = SidebarStore(client: api, cache: cache)
+        await sidebar.load()
+        var renamed = initial
+        renamed.title = "Local rename"
+        await sidebar.edit(renamed, delay: .seconds(10))
+        if combined { await sidebar.setPin("a", pinned: true) }
+        try? await sidebar.syncEdit("a")
+        if combined {
+            #expect(sidebar.pinIssue != nil)
+            #expect(try await cache.offMain { try $0.dirtyPins() } == ["a"])
+        } else { await probe.remotePin() }
+        let reopened = try await CacheWork.open(url)
+        let relaunched = SidebarStore(client: api, cache: reopened)
+        await relaunched.load()
+        await probe.reconnect()
+        try await relaunched.syncEdit("a")
+        let update = try #require(await probe.updates.last)
+        #expect(update.title == "Local rename")
+        #expect(update.pinned == (combined ? true : nil))
+        #expect(update.pinOrder == (combined ? 0 : nil))
+        #expect(relaunched.threads.first?.pinned == true)
+        #expect(relaunched.threads.first?.pinOrder == (combined ? 0 : 77))
+        #expect(relaunched.pinIssue == nil)
+        #expect(try await reopened.offMain { try $0.dirtyPins() }.isEmpty)
+    }
+
+    @Test func pinLimitKeepsTheNextChatUnchanged() async throws {
+        let url = cacheURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let cache = try await CacheWork.open(url)
+        let threads = (0..<13).map { PolymuxKit.Thread(id: "chat-\($0)", agentID: "chat-\($0)", pinned: $0 < 12) }
+        try await cache.offMain { try $0.save(agents: [], threads: threads) }
+        let sidebar = SidebarStore(client: client(host: "offline.test"), cache: cache)
+        await sidebar.load()
+        await sidebar.setPin("chat-12", pinned: true)
+        #expect(sidebar.threads.filter { $0.pinned == true }.count == 12)
+        #expect(sidebar.threads.first { $0.id == "chat-12" }?.pinned == false)
+        #expect(sidebar.editIssues["chat-12"] == "You can pin up to 12 chats.")
+        #expect(try await cache.offMain { try $0.threadEdits() }.isEmpty)
+    }
+
     @Test func offlineReplyKeepsQuoteAndIdentityThroughRetryAndReplay() async throws {
         let probe = ReplyProbe()
         let host = ProbeProtocol.routes.add { try await probe.handle($0) }
@@ -1297,4 +1552,12 @@ struct TransportTests {
         let cursors = await probe.cursors
         #expect(cursors.starts(with: [0, 1000, 2000, 2100]))
     }
+}
+
+@Test func legacyNoticePage() throws {
+    let data = Data(#"{"cursor":7,"notices":[{"seq":7,"conversationID":"chat","messageID":"reply","title":"Polymux","createdAt":"2026-10-13T08:00:00Z"}]}"#.utf8)
+    let page = try JSONDecoder().decode(NoticePage.self, from: data)
+    #expect(page.cursor == 7)
+    #expect(page.notices.first?.body == nil)
+    #expect(page.notices.first?.outcome == nil)
 }
