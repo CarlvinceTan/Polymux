@@ -902,6 +902,8 @@ func (s *Server) work(ctx context.Context, a *actor) {
 	}
 }
 
+var errEmptyReply = errors.New("the agent returned an empty reply")
+
 func (s *Server) reply(ctx context.Context, a *actor, id string, turn ...context.Context) contract.Message {
 	work, err := s.Store.Work(ctx, id)
 	if len(turn) > 0 {
@@ -1616,6 +1618,9 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			m.Parts = append(m.Parts, contract.Part{Kind: "text", Text: &result.Text})
 		}
 	}
+	if err == nil && !awaiting && !handed && work.Trigger != "review" && len(m.Parts) == 0 {
+		err = errEmptyReply
+	}
 	if err == nil {
 		if handed {
 			state.mu.Lock()
@@ -1665,6 +1670,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 		m.Status = "error"
 		code := "provider"
 		message := "The agent could not complete this reply."
+		if errors.Is(err, errEmptyReply) {
+			code, message = "empty", "The agent returned an empty reply."
+			run.Status, run.Summary = "failed", "Empty reply"
+		}
 		if errors.Is(err, context.Canceled) {
 			code = "stopped"
 			message = "Reply stopped."

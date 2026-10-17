@@ -97,6 +97,56 @@ func TestReplyFailureLimit(t *testing.T) {
 	}
 }
 
+type emptyFactory struct{}
+
+func (emptyFactory) Open(context.Context, agentruntime.Definition, string) (agentruntime.Session, error) {
+	return &emptySession{}, nil
+}
+
+type emptySession struct{ testSession }
+
+func (*emptySession) Send(context.Context, contract.Message, func(agentruntime.Delta) error) (agentruntime.Result, error) {
+	return agentruntime.Result{}, nil
+}
+
+func TestEmptyReplyIsFailure(t *testing.T) {
+	api, endpoint := startTest(t, emptyFactory{})
+	response, err := http.Post(endpoint.URL+"/threads/assistant/messages", "application/json", strings.NewReader(`{"id":"empty","text":"hello","attachmentIDs":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("status %d", response.StatusCode)
+	}
+	id := store.NewRun("empty", "assistant", "assistant", "message").ID
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := api.Store.Run(t.Context(), id)
+		if err == nil && store.Terminal(run.Status) {
+			if run.Status != "failed" || run.Error == nil || run.Error.Code != "empty" || run.Error.Message != "The agent returned an empty reply." {
+				t.Fatalf("run = %+v, error = %+v", run, run.Error)
+			}
+			messages, err := api.Store.Messages(t.Context(), "assistant", 0, 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, m := range messages {
+				if m.Role == "assistant" && m.Status == "error" && len(m.Parts) == 0 {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("empty reply was not surfaced as an error: %+v", messages)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("reply did not finish")
+}
+
 func TestReplyFailureCodes(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
