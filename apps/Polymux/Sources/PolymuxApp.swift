@@ -46,12 +46,13 @@ struct PolymuxApp: App {
         _ = Notifications.shared
         FrameLog.install()
         #if os(macOS)
-        _ = ServerRuntime.shared
         #if DEBUG
         if !VerifyFixture.enabled && !CommandLine.arguments.contains("--verify-approval") {
+            _ = ServerRuntime.shared
             ControlCoordinator.shared.start()
         }
         #else
+        _ = ServerRuntime.shared
         ControlCoordinator.shared.start()
         #endif
         #endif
