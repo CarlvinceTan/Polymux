@@ -1,6 +1,7 @@
 package search
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"image/color"
@@ -60,6 +61,39 @@ func TestHybridScope(t *testing.T) {
 	hits, hybrid, err = i.Search(ctx, "a", "bicycle")
 	if err != nil || hybrid || len(hits) != 1 || hits[0].Message.ID != "m2" {
 		t.Fatalf("lexical fallback %+v %v %v", hits, hybrid, err)
+	}
+}
+
+func TestIndexUnavailableLogsOnce(t *testing.T) {
+	ctx := t.Context()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.DB.ExecContext(ctx, "DROP TABLE messages_fts"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Register(ctx, []contract.Agent{{ID: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	i := &Index{Store: s, Log: slog.New(slog.NewTextHandler(&log, nil))}
+	for _, id := range []string{"m1", "m2"} {
+		text := "hello " + id
+		m := contract.Message{ID: id, ThreadID: "a", Role: "user", Parts: []contract.Part{{Kind: "text", Text: &text}}, Status: "done", CreatedAt: store.Now()}
+		if _, err := s.Append(ctx, contract.Event{ConversationID: "a", Type: "message.done"}, &m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := i.Batch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(log.String(), "search index unavailable"); got != 1 {
+		t.Fatalf("unavailable log count = %d: %s", got, log.String())
+	}
+	if strings.Contains(log.String(), "index message") {
+		t.Fatalf("logged per message: %s", log.String())
 	}
 }
 

@@ -261,6 +261,8 @@ type Index struct {
 	Log         *slog.Logger
 	extractOnce sync.Once
 	extractGate chan struct{}
+	// unavailableOnce keeps a missing FTS5 build from logging once per message.
+	unavailableOnce sync.Once
 }
 
 func (i *Index) Prepare(ctx context.Context, m contract.Message) (contract.Message, error) {
@@ -344,13 +346,23 @@ func (i *Index) Batch(ctx context.Context) error {
 	}
 	for _, m := range messages {
 		if err := i.Ingest(ctx, m); err != nil {
-			i.Log.Warn("index message", "id", m.ID, "error", err)
+			if ftsUnavailable(err) {
+				i.unavailableOnce.Do(func() { i.Log.Warn("search index unavailable", "error", err) })
+			} else {
+				i.Log.Warn("index message", "id", m.ID, "error", err)
+			}
 			if _, updateErr := i.Store.DB.ExecContext(ctx, `UPDATE messages SET indexing_state='error' WHERE id=?`, m.ID); updateErr != nil {
 				return updateErr
 			}
 		}
 	}
 	return nil
+}
+
+// ftsUnavailable reports a build or schema that cannot serve the full-text index.
+func ftsUnavailable(err error) bool {
+	message := err.Error()
+	return strings.Contains(message, "no such module: fts5") || strings.Contains(message, "no such table: messages_fts")
 }
 
 func (i *Index) Ingest(ctx context.Context, m contract.Message) error {
