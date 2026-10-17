@@ -16,12 +16,15 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Println("usage: polymux serve [server flags] | chat [chat flags] | export FILE | import FILE [--force] | version")
+		fmt.Println("usage: polymux serve [server flags] | pair [--url URL] [--no-qr] | export FILE | import FILE [--force] | version")
 		return nil
 	}
 	if args[0] == "version" {
 		fmt.Println("polymux")
 		return nil
+	}
+	if args[0] == "pair" {
+		return pair(args[1:])
 	}
 	if args[0] == "export" || args[0] == "import" {
 		if len(args) < 2 {
@@ -33,12 +36,10 @@ func run(args []string) error {
 		}
 		return importData(args[1], force)
 	}
-	binary := "polymux-server"
-	if args[0] == "chat" {
-		binary = "polymux-chat"
-	} else if args[0] != "serve" && args[0] != "server" {
+	if args[0] != "serve" && args[0] != "server" {
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+	binary := "polymux-server"
 	exe, err := os.Executable()
 	if err != nil {
 		return err

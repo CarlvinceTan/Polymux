@@ -261,12 +261,21 @@ func (s *Server) Close() error {
 func (s *Server) Handler() http.Handler { return s.config.Devices.Require(s) }
 
 func (s *Server) networkInvite(w http.ResponseWriter, r *http.Request) {
-	token, err := os.ReadFile(filepath.Join(s.config.DataDir, "devices", "local-token"))
-	if err != nil {
-		write(w, 500, map[string]string{"error": "local credential unavailable"})
+	if s.config.Devices == nil {
+		token, err := os.ReadFile(filepath.Join(s.config.DataDir, "devices", "local-token"))
+		if err != nil {
+			write(w, 500, map[string]string{"error": "local credential unavailable"})
+			return
+		}
+		write(w, 200, map[string]string{"url": "http://" + r.Host, "token": strings.TrimSpace(string(token))})
 		return
 	}
-	write(w, 200, map[string]string{"url": "http://" + r.Host, "token": strings.TrimSpace(string(token))})
+	token, err := s.config.Devices.Issue(r.Context(), "Polymux app")
+	if err != nil {
+		write(w, 500, map[string]string{"error": "could not issue a pairing credential"})
+		return
+	}
+	write(w, 200, map[string]string{"url": "http://" + r.Host, "token": token})
 }
 
 func (s *Server) networkExport(w http.ResponseWriter, r *http.Request) {

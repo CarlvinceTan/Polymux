@@ -71,10 +71,8 @@ def snapshot(sha, output, server, app):
                 subprocess.run(["go", "build", "-tags", "sqlite_fts5", "-trimpath", "-ldflags", "-X main.buildSHA=" + sha,
                                 "-o", str(output / "polymux-server"), "./cmd/server"],
                                cwd=source / "apps/server", check=True, stdout=log, stderr=subprocess.STDOUT)
-                for name in ("polymux", "polymux-chat"):
-                    subprocess.run(["go", "build", "-tags", "sqlite_fts5", "-trimpath", "-o", str(output / name),
-                                    "./cmd/" + name], cwd=source / "apps/server", check=True,
-                                   stdout=log, stderr=subprocess.STDOUT)
+                subprocess.run(["go", "build", "-trimpath", "-o", str(output / "polymux"), "./cmd/polymux"],
+                               cwd=source / "apps/server", check=True, stdout=log, stderr=subprocess.STDOUT)
             if host.run([str(output / "polymux-server"), "--version"]) != sha:
                 raise host.DeployError("built server has an unexpected commit")
         if app:
@@ -99,12 +97,6 @@ def snapshot(sha, output, server, app):
             entitlement_path.write_bytes(plistlib.dumps(entitlements))
             launcher = app_path / "Contents/Helpers/deploy-launch"
             host.run(["xcrun", "swiftc", "-O", "-o", str(launcher), str(source / "scripts/deploy/deploy-launch.swift")])
-            server_helper = app_path / "Contents/Helpers/polymux-server"
-            if server:
-                for name in ("polymux-server", "polymux", "polymux-chat"):
-                    helper = app_path / "Contents/Helpers" / name
-                    shutil.copy2(output / name, helper)
-                    host.run(["codesign", "--force", "--options", "runtime", "--sign", "-", str(helper)])
             host.run(["codesign", "--force", "--options", "runtime", "--sign", "-",
                       str(app_path / "Contents/Helpers/cua-driver")])
             host.run(["codesign", "--force", "--options", "runtime", "--sign", "-", str(launcher)])
@@ -181,7 +173,7 @@ def install(bundle, server=True, app=True, clients=("cvmac",)):
         host.install_server(binary, sha, root, service)
         tools = Path.home() / ".polymux/bin"
         tools.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for name in ("polymux", "polymux-chat"):
+        for name in ("polymux",):
             artifact = bundle / name
             if artifact.exists():
                 host.atomic_copy(artifact, tools / name)

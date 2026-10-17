@@ -13,10 +13,6 @@ public enum ClientPaths {
         root.appending(path: "control", directoryHint: .isDirectory)
     }
 
-    public static var rootURL: URL { root }
-    public static var serverData: URL { root.appending(path: "data", directoryHint: .isDirectory) }
-    public static var serverLogs: URL { root.appending(path: "logs", directoryHint: .isDirectory) }
-    public static var serverBin: URL { root.appending(path: "bin", directoryHint: .isDirectory) }
 
     private static var root: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

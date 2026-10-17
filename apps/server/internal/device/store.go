@@ -337,6 +337,20 @@ func (s *Store) List(ctx context.Context) ([]Pairing, error) {
 	return out, rows.Err()
 }
 
+// IssueAppToken creates a named app credential. It is separate from the owner token and can be revoked.
+func (s *Store) IssueAppToken(ctx context.Context, name string) (string, error) {
+	if name == "" || len(name) > 128 || strings.ContainsAny(name, "\x00\r\n") {
+		return "", errors.New("invalid device name")
+	}
+	token := randomID()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO devices(id,name,agent,capabilities,token_hash) VALUES(?,?,?,?,?)`,
+		randomID(), name, "local", "[]", hash(token))
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
 func (s *Store) Revoke(ctx context.Context, id string) error {
 	s.access.Lock()
 	defer s.access.Unlock()

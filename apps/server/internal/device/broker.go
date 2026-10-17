@@ -69,6 +69,10 @@ type Broker struct {
 
 func New(s *Store) *Broker { return &Broker{store: s, connections: map[string]*connection{}} }
 
+func (b *Broker) Issue(ctx context.Context, name string) (string, error) {
+	return b.store.IssueAppToken(ctx, name)
+}
+
 func (b *Broker) Close() {
 	b.mu.Lock()
 	b.closed = true

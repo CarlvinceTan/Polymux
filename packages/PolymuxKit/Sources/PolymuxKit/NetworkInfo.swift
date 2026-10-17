@@ -23,7 +23,3 @@ public struct NetworkInfo: Codable, Sendable {
     public let devices: [Device]
 }
 
-public struct NetworkInvite: Codable, Sendable {
-    public let url: String
-    public let token: String
-}

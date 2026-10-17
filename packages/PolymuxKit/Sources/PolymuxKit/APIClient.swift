@@ -40,21 +40,6 @@ public struct APIClient: Sendable {
         try await get("network")
     }
 
-    public func networkInvite() async throws -> NetworkInvite {
-        try await get("network/invite")
-    }
-
-    public func exportNetwork() async throws -> (data: Data, sha256: String) {
-        var request = try await request("network/export")
-        request.timeoutInterval = 120
-        let (data, response) = try await session.data(for: request)
-        try validate(response, data: data)
-        guard let sha = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Polymux-SHA256"), !sha.isEmpty else {
-            throw ClientError.invalidResponse
-        }
-        return (data, sha)
-    }
-
     public func notices(after: Int64? = nil) async throws -> NoticePage {
         try await get("notifications", query: after.map { [URLQueryItem(name: "after", value: String($0))] } ?? [])
     }
