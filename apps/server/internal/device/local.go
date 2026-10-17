@@ -2,6 +2,7 @@ package device
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,9 +19,10 @@ func (s *Store) Local(ctx context.Context, dir string) (string, error) {
 		} else {
 			var revoked bool
 			if err := s.db.QueryRowContext(ctx, `SELECT revoked FROM devices WHERE token_hash=? AND agent='local'`, hash(token)).Scan(&revoked); err != nil {
-				return "", err
-			}
-			if !revoked {
+				if !errors.Is(err, sql.ErrNoRows) {
+					return "", err
+				}
+			} else if !revoked {
 				return "", authErr
 			}
 		}

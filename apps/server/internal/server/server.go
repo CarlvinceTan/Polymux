@@ -1728,6 +1728,10 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	if err == nil && !awaiting && !handed && work.Trigger != "review" && len(m.Parts) == 0 {
 		err = errEmptyReply
 	}
+	if awaiting && len(m.Parts) == 0 {
+		text := "Waiting for approval."
+		m.Parts = append(m.Parts, contract.Part{Kind: "text", Text: &text})
+	}
 	if err == nil {
 		if handed {
 			state.mu.Lock()
@@ -1744,7 +1748,11 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 			text := "Handed off to " + bounded(label, 128) + "."
 			m.Parts = append(m.Parts, contract.Part{Kind: "text", Text: &text})
 		}
-		m.Status = "done"
+		if awaiting {
+			m.Status = "waiting_input"
+		} else {
+			m.Status = "done"
+		}
 		run.Status, run.Summary, run.Outcome = "completed", "Reply complete", pointer("reply")
 		if work.Trigger == "created" {
 			run.Outcome = pointer("introduced")

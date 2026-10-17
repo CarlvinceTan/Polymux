@@ -121,8 +121,12 @@ class Launchd:
         self.url = health or "http://" + address + "/health"
         self.token = Path(token).expanduser()
 
+    def loaded(self):
+        return subprocess.run(["launchctl", "print", self.target], capture_output=True, text=True).returncode == 0
+
     def ready(self):
-        run(["launchctl", "print", self.target])
+        if not self.loaded():
+            raise DeployError("server launch agent is not loaded")
 
     def stop(self):
         status = subprocess.run(["launchctl", "print", self.target], capture_output=True, text=True)
@@ -214,6 +218,12 @@ def install_server(artifact, sha, root, service, timeout=30, rollback_check=Fals
         recover(root, service, timeout)
         if service.binary.is_symlink() or service.data.is_symlink():
             raise DeployError("server binary and data must be ordinary deployment paths")
+        if not service.loaded():
+            service.binary.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            atomic_copy(artifact, service.binary)
+            service.start()
+            wait_health(service, sha, timeout)
+            return
         service.ready()
         previous = service.health()
         if not rollback_check and previous.get("buildSHA") == sha and digest(artifact) == digest(service.binary):

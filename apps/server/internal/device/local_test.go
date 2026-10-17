@@ -44,3 +44,28 @@ func TestLocalCredential(t *testing.T) {
 		t.Fatal("replacement must authenticate without native capabilities")
 	}
 }
+
+func TestLocalReplacesStaleToken(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "devices"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "devices", "local-token"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(t.Context(), dir, "localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	token, err := s.Local(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token == "stale" {
+		t.Fatal("stale token was reused")
+	}
+	if _, err := s.Authenticate(t.Context(), token); err != nil {
+		t.Fatal("fresh token does not authenticate")
+	}
+}

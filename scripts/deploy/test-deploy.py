@@ -32,10 +32,14 @@ class Service:
         (self.data / "state").write_text("valuable old state")
         self.binary.write_text(OLD)
         self.active = True
+        self.loaded_flag = True
         self.reject = False
         self.crash = False
         self.stops = 0
         self.starts = 0
+
+    def loaded(self):
+        return self.loaded_flag
 
     def ready(self):
         if not self.active:
@@ -184,6 +188,7 @@ class ServerTests(unittest.TestCase):
 
     def test_unavailable_job_never_changes_data(self):
         self.service.active = False
+        self.service.loaded_flag = True
         with self.assertRaisesRegex(deploy.DeployError, "job is unavailable"):
             self.install()
         self.assertEqual(self.service.stops, 0)
