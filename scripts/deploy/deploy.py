@@ -139,10 +139,14 @@ def remote_app(name, artifact, sha):
 
 def write_server_plist(path, binary, data, logs):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    arguments = [str(binary), "-data", str(data), "-log-dir", str(logs)]
+    addresses = subprocess.run(["ifconfig"], capture_output=True, text=True).stdout
+    match = re.search(r"\binet (100\.\d+\.\d+\.\d+)\b", addresses)
+    host = match.group(1) if match else "127.0.0.1"
+    arguments += ["-listen", host + ":7337", "-device-listen", host + ":7339"]
     config = {
         "Label": "com.polymux.server",
-        "ProgramArguments": [str(binary), "-data", str(data), "-log-dir", str(logs),
-                             "-listen", "127.0.0.1:7337", "-device-listen", "127.0.0.1:7339"],
+        "ProgramArguments": arguments,
         "RunAtLoad": True,
         "KeepAlive": True,
         "WorkingDirectory": str(path.parent),

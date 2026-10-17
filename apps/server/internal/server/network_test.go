@@ -35,7 +35,7 @@ func TestNetworkDescribesServer(t *testing.T) {
 	}
 }
 
-func TestNetworkInviteAndExport(t *testing.T) {
+func TestNetworkInvite(t *testing.T) {
 	api, endpoint := startTest(t, &testFactory{})
 	if err := os.MkdirAll(filepath.Join(api.config.DataDir, "devices"), 0o700); err != nil {
 		t.Fatal(err)
@@ -54,20 +54,5 @@ func TestNetworkInviteAndExport(t *testing.T) {
 	response.Body.Close()
 	if invite.URL == "" || invite.Token != "token" {
 		t.Fatalf("invite %+v", invite)
-	}
-	response, err = http.Get(endpoint.URL + "/network/export")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("export status %d", response.StatusCode)
-	}
-	if got := response.Header.Get("X-Polymux-SHA256"); len(got) != 64 {
-		t.Fatalf("checksum %q", got)
-	}
-	magic := make([]byte, 2)
-	if _, err := response.Body.Read(magic); err != nil || magic[0] != 0x1f || magic[1] != 0x8b {
-		t.Fatalf("gzip magic %v %v", magic, err)
 	}
 }

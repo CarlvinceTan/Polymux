@@ -218,8 +218,10 @@ def install_server(artifact, sha, root, service, timeout=30, rollback_check=Fals
         recover(root, service, timeout)
         if service.binary.is_symlink() or service.data.is_symlink():
             raise DeployError("server binary and data must be ordinary deployment paths")
-        if not service.loaded():
+        if not service.loaded() or not service.binary.exists():
             service.binary.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if service.loaded():
+                service.stop()
             atomic_copy(artifact, service.binary)
             service.start()
             wait_health(service, sha, timeout)
