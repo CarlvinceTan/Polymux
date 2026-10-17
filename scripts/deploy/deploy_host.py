@@ -225,7 +225,10 @@ def install_server(artifact, sha, root, service, timeout=30, rollback_check=Fals
             wait_health(service, sha, timeout)
             return
         service.ready()
-        previous = service.health()
+        try:
+            previous = service.health()
+        except DeployError:
+            previous = {}
         if not rollback_check and previous.get("buildSHA") == sha and digest(artifact) == digest(service.binary):
             return
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")

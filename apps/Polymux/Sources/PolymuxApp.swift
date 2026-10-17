@@ -279,9 +279,9 @@ struct ConnectionView: View {
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text(device.connected ? "Online" : "Offline")
+                                Text(device.agent == "local" ? "Server" : (device.connected ? "Online" : "Offline"))
                                     .font(.caption)
-                                    .foregroundStyle(device.connected ? Color.green : Color.secondary)
+                                    .foregroundStyle(device.agent == "local" || device.connected ? Color.green : Color.secondary)
                             }
                         }
                         if network.devices.isEmpty {
