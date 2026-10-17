@@ -1,0 +1,58 @@
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestNetworkDescribesServer(t *testing.T) {
+	_, endpoint := startTest(t, &testFactory{})
+	response, err := http.Get(endpoint.URL + "/network")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", response.StatusCode)
+	}
+	var value struct {
+		Server struct {
+			Name, Build, Platform, Role string
+		}
+		Devices []any
+	}
+	if err := json.NewDecoder(response.Body).Decode(&value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Server.Name == "" || value.Server.Role != "server" || value.Server.Platform == "" {
+		t.Fatalf("server %+v", value.Server)
+	}
+	if value.Devices == nil {
+		t.Fatal("devices must be an array")
+	}
+}
+
+func TestNetworkInvite(t *testing.T) {
+	api, endpoint := startTest(t, &testFactory{})
+	if err := os.MkdirAll(filepath.Join(api.config.DataDir, "devices"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(api.config.DataDir, "devices", "local-token"), []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.Get(endpoint.URL + "/network/invite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var invite struct{ URL, Token string }
+	if err := json.NewDecoder(response.Body).Decode(&invite); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if invite.URL == "" || invite.Token != "token" {
+		t.Fatalf("invite %+v", invite)
+	}
+}

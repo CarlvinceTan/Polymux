@@ -38,15 +38,14 @@
   </tr>
 </table>
 
-Polymux is an agent-agnostic desktop workspace built with Electron and TypeScript.
-It bundles Polymux Agent by default, while profiles can instead connect an external
-agent over the open Agent Client Protocol (ACP). Its core
-capabilities include **Hub**, a central communication layer supporting around 17
-platforms, including email; **Drive**, a virtual filesystem backed by local and
-popular cloud storage; **Schedule**, for creating cron jobs; **Browser**, with both
-external and in-app browsing; **Workspace**, a tabbed interface for accessing every
-core feature; and a fast, grep-based **Memory** system, complemented by **ComputerHistory**
-for understanding your computer history.
+Polymux is a native macOS client backed by a Go server CLI. It ships with no
+prebuilt agents: you create each agent yourself and give it its own instructions,
+skills, MCP connections and rules. Its core capabilities include **Hub**, a central
+communication layer supporting around 17 platforms, including email; **Drive**, a
+virtual filesystem backed by local and popular cloud storage; **Schedule**, for
+creating cron jobs; **Browser**, with both external and in-app browsing; and a fast,
+grep-based **Memory** system, complemented by **ComputerHistory** for understanding
+your computer history.
 
 The main agent can delegate focused work to parallel **Subagents**, keeping the
 primary chat coherent while specialised work runs independently. The chat-scoped

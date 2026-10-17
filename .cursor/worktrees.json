@@ -1,0 +1,3 @@
+{
+  "setup-worktree-unix": ["bash scripts/verify/wt-setup.sh"]
+}
