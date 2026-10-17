@@ -220,8 +220,6 @@ struct ShellView: View {
                     Label(session.sidebar.agents.isEmpty ? "No agents yet" : "Your conversations", systemImage: "bubble.left.and.bubble.right")
                 } description: {
                     Text(session.sidebar.agents.isEmpty ? "Create an agent to start. Polymux ships with no prebuilt bots." : "Choose an agent to start talking.")
-                } actions: {
-                    Button("Create an agent") { adding = true }
                 }
             }
         }
