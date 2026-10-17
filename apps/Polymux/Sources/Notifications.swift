@@ -161,8 +161,19 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
     }
 }
 
+@MainActor
+final class URLRouter {
+    static let shared = URLRouter()
+    var handler: ((URL) -> Void)?
+}
+
 #if os(macOS)
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            Task { @MainActor in URLRouter.shared.handler?(url) }
+        }
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task { await ControlCoordinator.shared.stop(); sender.reply(toApplicationShouldTerminate: true) }
         return .terminateLater

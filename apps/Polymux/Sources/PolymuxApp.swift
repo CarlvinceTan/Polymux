@@ -157,19 +157,9 @@ struct AppRoot: View {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
-        .onOpenURL { url in
-            guard url.scheme == "polymux", url.host == "connect",
-                  let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                  let target = parts.queryItems?.first(where: { $0.name == "url" })?.value,
-                  let token = parts.queryItems?.first(where: { $0.name == "token" })?.value,
-                  let parsed = ServerAddress.parse(target) else { return }
-            let file = ClientPaths.token(parsed.absoluteString)
-            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
-                                                     withIntermediateDirectories: true,
-                                                     attributes: [.posixPermissions: 0o700])
-            try? token.write(to: file, atomically: true, encoding: .utf8)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-            address = parsed.absoluteString
+        .onOpenURL { handleConnect($0) }
+        .onAppear {
+            URLRouter.shared.handler = { handleConnect($0) }
         }
         .panel(isPresented: $showSettings) {
             ConnectionView(address: $address, settings: session?.settings, client: session?.client,
@@ -182,6 +172,21 @@ struct AppRoot: View {
         #if os(macOS)
         .background { InputFocus().frame(width: 0, height: 0).accessibilityHidden(true) }
         #endif
+    }
+
+    private func handleConnect(_ url: URL) {
+        guard url.scheme == "polymux", url.host == "connect",
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let target = parts.queryItems?.first(where: { $0.name == "url" })?.value,
+              let token = parts.queryItems?.first(where: { $0.name == "token" })?.value,
+              let parsed = ServerAddress.parse(target) else { return }
+        let file = ClientPaths.token(parsed.absoluteString)
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        try? token.write(to: file, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        address = parsed.absoluteString
     }
 
     private var appearance: String {
