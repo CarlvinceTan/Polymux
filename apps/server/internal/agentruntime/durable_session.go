@@ -32,6 +32,7 @@ import (
 type DurableRuntime struct {
 	harness  harness.Harness
 	registry harness.Registry
+	models   *modelRegistry
 	model    string
 	dir      string
 	client   Client
@@ -48,8 +49,13 @@ func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Cli
 		slog.Warn("provider retry settings were not applied", "error", err)
 	}
 	registry := harness.CreateRegistry()
+	models := newModelRegistry(baseURL, key, client)
+	models.add(model)
+	for _, id := range extra {
+		models.add(id)
+	}
 	opened, err := harness.OpenHarness(ctx, cacheHistory(storage), harness.HarnessOptions{
-		Models: durableModels(baseURL, key, model, client, extra...),
+		Models: models.runtime(),
 		Settings: func() *harness.HarnessSettings {
 			return &harness.HarnessSettings{
 				// Text classification would retry a 400 or 401 whose body says overloaded.
@@ -73,7 +79,7 @@ func NewDurable(ctx context.Context, dir, baseURL, model, key string, client Cli
 	if err != nil {
 		return nil, err
 	}
-	return &DurableRuntime{harness: opened, registry: registry, model: model, dir: dir, client: client}, nil
+	return &DurableRuntime{harness: opened, registry: registry, models: models, model: model, dir: dir, client: client}, nil
 }
 
 // builtinTool maps a Polymux builtin name to its durable registration. Durable has no find or
@@ -107,6 +113,8 @@ func (r *DurableRuntime) Open(ctx context.Context, d Definition, path string) (S
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// A definition may name a model that was not known at startup.
+	r.models.add(modelID(d, r.model))
 	conversation, err := r.conversation(ctx, d, path)
 	if err != nil {
 		return nil, err
@@ -202,33 +210,77 @@ const DurableProvider = "polymux"
 // MaxRequestBytes is the observed request bound for compaction evals.
 const MaxRequestBytes = 128 << 10
 
-// durableModels registers Polymux's OpenAI-compatible endpoint with the durable models runtime.
-func durableModels(baseURL, key, model string, client Client, extra ...string) *ai.Models {
-	providers := make(map[string]ai.Provider)
-	var registered []*ai.Model
-	for _, id := range append([]string{model}, extra...) {
-		if _, exists := providers[id]; exists {
-			continue
-		}
-		providers[id] = ai.NewOpenAIProvider(ai.OpenAIConfig{BaseURL: baseURL, APIKey: key, Model: id, ProviderID: DurableProvider, ExtraHeaders: client.Headers})
-		registered = append(registered, &ai.Model{ID: id, Capabilities: ai.ModelCapabilities{ContextWindow: 16384}, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: baseURL}})
+// modelRegistry registers Polymux's OpenAI-compatible endpoint and grows with the models a
+// definition names, so a non-default model is resolvable without pre-listing it in configuration.
+type modelRegistry struct {
+	mu        sync.RWMutex
+	baseURL   string
+	key       string
+	client    Client
+	providers map[string]ai.Provider
+	models    []*ai.Model
+}
+
+func newModelRegistry(baseURL, key string, client Client) *modelRegistry {
+	return &modelRegistry{baseURL: baseURL, key: key, client: client, providers: make(map[string]ai.Provider)}
+}
+
+func (r *modelRegistry) add(id string) {
+	if id == "" {
+		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.providers[id]; exists {
+		return
+	}
+	r.providers[id] = ai.NewOpenAIProvider(ai.OpenAIConfig{BaseURL: r.baseURL, APIKey: r.key, Model: id, ProviderID: DurableProvider, ExtraHeaders: r.client.Headers})
+	r.models = append(r.models, &ai.Model{ID: id, Capabilities: ai.ModelCapabilities{ContextWindow: 16384}, ProviderMeta: ai.ProviderMetadata{ProviderID: DurableProvider, API: ai.APIOpenAICompletions, BaseURL: r.baseURL}})
+}
+
+func (r *modelRegistry) list() []*ai.Model {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]*ai.Model(nil), r.models...)
+}
+
+func (r *modelRegistry) provider(id string) ai.Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.providers[id]
+}
+
+func (r *modelRegistry) runtime() *ai.Models {
 	stream := func(ctx context.Context, selected *ai.Model, transcript ai.TranscriptContext, opts ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
-		return passthrough(providers[selected.ID])(ctx, selected, transcript, opts)
+		provider := r.provider(selected.ID)
+		if provider == nil {
+			return nil, fmt.Errorf("model %q is not registered", selected.ID)
+		}
+		return passthrough(provider)(ctx, selected, transcript, opts)
 	}
 	models := ai.CreateModels()
 	models.SetProvider(&ai.ModelsProvider{
-		ID: DurableProvider, Name: DurableProvider, BaseURL: baseURL,
+		ID: DurableProvider, Name: DurableProvider, BaseURL: r.baseURL,
 		GetModels: func() ([]*ai.Model, error) {
-			return registered, nil
+			return r.list(), nil
 		},
 		Stream:       stream,
 		StreamSimple: stream,
 		Auth: ai.ProviderAuth{APIKey: &ai.APIKeyAuth{Name: "Polymux key", Resolve: func(context.Context, ai.APIKeyAuthInput) (*ai.AuthResult, error) {
-			return &ai.AuthResult{Auth: ai.ModelAuth{APIKey: key}, Source: DurableProvider}, nil
+			return &ai.AuthResult{Auth: ai.ModelAuth{APIKey: r.key}, Source: DurableProvider}, nil
 		}}},
 	})
 	return models
+}
+
+// durableModels registers the configured models with a fresh models runtime.
+func durableModels(baseURL, key, model string, client Client, extra ...string) *ai.Models {
+	registry := newModelRegistry(baseURL, key, client)
+	registry.add(model)
+	for _, id := range extra {
+		registry.add(id)
+	}
+	return registry.runtime()
 }
 
 // passthrough adapts an ai.Provider to the models runtime stream signature.
