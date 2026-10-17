@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import Combine
+import Darwin
 import Foundation
 import PolymuxKit
 
@@ -25,7 +26,7 @@ final class ServerRuntime: ObservableObject {
         }
     }
 
-    static let address = "http://127.0.0.1:7337"
+    static var address: String { shared.localAddress }
     static let label = "com.polymux.server"
 
     @Published private(set) var status: Status = .stopped
@@ -50,6 +51,11 @@ final class ServerRuntime: ObservableObject {
             }
         }
         Task { await check() }
+    }
+
+    var localAddress: String {
+        if let host = tailnetHost { return "http://\(host):7337" }
+        return "http://127.0.0.1:7337"
     }
 
     var root: URL { ClientPaths.rootURL }
@@ -250,10 +256,15 @@ final class ServerRuntime: ObservableObject {
     private func writePlist(binary: URL) throws {
         try FileManager.default.createDirectory(at: plistURL.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
+        var arguments = [binary.path, "-data", data.path, "-log-dir", logs.path]
+        if tailnetAvailable {
+            arguments.append("-tailscale")
+        } else {
+            arguments += ["-listen", "127.0.0.1:7337", "-device-listen", "127.0.0.1:7339"]
+        }
         let value: [String: Any] = [
             "Label": Self.label,
-            "ProgramArguments": [binary.path, "-data", data.path, "-log-dir", logs.path,
-                                 "-listen", "127.0.0.1:7337", "-device-listen", "127.0.0.1:7339"],
+            "ProgramArguments": arguments,
             "RunAtLoad": true,
             "KeepAlive": autoRepair,
             "WorkingDirectory": root.path,
@@ -267,7 +278,7 @@ final class ServerRuntime: ObservableObject {
     private func healthy() async -> Bool {
         let tokenFile = data.appending(path: "devices/local-token")
         guard let token = try? String(contentsOf: tokenFile, encoding: .utf8) else { return false }
-        guard let url = URL(string: Self.address + "/health") else { return false }
+        guard let url = URL(string: localAddress + "/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 2
         request.setValue("Bearer " + token.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -279,6 +290,26 @@ final class ServerRuntime: ObservableObject {
             return false
         }
     }
+
+    private var tailnetHost: String? {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0 else { return nil }
+        defer { freeifaddrs(interfaces) }
+        var next = interfaces
+        while let current = next {
+            next = current.pointee.ifa_next
+            guard let address = current.pointee.ifa_addr, address.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                let value = String(cString: host)
+                let parts = value.split(separator: ".").compactMap { Int($0) }
+                if parts.count == 4, parts[0] == 100, (64...127).contains(parts[1]) { return value }
+            }
+        }
+        return nil
+    }
+
+    private var tailnetAvailable: Bool { tailnetHost != nil }
 
     private func launchctl(_ arguments: [String]) -> (code: Int32, output: String) {
         let process = Process()
