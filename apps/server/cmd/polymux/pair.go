@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -114,14 +115,22 @@ func connectLink(value invite) string {
 func defaultPairURL() string {
 	addresses, err := net.InterfaceAddrs()
 	if err == nil {
+		tailnet := netip.MustParsePrefix("100.64.0.0/10")
+		var candidates []net.IP
 		for _, address := range addresses {
 			ip, _, splitErr := net.ParseCIDR(address.String())
-			if splitErr != nil || ip.IsLoopback() {
+			if splitErr != nil || ip.IsLoopback() || ip.To4() == nil {
 				continue
 			}
-			if ip.To4() != nil && ip.IsPrivate() {
+			if addr, ok := netip.AddrFromSlice(ip.To4()); ok && tailnet.Contains(addr) {
 				return "http://" + ip.String() + ":7337"
 			}
+			if ip.IsPrivate() {
+				candidates = append(candidates, ip)
+			}
+		}
+		if len(candidates) > 0 {
+			return "http://" + candidates[0].String() + ":7337"
 		}
 	}
 	return "http://127.0.0.1:7337"
