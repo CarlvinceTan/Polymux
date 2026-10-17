@@ -161,6 +161,9 @@ struct AppRoot: View {
         .onOpenURL { handleConnect($0) }
         .onAppear {
             URLRouter.shared.handler = { handleConnect($0) }
+            #if os(macOS)
+            if ServerRuntime.shared.enabled { address = ServerRuntime.address }
+            #endif
         }
         .panel(isPresented: $showSettings) {
             ConnectionView(address: $address, settings: session?.settings, client: session?.client,
