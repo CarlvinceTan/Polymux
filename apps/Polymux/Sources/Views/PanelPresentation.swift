@@ -273,10 +273,11 @@ private final class ChromeAnchor: NSView {
     }
 
     func apply() {
-        guard let window else { return }
-        window.title = ""
-        window.titleVisibility = .hidden
-        window.toolbar?.isVisible = !active
+        for window in NSApp.windows {
+            window.title = ""
+            window.titleVisibility = .hidden
+            window.toolbar?.isVisible = !active
+        }
     }
 }
 

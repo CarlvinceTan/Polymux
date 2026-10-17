@@ -235,6 +235,7 @@ struct ShellView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .navigationTitle("")
         .background {
             Text("Application status")
                 .font(.system(size: 1)).opacity(0.01)
