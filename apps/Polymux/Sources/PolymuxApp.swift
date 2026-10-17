@@ -298,9 +298,17 @@ struct ConnectionView: View {
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     } else if let networkIssue {
-                        Text(networkIssue).font(.footnote).foregroundStyle(.secondary)
+                        Text(networkIssue)
+                            .font(.footnote).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity, minHeight: 96, alignment: .center)
                     } else {
-                        ProgressView()
+                        HStack {
+                            Spacer()
+                            ProgressView().controlSize(.small)
+                            Spacer()
+                        }
+                        .frame(height: 96)
                     }
                     #if os(macOS)
                     if !server.enabled {
@@ -322,7 +330,12 @@ struct ConnectionView: View {
                                                                  set: { server.setAutoRepair($0) }))
                     }
                     if migrating {
-                        ProgressView(server.migration ?? "Preparing migration…")
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(server.migration ?? "Preparing migration…")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .center)
                     }
                     if let migrationError {
                         Text(migrationError).font(.footnote).foregroundStyle(.red)
@@ -334,10 +347,6 @@ struct ConnectionView: View {
                 .panelRow()
                 if let settings {
                     VoiceSettings(store: settings)
-                    if settings.value == nil {
-                        Section { ProgressView() }
-                            .panelRow()
-                    }
                 }
                 Section("Notifications") {
                     let choice = notificationToggle.binding { enabled in
