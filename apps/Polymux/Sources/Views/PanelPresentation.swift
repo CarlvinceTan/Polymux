@@ -177,6 +177,7 @@ private struct PanelHost: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background { FocusWindow(memory: focus).frame(width: 0, height: 0).accessibilityHidden(true) }
+            .background { PanelChrome(active: active).frame(width: 0, height: 0).accessibilityHidden(true) }
             .disabled(active)
             .accessibilityHidden(active)
             .overlayPreferenceValue(PanelEntries.self) { entries in
@@ -222,6 +223,36 @@ private final class FocusMemory {
             if let view = previous as? NSView, view.window !== window { return }
             window.makeFirstResponder(previous)
         }
+    }
+}
+
+private struct PanelChrome: NSViewRepresentable {
+    let active: Bool
+
+    func makeNSView(context: Context) -> ChromeAnchor {
+        let view = ChromeAnchor()
+        view.active = active
+        return view
+    }
+
+    func updateNSView(_ view: ChromeAnchor, context: Context) {
+        view.active = active
+        view.apply()
+    }
+}
+
+private final class ChromeAnchor: NSView {
+    var active = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        apply()
+    }
+
+    func apply() {
+        guard let window else { return }
+        window.toolbar?.isVisible = !active
+        window.titleVisibility = active ? .hidden : .visible
     }
 }
 
