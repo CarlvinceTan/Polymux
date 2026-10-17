@@ -25,6 +25,8 @@ struct NewChatView: View {
                 if contacts.isEmpty {
                     Text(query.isEmpty ? "No available agents." : "No matching agents.")
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity, alignment: .center)
                         .listRowSeparator(.hidden)
                         .panelRow()
                 }
@@ -47,6 +49,7 @@ struct NewChatView: View {
             .listStyle(.plain)
             .contentMargins(.horizontal, 0, for: .scrollContent)
             .scrollIndicators(.hidden)
+            .frame(minHeight: 440)
         } actions: {
             Button { start() } label: {
                 Text("Create")
