@@ -7,7 +7,6 @@ import (
 )
 
 func serverLog(dir string) (*os.File, error) {
-	dir = filepath.Join(dir, "logs")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}

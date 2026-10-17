@@ -73,6 +73,10 @@ def snapshot(sha, output, server, app):
                                cwd=source / "apps/server", check=True, stdout=log, stderr=subprocess.STDOUT)
             if host.run([str(output / "polymux-server"), "--version"]) != sha:
                 raise host.DeployError("built server has an unexpected commit")
+            for name in ("polymux", "polymux-chat"):
+                subprocess.run(["go", "build", "-tags", "sqlite_fts5", "-trimpath", "-o", str(output / name),
+                                "./cmd/" + name], cwd=source / "apps/server", check=True,
+                               stdout=log, stderr=subprocess.STDOUT)
         if app:
             with (output / "app-build.log").open("w") as log:
                 subprocess.run([sys.executable, str(source / "scripts/control/fetch_cua.py")], check=True,
@@ -95,6 +99,12 @@ def snapshot(sha, output, server, app):
             entitlement_path.write_bytes(plistlib.dumps(entitlements))
             launcher = app_path / "Contents/Helpers/deploy-launch"
             host.run(["xcrun", "swiftc", "-O", "-o", str(launcher), str(source / "scripts/deploy/deploy-launch.swift")])
+            server_helper = app_path / "Contents/Helpers/polymux-server"
+            if server:
+                for name in ("polymux-server", "polymux", "polymux-chat"):
+                    helper = app_path / "Contents/Helpers" / name
+                    shutil.copy2(output / name, helper)
+                    host.run(["codesign", "--force", "--options", "runtime", "--sign", "-", str(helper)])
             host.run(["codesign", "--force", "--options", "runtime", "--sign", "-",
                       str(app_path / "Contents/Helpers/cua-driver")])
             host.run(["codesign", "--force", "--options", "runtime", "--sign", "-", str(launcher)])
@@ -135,18 +145,47 @@ def remote_app(name, artifact, sha):
         host.run(SSH + [name, shlex.join(["rm", "-rf", directory])], timeout=60)
 
 
+def write_server_plist(path, binary, data, logs):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config = {
+        "Label": "com.polymux.server",
+        "ProgramArguments": [str(binary), "-data", str(data), "-log-dir", str(logs),
+                             "-listen", "127.0.0.1:7337", "-device-listen", "127.0.0.1:7339"],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "WorkingDirectory": str(path.parent),
+        "StandardOutPath": str(logs / "server.out.log"),
+        "StandardErrorPath": str(logs / "server.err.log"),
+    }
+    logs.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_bytes(plistlib.dumps(config))
+    path.chmod(0o600)
+
+
 def install(bundle, server=True, app=True, clients=("cvmac",)):
     bundle = Path(bundle).resolve()
     manifest = json.loads((bundle / "manifest.json").read_text())
     sha = host.revision(manifest["sha"])
-    root = Path.home() / "polymux/deployments"
+    root = Path.home() / ".polymux/deployments"
     if server:
         binary = bundle / "polymux-server"
         if host.digest(binary) != manifest.get("serverSHA256"):
             raise host.DeployError("server artifact checksum mismatch")
-        service = host.Launchd(Path.home() / "Library/LaunchAgents/com.polymux.server.plist",
-                              Path.home() / "Library/Application Support/Polymux/server/devices/local-token")
+        plist = Path.home() / "Library/LaunchAgents/com.polymux.server.plist"
+        token = Path.home() / ".polymux/data/devices/local-token"
+        (Path.home() / ".polymux/bin").mkdir(parents=True, exist_ok=True, mode=0o700)
+        (Path.home() / ".polymux/data").mkdir(parents=True, exist_ok=True, mode=0o700)
+        write_server_plist(plist, Path.home() / ".polymux/bin/polymux-server",
+                           Path.home() / ".polymux/data", Path.home() / ".polymux/logs")
+        service = host.Launchd(plist, token)
         host.install_server(binary, sha, root, service)
+        tools = Path.home() / ".polymux/bin"
+        tools.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for name in ("polymux", "polymux-chat"):
+            artifact = bundle / name
+            if artifact.exists():
+                host.atomic_copy(artifact, tools / name)
+                (tools / name).chmod(0o755)
         print("deploy: cvmini server verified at " + sha)
     if app:
         artifact = bundle / "Polymux.app"

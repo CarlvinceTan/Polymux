@@ -141,8 +141,8 @@ func TestPENoRetryOnHardStatus(t *testing.T) {
 	}
 }
 func TestDurableModelsRegistersEveryModel(t *testing.T) {
-	models := durableModels("http://localhost/v1", "", "local/opencode", Client{}, "local/codex", "local/cursor-agent", "local/codex")
-	for _, id := range []string{"local/opencode", "local/codex", "local/cursor-agent"} {
+	models := durableModels("http://localhost/v1", "", "local/opencode", Client{}, "local/second", "local/cursor-agent", "local/second")
+	for _, id := range []string{"local/opencode", "local/second", "local/cursor-agent"} {
 		if models.GetModel(DurableProvider, id) == nil {
 			t.Errorf("model %s not registered", id)
 		}
@@ -168,8 +168,8 @@ func TestDurableModelsSendsOwnModelID(t *testing.T) {
 		sse(w, "READY", nil)
 	}))
 	defer provider.Close()
-	models := durableModels(provider.URL+"/v1", "test-key", "local/opencode", Client{Headers: map[string]string{"X-Bridge": "shared"}}, "local/codex", "local/cursor-agent")
-	for _, id := range []string{"local/opencode", "local/codex", "local/cursor-agent"} {
+	models := durableModels(provider.URL+"/v1", "test-key", "local/opencode", Client{Headers: map[string]string{"X-Bridge": "shared"}}, "local/second", "local/cursor-agent")
+	for _, id := range []string{"local/opencode", "local/second", "local/cursor-agent"} {
 		t.Run(id, func(t *testing.T) {
 			model := models.GetModel(DurableProvider, id)
 			if model == nil {
@@ -196,7 +196,7 @@ func TestDurableModelsSendsOwnModelID(t *testing.T) {
 }
 
 func TestDurableAgentOnNonDefaultModelReplies(t *testing.T) {
-	for _, id := range []string{"local/codex", "local/cursor-agent"} {
+	for _, id := range []string{"local/second", "local/cursor-agent"} {
 		t.Run(id, func(t *testing.T) {
 			requests := make(chan string, 1)
 			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -36,6 +36,25 @@ public struct APIClient: Sendable {
         try await get("agents")
     }
 
+    public func network() async throws -> NetworkInfo {
+        try await get("network")
+    }
+
+    public func networkInvite() async throws -> NetworkInvite {
+        try await get("network/invite")
+    }
+
+    public func exportNetwork() async throws -> (data: Data, sha256: String) {
+        var request = try await request("network/export")
+        request.timeoutInterval = 120
+        let (data, response) = try await session.data(for: request)
+        try validate(response, data: data)
+        guard let sha = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Polymux-SHA256"), !sha.isEmpty else {
+            throw ClientError.invalidResponse
+        }
+        return (data, sha)
+    }
+
     public func notices(after: Int64? = nil) async throws -> NoticePage {
         try await get("notifications", query: after.map { [URLQueryItem(name: "after", value: String($0))] } ?? [])
     }
@@ -385,20 +404,24 @@ public struct APIClient: Sendable {
 
     private static func discoverToken(_ url: URL) -> String? {
         #if os(macOS)
-        let directory = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"].map {
-            URL(fileURLWithPath: $0, isDirectory: true)
-        } ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Polymux/server")
-        guard let token = try? String(contentsOf: directory.appendingPathComponent("devices/local-token"), encoding: .utf8) else { return nil }
         let host = url.host?.lowercased() ?? ""
         var name = [CChar](repeating: 0, count: Int(NI_MAXHOST))
         guard gethostname(&name, name.count) == 0 else { return nil }
         let local = String(cString: name).lowercased().components(separatedBy: ".")[0]
-        guard ["localhost", "127.0.0.1", "::1", local, "\(local).local"].contains(host)
-                || (host.hasSuffix(".ts.net") && !Set(Host(name: host).addresses).isDisjoint(with: localAddresses())) else { return nil }
-        return token
+        let localHost = ["localhost", "127.0.0.1", "::1", local, "\(local).local"].contains(host)
+            || (host.hasSuffix(".ts.net") && !Set(Host(name: host).addresses).isDisjoint(with: localAddresses()))
+        if localHost {
+            let directory = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"].map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            } ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".polymux/data")
+            if let token = try? String(contentsOf: directory.appendingPathComponent("devices/local-token"), encoding: .utf8) {
+                return token
+            }
+        }
+        return try? String(contentsOf: ClientPaths.token(url.absoluteString), encoding: .utf8)
         #else
-        return nil
+        return try? String(contentsOf: ClientPaths.token(url.absoluteString), encoding: .utf8)
         #endif
     }
 

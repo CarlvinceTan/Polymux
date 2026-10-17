@@ -4,7 +4,7 @@ import QuartzCore
 import AppKit
 #endif
 
-/// Timing hook for the Release scroll measurement (task lane4/opencode, PR #39).
+/// Timing hook for the Release scroll measurement.
 /// With `--verify-frame-log <path>` the app records CADisplayLink frame intervals
 /// (ms, one per line: wall time, interval) to <path>, flushed every 32 frames so a
 /// force-quit (XCUIElement.terminate) loses at most a moment. Inert without the

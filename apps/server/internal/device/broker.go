@@ -241,6 +241,21 @@ func (c *connection) send(p Packet) error {
 }
 
 func (b *Broker) List(ctx context.Context, agent string) ([]Status, error) {
+	all, err := b.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []Status{}
+	for _, state := range all {
+		if state.Agent == agent {
+			out = append(out, state)
+		}
+	}
+	return out, nil
+}
+
+// All lists every paired device, including devices paired to other agents.
+func (b *Broker) All(ctx context.Context) ([]Status, error) {
 	pairs, err := b.store.List(ctx)
 	if err != nil {
 		return nil, err
@@ -249,7 +264,7 @@ func (b *Broker) List(ctx context.Context, agent string) ([]Status, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, p := range pairs {
-		if p.Agent != agent || p.Revoked {
+		if p.Revoked {
 			continue
 		}
 		state := Status{Pairing: p, Ready: []string{}, Tools: []Tool{}}

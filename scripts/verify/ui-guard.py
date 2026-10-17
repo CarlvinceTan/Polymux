@@ -120,7 +120,7 @@ class Observer:
         self.evidence.mkdir(parents=True, exist_ok=True)
         (self.evidence / "system-dialog.json").write_text(json.dumps(dict(target, owner=window.get("owner"), title=title)))
         if "system events" in title.lower():
-            print("lane policy: System Events permission dialog detected; scripting System Events is prohibited", flush=True)
+            print("verification policy: System Events permission dialog detected; scripting System Events is prohibited", flush=True)
         raise Blocked("blocked by system dialog: " + title + detail)
 
     def close(self):
@@ -281,7 +281,7 @@ def main():
     args = parser.parse_args()
     if args.audit_log:
         if audit(args.audit_log, args.offset):
-            print("lane policy: System Events scripting detected in a tool command; permission prompts must be left for a person")
+            print("verification policy: System Events scripting detected in a tool command; permission prompts must be left for a person")
             return 11
         return 0
     if args.command[:1] == ["--"]:

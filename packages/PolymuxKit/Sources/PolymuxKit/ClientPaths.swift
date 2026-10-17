@@ -5,9 +5,18 @@ public enum ClientPaths {
         cache(address, root: root)
     }
 
+    public static func token(_ address: String) -> URL {
+        token(address, root: root)
+    }
+
     public static var control: URL {
         root.appending(path: "control", directoryHint: .isDirectory)
     }
+
+    public static var rootURL: URL { root }
+    public static var serverData: URL { root.appending(path: "data", directoryHint: .isDirectory) }
+    public static var serverLogs: URL { root.appending(path: "logs", directoryHint: .isDirectory) }
+    public static var serverBin: URL { root.appending(path: "bin", directoryHint: .isDirectory) }
 
     private static var root: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -30,7 +39,14 @@ public enum ClientPaths {
     }
 
     static func cache(_ address: String, root: URL) -> URL {
-        let key = address.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
-        return root.appending(path: "app-\(key)/cache.sqlite")
+        root.appending(path: "app-\(key(address))/cache.sqlite")
+    }
+
+    static func token(_ address: String, root: URL) -> URL {
+        root.appending(path: "app-\(key(address))/token")
+    }
+
+    private static func key(_ address: String) -> UInt64 {
+        address.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) }
     }
 }

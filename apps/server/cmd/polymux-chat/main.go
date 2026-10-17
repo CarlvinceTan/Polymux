@@ -67,7 +67,7 @@ func run(args []string, out, stderr io.Writer, now func() time.Time, sleep func(
 		return usage()
 	}
 	home, _ := os.UserHomeDir()
-	tokenFile := env("POLYMUX_TOKEN_FILE", filepath.Join(home, "Library/Application Support/Polymux/server/devices/local-token"))
+	tokenFile := env("POLYMUX_TOKEN_FILE", filepath.Join(home, ".polymux/data/devices/local-token"))
 	raw, err := os.ReadFile(tokenFile)
 	token := strings.Trim(string(raw), "\r\n")
 	clean := func(s string) string {
@@ -83,7 +83,7 @@ func run(args []string, out, stderr io.Writer, now func() time.Time, sleep func(
 	if thread == "" {
 		return fail("thread required (set POLYMUX_THREAD or --thread ID)")
 	}
-	api := env("POLYMUX_API", "http://127.0.0.1:8787")
+	api := env("POLYMUX_API", "http://127.0.0.1:7337")
 	path := "/threads/" + url.PathEscape(thread) + "/messages"
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	request := func(method string, payload []byte) ([]byte, error) {

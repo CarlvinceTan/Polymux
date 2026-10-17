@@ -20,7 +20,7 @@ Create another agent from the plus button inside **New Chat**. Agents can partic
 
 ## Configure the text model on the server
 
-The current durable runtime uses an OpenAI-compatible provider. Its startup configuration is `model.json` in the server data directory, which defaults to `~/Library/Application Support/Polymux/server`.
+The current durable runtime uses an OpenAI-compatible provider. Its startup configuration is `model.json` in the server data directory, which defaults to `~/.polymux/data`.
 
 For example, the file can reference a key supplied to the server process without containing the key itself:
 

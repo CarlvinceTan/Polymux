@@ -1,6 +1,8 @@
 package server
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -16,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,8 +41,6 @@ type Factory interface {
 }
 type Config struct {
 	BuildSHA    string
-	MergeRoot   string
-	MergeQueue  bool
 	DataDir     string
 	Model       string
 	Definitions []agentruntime.Definition
@@ -259,6 +260,110 @@ func (s *Server) Close() error {
 }
 func (s *Server) Handler() http.Handler { return s.config.Devices.Require(s) }
 
+func (s *Server) networkInvite(w http.ResponseWriter, r *http.Request) {
+	token, err := os.ReadFile(filepath.Join(s.config.DataDir, "devices", "local-token"))
+	if err != nil {
+		write(w, 500, map[string]string{"error": "local credential unavailable"})
+		return
+	}
+	write(w, 200, map[string]string{"url": "http://" + r.Host, "token": strings.TrimSpace(string(token))})
+}
+
+func (s *Server) networkExport(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.Store.DB.ExecContext(r.Context(), "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		write(w, 500, map[string]string{"error": "could not checkpoint data"})
+		return
+	}
+	file, err := os.CreateTemp("", "polymux-export-*.tar.gz")
+	if err != nil {
+		write(w, 500, map[string]string{"error": "could not prepare export"})
+		return
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	archive := gzip.NewWriter(file)
+	writer := tar.NewWriter(archive)
+	err = filepath.WalkDir(s.config.DataDir, func(name string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(s.config.DataDir, name)
+		if err != nil || relative == "." {
+			return err
+		}
+		if info.Mode()&os.ModeSocket != 0 {
+			return nil
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(relative)
+		if entry.IsDir() {
+			header.Name += "/"
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		source, err := os.Open(name)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(writer, source)
+		closeErr := source.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
+	err = errors.Join(err, writer.Close(), archive.Close())
+	if err != nil {
+		write(w, 500, map[string]string{"error": "could not build export"})
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		write(w, 500, map[string]string{"error": "could not read export"})
+		return
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		write(w, 500, map[string]string{"error": "could not hash export"})
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		write(w, 500, map[string]string{"error": "could not read export"})
+		return
+	}
+	w.Header().Set("X-Polymux-SHA256", hex.EncodeToString(hash.Sum(nil)))
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", "attachment; filename=polymux-data.tar.gz")
+	http.ServeContent(w, r, "polymux-data.tar.gz", time.Now(), file)
+}
+
+func (s *Server) network(w http.ResponseWriter, r *http.Request) {
+	devices := []device.Status{}
+	if s.config.Devices != nil {
+		if listed, err := s.config.Devices.All(r.Context()); err == nil {
+			devices = listed
+		}
+	}
+	name, _ := os.Hostname()
+	write(w, 200, map[string]any{
+		"server": map[string]any{
+			"name": name, "build": s.config.BuildSHA,
+			"platform": runtime.GOOS, "role": "server",
+		},
+		"devices": devices,
+	})
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.mux.ServeHTTP(w, r)
@@ -282,6 +387,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		write(w, 200, map[string]any{"status": "ok", "runtime": "PiG", "buildSHA": s.config.BuildSHA, "semanticSearch": s.config.Index.Embedder != nil})
 	})
+	s.mux.HandleFunc("GET /network", s.network)
+	s.mux.HandleFunc("GET /network/invite", s.networkInvite)
+	s.mux.HandleFunc("GET /network/export", s.networkExport)
 	s.mux.HandleFunc("GET /agents", func(w http.ResponseWriter, r *http.Request) {
 		v, err := s.Store.Agents(r.Context())
 		s.respond(w, v, err)
@@ -984,7 +1092,6 @@ func (s *Server) execute(ctx context.Context, a *actor, work store.Work, turn ..
 	}
 	state := &turnState{
 		run: run, work: work, store: s.Store,
-		mergeRoot: s.config.MergeRoot, mergeQueue: s.config.MergeQueue,
 		cancel: cancel, classes: map[string]ToolClass{}, known: map[string]bool{},
 	}
 	runCtx = agentruntime.WithSteers(context.WithValue(runCtx, turnKey{}, state), func(ctx context.Context, persist func([]contract.Message) error) error {

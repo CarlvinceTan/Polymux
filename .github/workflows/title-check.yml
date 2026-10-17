@@ -28,7 +28,7 @@ jobs:
                 })).data
               : context.payload.pull_request;
             const bad = /^(\[[^\]]+\]|#+|[A-Za-z-]+:)\s/.test(item.title);
-            const rule = 'Use plain English; put the area in labels or the Lane field.';
+            const rule = 'Use plain English; put the area in labels.';
             if (context.eventName === 'pull_request') {
               if (bad) core.setFailed(`Title starts with a code prefix. ${rule}`);
               return;

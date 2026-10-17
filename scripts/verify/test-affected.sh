@@ -47,7 +47,7 @@ aff Package.swift; A1="$GO_PKGS $SWIFT $APP"; aff apps/server/go.mod
 check "Package.swift goes full; go.mod means all Go packages" '[ "$A1" = "all all 1" ] && [ "$GO_PKGS" = all ]'
 aff scripts/verify/verify.sh; A1="$GO_PKGS $SWIFT $APP"; aff scripts/verify/affected.py; A2="$GO_PKGS $SWIFT $APP"; aff scripts/verify/templates/ReadinessTests.swift; A3="$GO_PKGS $SWIFT $APP"
 check "verify tooling (verify.sh, affected.py, templates/) goes full" '[ "$A1" = "all all 1" ] && [ "$A2" = "all all 1" ] && [ "$A3" = "all all 1" ]'
-aff scripts/merge/merge-queue.sh docs/x.md
+aff scripts/verify/verify.sh docs/x.md
 check "merge-only scripts and docs stay inert" '[ -z "$GO_PKGS" ] && [ -z "$SWIFT" ] && [ "$APP" = 0 ]'
 aff packages/Kit/Resources/new.json
 check "ownerless non-doc file under packages/ runs every Swift target" '[ "$SWIFT" = all ] && [ "$APP" = 1 ]'

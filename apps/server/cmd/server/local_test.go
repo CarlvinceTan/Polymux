@@ -18,13 +18,13 @@ func TestLocalPublication(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("POLYMUX_DATA_DIR", "")
-			clientDir := filepath.Join(home, "Library", "Application Support", "Polymux", "server")
+			clientDir := filepath.Join(home, ".polymux", "data")
 			if override {
 				clientDir = filepath.Join(home, "client-data")
 				t.Setenv("POLYMUX_DATA_DIR", clientDir)
 			}
 			// Model production's non-default -data independently of the app environment.
-			dir := filepath.Join(home, "polymux", "data")
+			dir := filepath.Join(home, ".polymux", "data")
 			pairs, err := device.Open(t.Context(), dir, "localhost")
 			if err != nil {
 				t.Fatal(err)

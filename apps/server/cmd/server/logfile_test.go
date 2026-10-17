@@ -10,7 +10,7 @@ import (
 
 func TestServerLogFileModeAndRotate(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "logs", "server.log")
+	path := filepath.Join(dir, "server.log")
 	open := func() *os.File {
 		t.Helper()
 		file, err := serverLog(dir)

@@ -121,13 +121,13 @@ func writeModel(t *testing.T, body string) string {
 func TestLoadModelModelsList(t *testing.T) {
 	t.Setenv("POLYMUX_MODEL", "local/opencode")
 	t.Setenv("POLYMUX_MODEL_URL", "")
-	dir := writeModel(t, `{"models":["local/opencode","local/codex","local/codex"]}`)
+	dir := writeModel(t, `{"models":["local/opencode","local/second","local/second"]}`)
 	for _, tc := range []struct {
 		name, override string
 		want           []string
 	}{
-		{"file", "", []string{"local/opencode", "local/codex"}},
-		{"environment", "local/cursor-agent,local/codex", []string{"local/opencode", "local/cursor-agent", "local/codex"}},
+		{"file", "", []string{"local/opencode", "local/second"}},
+		{"environment", "local/cursor-agent,local/second", []string{"local/opencode", "local/cursor-agent", "local/second"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("POLYMUX_MODELS", tc.override)

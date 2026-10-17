@@ -24,7 +24,7 @@ LAST={}
 CONFIG=json.dumps({'providers':{'opencode-go':{'models':{'deepseek-v4.1-flash':{'settings':{'reasoningEffort':'low'}}}}},'agents':{'standin':{'description':'Inference only, no native tools','permissions':[{'action':'*','resource':'*','effect':'deny'}], 'prompt':'Do not execute tools. Return only the requested JSON object.'}}})
 SECRET=re.compile(r'-----BEGIN .*PRIVATE KEY|\b(?:sk-|ghp_|github_pat_|xox[baprs]-|ntn_|secret_)[A-Za-z0-9_-]{12,}|\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?i:password|access[_-]?token|api[_-]?key)\s*[=:]\s*\S+')
 
-RETRYABLE={'provider_unavailable','provider_error','provider_timeout','invalid_provider_response','invalid_content'}
+RETRYABLE={'provider_unavailable','provider_error','provider_timeout','invalid_provider_response','invalid_content','invalid_tool'}
 
 def audit_event(event):
     path=WORK.parent/'bridge-events.jsonl'
@@ -50,8 +50,8 @@ def infer(request):
     original=request
     request=bounded_request(request)
     requested=request.get('model','local/opencode').removeprefix('local/')
-    if requested not in ('opencode','cursor-agent','codex'):raise ValueError('unsupported_provider')
-    providers=['opencode','cursor-agent','codex']
+    if requested not in ('opencode','cursor-agent'):raise ValueError('unsupported_provider')
+    providers=['opencode','cursor-agent']
     providers=providers[providers.index(requested):]
     ident=uuid.uuid4().hex
     last=None
@@ -142,8 +142,6 @@ def infer_once(request):
         argv=['cursor-agent','-p','--trust','--mode','ask','--output-format','json',prompt]
     elif provider=='opencode':
         argv=None
-    elif provider=='codex':
-        argv=['codex','exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only','--json','-c','features.shell_tool=false','-c','features.apply_patch_freeform=false',prompt]
     else:raise ValueError('unsupported_provider')
     with LOCK:
         if provider=='opencode':
@@ -157,17 +155,6 @@ def infer_once(request):
             audit_event({'event':'cursor_error','error':SECRET.sub('[REDACTED]',str(event.get('result','')))[:4000]})
             raise ValueError('provider_error')
         reply=event.get('result','')
-    elif provider=='codex':
-        reply=''
-        for line in result.stdout.splitlines():
-            try:event=json.loads(line)
-            except json.JSONDecodeError:continue
-            if event.get('type') in ['tool_use','tool','tool_call']:raise ValueError('native_tool_rejected')
-            if event.get('type')=='text':reply+=event.get('part',{}).get('text','')
-            if provider=='codex' and event.get('type')=='item.completed':
-                item=event.get('item',{})
-                if item.get('type') in ['command_execution','mcp_tool_call']:raise ValueError('native_tool_rejected')
-                if item.get('type')=='agent_message':reply+=item.get('text','')
     if SECRET.search(reply):raise ValueError('credential_output')
     reply=reply.strip()
     if reply.startswith('```'):reply=re.sub(r'^```(?:json)?\s*|\s*```$','',reply).strip()
@@ -194,7 +181,7 @@ class Handler(BaseHTTPRequestHandler):
         data=json.dumps(payload).encode();self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def do_GET(self):
         if self.path=='/health':self.sendjson(200,{'status':'ok','last_request':LAST});return
-        if self.path=='/v1/models':self.sendjson(200,{'object':'list','data':[{'id':x,'object':'model'} for x in ['local/opencode','local/cursor-agent','local/codex']]});return
+        if self.path=='/v1/models':self.sendjson(200,{'object':'list','data':[{'id':x,'object':'model'} for x in ['local/opencode','local/cursor-agent']]});return
         self.sendjson(404,{'error':{'message':'Not found'}})
     def do_POST(self):
         if self.path!='/v1/chat/completions':self.sendjson(404,{'error':{'message':'Not found'}});return

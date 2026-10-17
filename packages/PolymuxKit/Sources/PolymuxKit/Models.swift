@@ -107,6 +107,7 @@ public struct LocalFile: Identifiable, Hashable, Sendable {
 public enum ClientError: LocalizedError, Sendable {
     case response(Int, String)
     case invalidURL
+    case invalidResponse
     case unavailable
     case cache(String)
     case gap(expected: Int64, actual: Int64)
@@ -115,6 +116,7 @@ public enum ClientError: LocalizedError, Sendable {
         switch self {
         case let .response(_, message): message
         case .invalidURL: "The server address is invalid."
+        case .invalidResponse: "The server returned an unexpected response."
         case .unavailable: "Couldn’t complete this request."
         case let .cache(message): "Local cache: \(message)"
         case let .gap(expected, actual): "Conversation replay skipped event \(expected) and received \(actual)."

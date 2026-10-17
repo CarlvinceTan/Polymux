@@ -171,7 +171,6 @@ func (v *voiceWork) run(ctx context.Context, task voiceTask) (agentruntime.Resul
 	}
 	state := &turnState{
 		run: run, work: store.Work{Trigger: task.trigger}, store: v.server.Store, noResume: true,
-		mergeRoot: v.server.config.MergeRoot, mergeQueue: v.server.config.MergeQueue,
 		classes: map[string]ToolClass{}, known: map[string]bool{}, external: map[string]bool{},
 	}
 	if v.server.config.Devices != nil && v.thread.ID == v.thread.AgentID && task.trigger == "voice" {

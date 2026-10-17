@@ -19,7 +19,7 @@ func localCredential(ctx context.Context, pairs *device.Store, dir string) (stri
 		if err != nil {
 			return "", err
 		}
-		clientDir = filepath.Join(home, "Library", "Application Support", "Polymux", "server")
+		clientDir = filepath.Join(home, ".polymux", "data")
 	}
 	path := filepath.Join(clientDir, "devices", "local-token")
 	if filepath.Clean(path) == filepath.Join(filepath.Clean(dir), "devices", "local-token") {

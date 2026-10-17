@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/CarlvinceTan/polymux/apps/server/internal/agentruntime"
-	"github.com/CarlvinceTan/polymux/apps/server/internal/contract"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/device"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/embedproc"
 	"github.com/CarlvinceTan/polymux/apps/server/internal/fixture"
@@ -59,7 +58,8 @@ func run() error {
 	version := flag.Bool("version", false, "print the build commit and exit")
 	listen := flag.String("listen", os.Getenv("POLYMUX_LISTEN"), "authenticated backend IP:port (loopback, private LAN or Tailscale; defaults to 127.0.0.1:7337)")
 	dev := flag.Bool("dev", os.Getenv("POLYMUX_DEV") == "1", "development mode (loopback is always allowed)")
-	dir := flag.String("data", os.Getenv("POLYMUX_DATA_DIR"), "data directory")
+	dir := flag.String("data", os.Getenv("POLYMUX_DATA_DIR"), "data directory (defaults to ~/.polymux/data)")
+	logDir := flag.String("log-dir", os.Getenv("POLYMUX_LOG_DIR"), "log directory (defaults to ~/.polymux/logs)")
 	deviceListen := flag.String("device-listen", "", "TLS device listener (defaults to backend port + 2)")
 	noMDNS := flag.Bool("no-mdns", os.Getenv("POLYMUX_NO_MDNS") == "1", "disable Bonjour LAN advertisement")
 	tailscale := flag.Bool("tailscale", os.Getenv("POLYMUX_TAILSCALE") == "1", "use Tailscale listeners (requires Tailscale)")
@@ -80,11 +80,19 @@ func run() error {
 		fmt.Println(addr)
 	}
 	if *dir == "" {
-		home, err := os.UserHomeDir()
+		value, err := defaultDataDir()
 		if err != nil {
 			return err
 		}
-		*dir = filepath.Join(home, "Library", "Application Support", "Polymux", "server")
+		*dir = value
+		*logDir = filepath.Join(filepath.Dir(value), "logs")
+	}
+	if *logDir == "" {
+		value, err := defaultLogDir()
+		if err != nil {
+			return err
+		}
+		*logDir = value
 	}
 	defaultIP, err := listenIP(*tailscale)
 	if err != nil {
@@ -98,7 +106,7 @@ func run() error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	logFile, err := serverLog(*dir)
+	logFile, err := serverLog(*logDir)
 	if err != nil {
 		return err
 	}
@@ -168,7 +176,7 @@ func run() error {
 		return err
 	}
 	defer runtime.Close()
-	definitions := defaults(model)
+	definitions := []agentruntime.Definition{}
 	if *verify {
 		definitions = fixture.Agents(model)
 	} else if path := os.Getenv("POLYMUX_AGENTS"); path != "" {
@@ -230,8 +238,6 @@ func run() error {
 	}
 	api, err := server.New(ctx, s, server.Config{
 		BuildSHA:    buildSHA,
-		MergeRoot:   strings.TrimSpace(os.Getenv("POLYMUX_MERGE_LANE")),
-		MergeQueue:  strings.EqualFold(strings.TrimSpace(os.Getenv("POLYMUX_MERGE_QUEUE")), "true"),
 		DataDir:     *dir,
 		Model:       model,
 		Definitions: definitions,
@@ -351,14 +357,20 @@ func instanceName(hostname string) string {
 	return name
 }
 
-func defaults(model string) []agentruntime.Definition {
-	coding := agentruntime.Definition{Agent: contract.Agent{ID: "coding", Name: "Coding", Role: "Software engineer", Model: model}, Prompt: "You are a pragmatic software engineer. Make focused changes, preserve unrelated work, and verify your results. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "write", "edit", "bash", "find", "ls"}}
-	coding.Workspace = strings.TrimSpace(os.Getenv("POLYMUX_CODING_REPO"))
-	return []agentruntime.Definition{
-		{Agent: contract.Agent{ID: "assistant", Name: "Assistant", Role: "Personal assistant", Model: model}, Prompt: "You are Polymux, a helpful persistent personal assistant. Write replies as natural plain text without Markdown formatting. Be concise and candid. Tools have the user's OS permissions; use them only when needed to fulfill the user's request.", Tools: []string{"read", "write", "edit", "bash", "find", "ls"}},
-		{Agent: contract.Agent{ID: "research", Name: "Research", Role: "Research assistant", Model: model}, Prompt: "You are a careful research assistant. Distinguish verified facts from uncertainty and provide sources when available. Reply in natural plain text without Markdown formatting.", Tools: []string{"read", "bash", "find", "ls"}},
-		coding,
+func defaultDataDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
+	return filepath.Join(home, ".polymux", "data"), nil
+}
+
+func defaultLogDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".polymux", "logs"), nil
 }
 
 // Production default: all interfaces, or the tailnet IP with -tailscale.

@@ -28,7 +28,7 @@ func TestLocalServer(t *testing.T) {
 func TestLocalStartup(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, "polymux", "data")
-	path := filepath.Join(home, "Library", "Application Support", "Polymux", "server", "devices", "local-token")
+	path := filepath.Join(home, ".polymux", "data", "devices", "local-token")
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

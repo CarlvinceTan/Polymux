@@ -86,9 +86,6 @@ step test-integrity bash "$SD/test-integrity.sh" "${TI_BASE:-origin/dev}"
 [ -f "$SD/test-support.sh" ] && step verify-support-tests bash "$SD/test-support.sh"
 [ -f "$SD/test-wt-setup.sh" ] && step wt-setup-tests bash "$SD/test-wt-setup.sh"
 [ -f "$SD/test-verify.sh" ] && step verify-tests bash "$SD/test-verify.sh"
-[ -f "$ROOT/scripts/merge/test-support.sh" ] && step merge-support-tests bash "$ROOT/scripts/merge/test-support.sh"
-[ -f "$ROOT/scripts/merge/test-branch-policy.sh" ] && step branch-policy-tests bash "$ROOT/scripts/merge/test-branch-policy.sh"
-[ -f "$ROOT/scripts/merge/test-merge-queue.sh" ] && step merge-queue-tests bash "$ROOT/scripts/merge/test-merge-queue.sh"
 [ -f "$ROOT/scripts/standin/test_standin.py" ] && step standin-tests python3 "$ROOT/scripts/standin/test_standin.py"
 if [ -d apps/server ] && [ -z "$GO_PKGS" ]; then skip go-vet; skip go-test; skip fixture-off
 elif [ -d apps/server ]; then

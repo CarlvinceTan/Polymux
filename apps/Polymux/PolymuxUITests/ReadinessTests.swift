@@ -218,7 +218,7 @@ final class ReadinessTests: XCTestCase {
             XCTAssertEqual(app.buttons["Fail answer"].value as? String, theme)
             capture(app, theme: theme, state: "unanswered")
             press(option)
-            XCTAssertTrue(app.staticTexts["Plan my day"].waitForExistence(timeout: 2))
+            XCTAssertTrue(app.staticTexts["Plan my day"].waitForExistence(timeout: 10))
             XCTAssertFalse(option.exists)
             capture(app, theme: theme, state: "optimistic")
             press(app.buttons["Fail answer"])

@@ -385,7 +385,7 @@ class BuildTests(unittest.TestCase):
             with patch.object(build, "ROOT", root), patch.object(subprocess, "run", side_effect=execute):
                 bundle = build.build("HEAD", Path(directory) / "output", app=False)
                 self.assertEqual(build.build("HEAD", Path(directory) / "output", app=False), bundle)
-            self.assertEqual(observed, ["committed source"])
+            self.assertEqual(observed, ["committed source"] * 3)
             manifest = json.loads((bundle / "manifest.json").read_text())
             self.assertEqual(manifest["sha"], sha)
             self.assertEqual(manifest["serverSHA256"], deploy.digest(bundle / "polymux-server"))

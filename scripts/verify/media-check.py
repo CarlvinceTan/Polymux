@@ -9,7 +9,7 @@ uniform border), no duplicate file (sha256) within the run; videos need a video 
 Relevance to the card and Before/After labelling still need a human or agent reviewer."""
 import hashlib, json, os, shutil, subprocess, sys, tempfile
 FFPROBE = os.environ.get("MC_FFPROBE", "ffprobe"); FFMPEG = os.environ.get("MC_FFMPEG", "ffmpeg")
-def pil():  # PIL from the user site of the real home too (lanes and tests may run with another HOME)
+def pil():  # PIL from the user site of the real home too (verification runs may use another HOME)
     import glob, pwd, site
     h = pwd.getpwuid(os.getuid()).pw_dir
     for d in glob.glob(h + "/Library/Python/*/lib/python/site-packages") + glob.glob(h + "/.local/lib/python3*/site-packages"):

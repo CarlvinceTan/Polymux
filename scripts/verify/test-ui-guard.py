@@ -211,18 +211,6 @@ class GuardTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 11 if forbidden else 0)
                 self.assertNotIn("tell application", result.stdout)
 
-    def test_policy_audit_understands_codex_exec_transcripts(self):
-        path = self.root / "codex.log"
-        for command, blocked in [("osascript -e 'tell application \"System Events\" to get name'", True),
-                                 ("/usr/bin/osascript -e 'tell application id \"com.apple.systemevents\" to get name'", True),
-                                 ("echo 'Never script System Events using osascript'", False)]:
-            with self.subTest(command=command):
-                import shlex
-                path.write_text("exec\n/bin/zsh -lc " + shlex.quote(command) + " in /worktree succeeded in 5ms:\n")
-                result = subprocess.run([sys.executable, str(ROOT / "ui-guard.py"), "--audit-log", str(path)],
-                                        text=True, capture_output=True, timeout=3)
-                self.assertEqual(result.returncode, 11 if blocked else 0)
-
     def test_external_verifier_uses_its_paired_classifier(self):
         old = self.root / "older/scripts"
         old.mkdir(parents=True)

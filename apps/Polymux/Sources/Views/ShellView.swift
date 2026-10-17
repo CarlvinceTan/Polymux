@@ -91,7 +91,7 @@ struct ShellView: View {
             #endif
             .scrollIndicators(.hidden)
             #if os(macOS)
-            .navigationTitle("Polymux")
+            .navigationTitle("")
             #else
             .navigationTitle(searching ? "" : "Chats")
             #endif
@@ -216,8 +216,13 @@ struct ShellView: View {
             } else if let notice = session.sidebar.notice {
                 ContentUnavailableView(notice, systemImage: "exclamationmark.bubble")
             } else {
-                ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
-                                       description: Text("Choose an agent to start talking."))
+                ContentUnavailableView {
+                    Label(session.sidebar.agents.isEmpty ? "No agents yet" : "Your conversations", systemImage: "bubble.left.and.bubble.right")
+                } description: {
+                    Text(session.sidebar.agents.isEmpty ? "Create an agent to start. Polymux ships with no prebuilt bots." : "Choose an agent to start talking.")
+                } actions: {
+                    Button("Create an agent") { adding = true }
+                }
             }
         }
         .navigationSplitViewStyle(.balanced)
@@ -314,7 +319,7 @@ struct ShellView: View {
                     await session.avatars.flush(client: session.client)
                 }
                 #if os(macOS)
-                if selection == nil, session.sidebar.notice == nil { selection = Notifications.shared.destination ?? session.sidebar.threads.first(where: { $0.agentID == "assistant" && !$0.isGroup })?.id ?? conversations.first?.id }
+                if selection == nil, session.sidebar.notice == nil { selection = Notifications.shared.destination ?? conversations.first?.id }
                 #endif
                 try? await Task.sleep(for: .seconds(3))
             }

@@ -202,7 +202,7 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_providers_use_cli_environment(self):
         reply=json.dumps({'content':'ok','tool_calls':[]})
-        for provider in ['opencode','cursor-agent','codex']:
+        for provider in ['opencode','cursor-agent']:
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as directory:
                 env={'PATH':'test-bin'}
                 stdout=json.dumps({'result':reply}) if provider=='cursor-agent' else json.dumps({'type':'item.completed','item':{'type':'agent_message','text':reply}})
@@ -216,15 +216,25 @@ class RetryTests(unittest.TestCase):
         seen=[]
         def run(request):
             seen.append(request['model'])
-            if request['model']!='local/codex':raise ValueError('provider_unavailable')
+            if request['model']!='local/cursor-agent':raise ValueError('provider_unavailable')
             return ('ok',[])
         with patch.object(model_bridge,'infer_once',side_effect=run), patch.object(model_bridge,'audit_event') as log, patch.object(model_bridge.time,'sleep') as sleep:
             request={'model':'local/opencode','messages':[]}
             self.assertEqual(model_bridge.infer(request),('ok',[]))
-            self.assertEqual(seen,['local/opencode']*3+['local/cursor-agent']*3+['local/codex'])
-            self.assertEqual([c.args[0] for c in sleep.call_args_list],[1,2,1,2])
-            self.assertEqual(request['_answered_provider'],'codex')
-            self.assertEqual(log.call_args.args[0]['provider'],'codex')
+            self.assertEqual(seen,['local/opencode']*3+['local/cursor-agent'])
+            self.assertEqual([c.args[0] for c in sleep.call_args_list],[1,2])
+            self.assertEqual(request['_answered_provider'],'cursor-agent')
+            self.assertEqual(log.call_args.args[0]['provider'],'cursor-agent')
+
+    def test_invalid_tool_retries_then_fails_over(self):
+        seen=[]
+        def run(request):
+            seen.append(request['model'])
+            if request['model']=='local/opencode':raise ValueError('invalid_tool')
+            return ('ok',[])
+        with patch.object(model_bridge,'infer_once',side_effect=run), patch.object(model_bridge,'audit_event'), patch.object(model_bridge.time,'sleep'):
+            self.assertEqual(model_bridge.infer({'model':'local/opencode'}),('ok',[]))
+            self.assertEqual(seen,['local/opencode']*3+['local/cursor-agent'])
 
     def test_transient_recovers_without_failover(self):
         with patch.object(model_bridge,'infer_once',side_effect=[ValueError('provider_timeout'),('ok',[])]) as run, patch.object(model_bridge,'audit_event'), patch.object(model_bridge.time,'sleep'):
@@ -240,7 +250,7 @@ class RetryTests(unittest.TestCase):
     def test_exhaustion_is_bounded(self):
         with patch.object(model_bridge,'infer_once',side_effect=ValueError('provider_error')) as run, patch.object(model_bridge,'audit_event'), patch.object(model_bridge.time,'sleep'):
             with self.assertRaisesRegex(ValueError,'provider_unavailable'):model_bridge.infer({'model':'local/opencode'})
-            self.assertEqual(run.call_count,9)
+            self.assertEqual(run.call_count,6)
 
     def test_missing_cli_can_fail_over(self):
         with patch.object(model_bridge,'infer_once',side_effect=[FileNotFoundError('missing')]*3+[('ok',[])]) as run, patch.object(model_bridge,'audit_event'), patch.object(model_bridge.time,'sleep'):
