@@ -264,7 +264,8 @@ func run() error {
 		}
 		host, _, _ := net.SplitHostPort(r.RemoteAddr)
 		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
+		addr, ok := netip.AddrFromSlice(ip)
+		if !ok || !(ip.IsLoopback() || privateIP(addr)) {
 			device.Reject(w)
 			return
 		}
