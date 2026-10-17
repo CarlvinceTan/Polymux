@@ -174,6 +174,10 @@ struct AppRoot: View {
     }
 
     private func handleConnect(_ url: URL) {
+        if url.scheme == "polymux", url.host == "settings" {
+            showSettings = true
+            return
+        }
         guard url.scheme == "polymux", url.host == "connect",
               let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let target = parts.queryItems?.first(where: { $0.name == "url" })?.value,
@@ -260,13 +264,13 @@ struct ConnectionView: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(device.name)
-                                    Text(device.agent == "local" ? "This server" : device.agent)
+                                    Text(device.name == "Local Mac app" ? "This server" : "Linked device")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text(device.agent == "local" ? "Server" : (device.connected ? "Online" : "Offline"))
+                                Text(device.name == "Local Mac app" ? "Server" : (device.connected ? "Online" : "Paired"))
                                     .font(.caption)
-                                    .foregroundStyle(device.agent == "local" || device.connected ? Color.green : Color.secondary)
+                                    .foregroundStyle(device.name == "Local Mac app" || device.connected ? Color.green : Color.secondary)
                             }
                         }
                         if network.devices.isEmpty {
