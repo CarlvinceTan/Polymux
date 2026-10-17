@@ -45,7 +45,6 @@ const productPages = existsSync(productRoot)
 
 export default defineConfig({
   plugins: [svelte()],
-  resolve: {alias: {'@polymux/protocol': resolve(import.meta.dirname, '../../packages/protocol/src/index.ts')}},
   build: {
     outDir: 'dist',
     rollupOptions: {

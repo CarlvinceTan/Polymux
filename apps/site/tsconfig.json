@@ -7,10 +7,7 @@
     "isolatedModules": true,
     "moduleResolution": "bundler",
     "noEmit": true,
-    "target": "ESNext",
-    "paths": {
-      "@polymux/protocol": ["../../packages/protocol/src/index.ts"]
-    }
+    "target": "ESNext"
   },
   "include": [
     "src/**/*.ts",
