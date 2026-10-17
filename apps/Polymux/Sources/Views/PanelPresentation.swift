@@ -23,6 +23,17 @@ struct PanelAction {
     @MainActor func callAsFunction() { action() }
 }
 
+private struct PanelActiveKey: EnvironmentKey {
+    static var defaultValue: Bool { false }
+}
+
+extension EnvironmentValues {
+    var panelActive: Bool {
+        get { self[PanelActiveKey.self] }
+        set { self[PanelActiveKey.self] = newValue }
+    }
+}
+
 struct PanelContext {
     let dismiss: PanelAction
     let ancestor: PanelAction?
@@ -176,6 +187,7 @@ private struct PanelHost: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .environment(\.panelActive, active)
             .background { FocusWindow(memory: focus).frame(width: 0, height: 0).accessibilityHidden(true) }
             .background { PanelChrome(active: active).frame(width: 0, height: 0).accessibilityHidden(true) }
             .disabled(active)
@@ -243,9 +255,20 @@ private struct PanelChrome: NSViewRepresentable {
 
 private final class ChromeAnchor: NSView {
     var active = false
+    private var observers: [NSObjectProtocol] = []
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers = []
+        if let window {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didUpdateNotification,
+                         NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification] {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    self?.apply()
+                })
+            }
+        }
         apply()
     }
 

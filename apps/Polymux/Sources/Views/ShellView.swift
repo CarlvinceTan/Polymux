@@ -17,6 +17,7 @@ struct ShellView: View {
     @State private var filter = AgentFilter.all
     @State private var order = AgentOrder.recent
     @State private var adding = false
+    @Environment(\.panelActive) private var panelActive
     @State private var editing: AvatarContact?
     @State private var profiling: AvatarContact?
     @State private var grouping: PolymuxKit.Thread?
@@ -208,6 +209,10 @@ struct ShellView: View {
                 #endif
             }
             .toolbar(removing: .sidebarToggle)
+            .toolbar(removing: .title)
+            #if os(macOS)
+            .toolbarVisibility(panelActive ? .hidden : .visible, for: .windowToolbar)
+            #endif
         } detail: {
             if let thread = session.sidebar.displayed(selection),
                let agent = participants(thread).first {
