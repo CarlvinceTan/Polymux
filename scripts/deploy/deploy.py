@@ -71,12 +71,12 @@ def snapshot(sha, output, server, app):
                 subprocess.run(["go", "build", "-tags", "sqlite_fts5", "-trimpath", "-ldflags", "-X main.buildSHA=" + sha,
                                 "-o", str(output / "polymux-server"), "./cmd/server"],
                                cwd=source / "apps/server", check=True, stdout=log, stderr=subprocess.STDOUT)
+                for name in ("polymux", "polymux-chat"):
+                    subprocess.run(["go", "build", "-tags", "sqlite_fts5", "-trimpath", "-o", str(output / name),
+                                    "./cmd/" + name], cwd=source / "apps/server", check=True,
+                                   stdout=log, stderr=subprocess.STDOUT)
             if host.run([str(output / "polymux-server"), "--version"]) != sha:
                 raise host.DeployError("built server has an unexpected commit")
-            for name in ("polymux", "polymux-chat"):
-                subprocess.run(["go", "build", "-tags", "sqlite_fts5", "-trimpath", "-o", str(output / name),
-                                "./cmd/" + name], cwd=source / "apps/server", check=True,
-                               stdout=log, stderr=subprocess.STDOUT)
         if app:
             with (output / "app-build.log").open("w") as log:
                 subprocess.run([sys.executable, str(source / "scripts/control/fetch_cua.py")], check=True,
