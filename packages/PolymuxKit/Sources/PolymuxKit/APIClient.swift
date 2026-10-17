@@ -409,6 +409,7 @@ public struct APIClient: Sendable {
         guard gethostname(&name, name.count) == 0 else { return nil }
         let local = String(cString: name).lowercased().components(separatedBy: ".")[0]
         let localHost = ["localhost", "127.0.0.1", "::1", local, "\(local).local"].contains(host)
+            || localAddresses().contains(host)
             || (host.hasSuffix(".ts.net") && !Set(Host(name: host).addresses).isDisjoint(with: localAddresses()))
         if localHost {
             let directory = ProcessInfo.processInfo.environment["POLYMUX_DATA_DIR"].map {
