@@ -215,12 +215,18 @@ struct ShellView: View {
                     .id(selection)
             } else if let notice = session.sidebar.notice {
                 ContentUnavailableView(notice, systemImage: "exclamationmark.bubble")
-            } else {
-                ContentUnavailableView {
-                    Label(session.sidebar.agents.isEmpty ? "No agents yet" : "Your conversations", systemImage: "bubble.left.and.bubble.right")
-                } description: {
-                    Text(session.sidebar.agents.isEmpty ? "Create an agent to start. Polymux ships with no prebuilt bots." : "Choose an agent to start talking.")
+            } else if session.sidebar.agents.isEmpty {
+                VStack {
+                    Spacer()
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 58, weight: .regular))
+                        .foregroundStyle(.secondary)
+                    Spacer()
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView("Your conversations", systemImage: "bubble.left.and.bubble.right",
+                                       description: Text("Choose an agent to start talking."))
             }
         }
         .navigationSplitViewStyle(.balanced)
